@@ -28,7 +28,15 @@ python3 scripts/classify_accounts.py path/to/file.txt --out reports/classify
 
 Gửi file `.txt/.csv/.json` vào chat bot (cùng `TELEGRAM_CHAT_ID`).
 
-## Khắc phục SĐT đơn hàng
+## Bảng điều khiển Telegram
+
+```bash
+python3 scripts/telegram_control_panel.py          # gửi panel + trả lời đủ mục truy vấn
+python3 scripts/telegram_control_panel.py --listen # giữ listener nhận bấm nút (~2 phút nếu không truyền thêm)
+```
+
+Nút: Tổng quan · Theo nguồn · SĐT masked · SĐT thiếu · Todo khắc phục · Đường dẫn nóng.
+Gõ `/panel` trong chat để mở lại menu.
 
 ```bash
 python3 scripts/fix_order_phones.py quarantine/telegram/orders_detailed_*.csv \
