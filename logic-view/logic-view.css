@@ -1,0 +1,245 @@
+.logic-page .brand {
+  text-decoration: none;
+  color: inherit;
+}
+
+.logic-main {
+  width: min(1100px, calc(100% - 2rem));
+  margin: 1.25rem auto 3rem;
+}
+
+.logic-hero {
+  padding: 1.75rem 1.5rem;
+  border-radius: calc(var(--radius) + 6px);
+  background:
+    linear-gradient(135deg, rgba(12, 42, 46, 0.92), rgba(31, 111, 106, 0.75)),
+    radial-gradient(ellipse at 80% 20%, rgba(217, 196, 165, 0.25), transparent 50%);
+  color: var(--foam);
+  margin-bottom: 1.25rem;
+  box-shadow: var(--shadow);
+}
+
+.logic-hero .brand-hero {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(2rem, 5vw, 3rem);
+  color: var(--sand);
+}
+
+.logic-hero h1 {
+  margin: 0.35rem 0 0.75rem;
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: clamp(1.3rem, 3vw, 1.8rem);
+}
+
+.logic-hero .hero-lead {
+  margin: 0 0 1rem;
+  max-width: 46ch;
+  color: rgba(244, 250, 249, 0.88);
+}
+
+.logic-badge {
+  display: inline-block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.logic-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.logic-card {
+  background: rgba(244, 250, 249, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1.1rem 1.2rem;
+}
+
+.logic-card.wide {
+  grid-column: 1 / -1;
+}
+
+.logic-card h2 {
+  margin: 0 0 0.75rem;
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+}
+
+.layer-list {
+  margin: 0;
+  padding-left: 1.15rem;
+  color: var(--ink-muted);
+}
+
+.layer-list li + li {
+  margin-top: 0.45rem;
+}
+
+.logic-run {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-bottom: 0.75rem;
+}
+
+.logic-run input {
+  flex: 1 1 220px;
+  font: inherit;
+  padding: 0.7rem 0.9rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+}
+
+.logic-out {
+  margin: 0;
+  padding: 0.85rem 1rem;
+  border-radius: var(--radius);
+  background: #0f3034;
+  color: #d9efe9;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  overflow: auto;
+  max-height: 380px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.config-modules {
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  margin: 0.75rem 0;
+}
+
+.mod-config {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.75rem 0.85rem;
+  background: #fff;
+}
+
+.mod-config.is-off {
+  opacity: 0.55;
+}
+
+.mod-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.mod-enable {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+}
+
+.mod-pri {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--teal);
+}
+
+.mod-owns {
+  margin: 0.45rem 0;
+  font-size: 0.78rem;
+  color: var(--ink-muted);
+}
+
+.mod-owns code {
+  font-family: var(--font-body);
+  font-size: 0.72rem;
+  background: rgba(31, 111, 106, 0.1);
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  margin-right: 0.2rem;
+}
+
+.mod-feats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.mod-feats .feat {
+  font-size: 0.78rem;
+  color: var(--ink-muted);
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+  cursor: pointer;
+}
+
+.ok-msg {
+  color: var(--teal);
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.err-msg {
+  color: var(--coral-deep);
+  font-weight: 600;
+}
+
+.config-conflicts {
+  margin-bottom: 0.5rem;
+}
+
+.hint {
+  color: var(--ink-muted);
+  font-size: 0.9rem;
+}
+
+
+.icon-army-strip {
+  border: 1px solid var(--line, rgba(16,36,40,.14));
+  padding: 0.85rem 1rem;
+  background: rgba(255,255,255,.4);
+}
+
+.icon-army-strip .icon-feedback {
+  margin: 0 0 0.65rem;
+  font-family: var(--font-display, Fraunces, Georgia, serif);
+  font-size: 1.05rem;
+  color: var(--ink, #0e1a1f);
+}
+
+.icon-army-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.icon-army-list li {
+  display: grid;
+  grid-template-columns: 5.5rem 10rem 1fr;
+  gap: 0.5rem;
+  align-items: baseline;
+  font-size: 0.88rem;
+}
+
+.icon-army-list code {
+  font-size: 0.8rem;
+  opacity: 0.85;
+}
+
+@media (max-width: 720px) {
+  .icon-army-list li {
+    grid-template-columns: 1fr;
+    gap: 0.1rem;
+    padding-bottom: 0.45rem;
+    border-bottom: 1px solid rgba(16,36,40,.08);
+  }
+}

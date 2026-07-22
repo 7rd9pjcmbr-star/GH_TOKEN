@@ -1,0 +1,20 @@
+node_modules/
+.env
+.env.*
+*.pem
+*.key
+secrets/
+.secrets
+credentials*
+*.p12
+.DS_Store
+
+# Lab quarantine — không commit mẫu nghi ngờ
+quarantine/*
+!quarantine/.gitkeep
+reports/*
+!reports/.gitkeep
+*.report.json
+
+__pycache__/
+*.pyc

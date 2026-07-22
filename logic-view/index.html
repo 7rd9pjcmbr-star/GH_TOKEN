@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MaMoLogic — cấu trúc có logic</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="logic-view.css" />
+</head>
+<body class="logic-page">
+  <header class="site-header">
+    <a class="brand" href="../index.html">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">Mã Mở</span>
+    </a>
+    <nav class="site-nav">
+      <a class="nav-btn nav-link" href="../atlas/index.html">Atlas</a>
+      <a class="nav-btn nav-link" href="../mapper/index.html">Mapper</a>
+      <span class="nav-btn is-active">Logic</span>
+      <a class="nav-btn nav-link" href="../lab/index.html">Lab</a>
+      <a class="nav-btn nav-link" href="../index.html">Hỗ trợ</a>
+    </nav>
+  </header>
+
+  <main class="logic-main">
+    <section class="logic-hero">
+      <p class="brand-hero">MaMoLogic</p>
+      <h1>Cấu trúc có logics</h1>
+      <p class="hero-lead">
+        Tầng UI → Logic kernel → Domain (crypto/a11y) → Data.
+        Phân tích định dạng mã theo chữ ký cấu trúc riêng; quyết định đi qua rules → router → paths.
+      </p>
+      <p class="logic-badge" id="logic-badge">Đang nạp…</p>
+    </section>
+
+    <section class="logic-grid">
+      <article class="logic-card">
+        <h2>Tầng</h2>
+        <ol class="layer-list">
+          <li><strong>UI</strong> — atlas, mapper, a11y dock</li>
+          <li><strong>Logic</strong> — schema, analyze, rules, index, paths, router</li>
+          <li><strong>Domain</strong> — MaMoCrypto · MaMoA11y</li>
+          <li><strong>Data</strong> — crypto-atlas · network-map</li>
+        </ol>
+      </article>
+
+      <article class="logic-card">
+        <h2>Thứ tự quyết định</h2>
+        <ol class="layer-list">
+          <li>Exact resolve (id/tên)</li>
+          <li>Need rules (R-PASSWORD, R-TLS…)</li>
+          <li>Search xếp hạng</li>
+          <li>Paths → thư viện + icon</li>
+          <li>Fallback cheat-sheet</li>
+        </ol>
+      </article>
+
+      <article class="logic-card wide">
+        <h2>Phân tích sâu định dạng mã</h2>
+        <p class="hint">Mỗi loại mã có chữ ký cấu trúc riêng — mapper gọi tên icon phản hồi trên dòng chảy.</p>
+        <div class="logic-run">
+          <input id="format-input" type="text" placeholder="Dán chuỗi: Morse, Braille, JWT, Base64, PEM, hex hash…" value=".... . .-.. .-.. --- / .-- --- .-. .-.. -.." />
+          <button type="button" class="btn btn-secondary" id="btn-format-analyze">Phân loại</button>
+        </div>
+        <pre class="logic-out" id="format-output">{}</pre>
+      </article>
+
+      <article class="logic-card wide">
+        <h2>Quân đội icon (Mapper gọi tên)</h2>
+        <p class="hint">Khi query / analyze — triệu tập icon trên path tới thư viện.</p>
+        <div id="icon-army-strip" class="icon-army-strip">
+          <p class="hint">Chạy query để xem mapper gọi icon.</p>
+        </div>
+        <div class="logic-run" style="margin-top:0.75rem">
+          <button type="button" class="btn btn-secondary" id="btn-icon-map">Map mọi icon → thư viện</button>
+        </div>
+        <pre class="logic-out" id="icon-map-output">{}</pre>
+      </article>
+
+      <article class="logic-card wide">
+        <h2>Biến nhúng &amp; chỉ thị nginx upstream</h2>
+        <p class="hint">$upstream_* · resolver · queue (commercial) · DNS / hàng đợi upstream</p>
+        <div class="logic-run">
+          <input id="vars-input" type="search" placeholder="vd: queue 10 timeout=30s, resolver, $upstream_queue_time…" value="queue 10 timeout=30s;" />
+          <button type="button" class="btn btn-secondary" id="btn-vars-lookup">Tra cứu</button>
+        </div>
+        <pre class="logic-out" id="vars-output">{}</pre>
+      </article>
+
+      <article class="logic-card wide">
+        <h2>Tối ưu logic nâng cao</h2>
+        <p class="hint">Sàng lọc mềm (softScreen) — thu hẹp/xếp hạng, không loại bỏ năng lực · LRU · path memo</p>
+        <div class="logic-run">
+          <button type="button" class="btn btn-secondary" id="btn-opt-stats">Xem optimize.stats</button>
+          <button type="button" class="btn btn-ghost lab-wipe" id="btn-opt-invalidate" style="color:inherit;background:rgba(16,36,40,.06);border:1px solid var(--line)">Invalidate cache</button>
+        </div>
+        <pre class="logic-out" id="opt-stats-output">{}</pre>
+      </article>
+
+      <article class="logic-card wide">
+        <h2>Cấu hình module (không dẫm chân)</h2>
+        <p class="hint">Policy: <code id="conflict-policy-label">first-wins</code> · Ownership độc quyền theo domain.</p>
+        <div id="config-conflicts" class="config-conflicts"></div>
+        <div id="config-modules" class="config-modules"></div>
+        <div class="logic-run">
+          <button type="button" class="btn btn-ghost mapper-ghost" id="btn-config-reset" style="color:inherit;background:rgba(16,36,40,.06);border:1px solid var(--line)">Reset config</button>
+        </div>
+      </article>
+
+      <article class="logic-card wide">
+        <h2>Thử logic</h2>
+        <div class="logic-run">
+          <input id="logic-input" type="search" placeholder="vd: password, browser, path tới thư viện, libsodium…" value="password hashing" />
+          <button type="button" class="btn btn-primary" id="btn-logic-run">Chạy MaMoLogic.query</button>
+        </div>
+        <pre class="logic-out" id="logic-run-output">{}</pre>
+      </article>
+
+      <article class="logic-card wide">
+        <h2>Mô tả hệ thống</h2>
+        <pre class="logic-out" id="logic-demo-output">{}</pre>
+        <p class="hint"><a href="../docs/LOGIC-ARCHITECTURE.md">docs/LOGIC-ARCHITECTURE.md</a></p>
+      </article>
+    </section>
+  </main>
+
+  <script src="../data/crypto-atlas.js"></script>
+  <script src="../data/network-map.js"></script>
+  <script src="../data/icon-atlas.js"></script>
+  <script src="../data/nginx-upstream-vars.js"></script>
+  <script src="../js/crypto/core.js"></script>
+  <script src="../js/crypto/catalog.js"></script>
+  <script src="../js/crypto/search.js"></script>
+  <script src="../js/crypto/concepts.js"></script>
+  <script src="../js/crypto/libraries.js"></script>
+  <script src="../js/crypto/recommend.js"></script>
+  <script src="../js/crypto/graph.js"></script>
+  <script src="../js/crypto/encode.js"></script>
+  <script src="../js/crypto/api.js"></script>
+  <script src="../js/crypto/bootstrap.js"></script>
+  <script src="../js/logic/schema.js"></script>
+  <script src="../js/logic/config.js"></script>
+  <script src="../js/logic/optimize.js"></script>
+  <script src="../js/logic/analyze.js"></script>
+  <script src="../js/logic/index.js"></script>
+  <script src="../js/logic/rules.js"></script>
+  <script src="../js/logic/vars.js"></script>
+  <script src="../js/logic/paths.js"></script>
+  <script src="../js/logic/icons.js"></script>
+  <script src="../js/logic/pipeline.js"></script>
+  <script src="../js/logic/router.js"></script>
+  <script src="../js/logic/orchestrator.js"></script>
+  <script src="../js/logic/bootstrap.js"></script>
+  <script src="logic-view.js"></script>
+</body>
+</html>

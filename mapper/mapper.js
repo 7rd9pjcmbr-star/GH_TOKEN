@@ -12,16 +12,19 @@
   const nodeById = Object.fromEntries(graph.nodes.map((n) => [n.id, n]));
 
   const KIND_META = {
+    hub: { label: "Hub thư viện", color: "#c45c3e" },
     group: { label: "Nhóm", color: "#d9c4a5" },
     concept: { label: "Khái niệm", color: "#2a9a8f" },
-    library: { label: "Thư viện", color: "#c45c3e" },
+    library: { label: "Thư viện", color: "#9e3f28" },
     lang: { label: "Ngôn ngữ", color: "#7eb8b2" },
   };
 
   const state = {
     query: "",
-    kinds: { group: true, concept: true, library: true, lang: true },
+    kinds: { hub: true, group: true, concept: true, library: true, lang: true },
     selectedId: null,
+    showLibPaths: true,
+    pathHighlight: null, // { nodeIds:Set, edgeIds:Set }
     transform: { x: 0, y: 0, k: 1 },
     sim: null,
     width: 800,
@@ -33,6 +36,7 @@
   const statsEl = document.getElementById("mapper-stats");
   const sideDetail = document.getElementById("side-detail");
   const neighborList = document.getElementById("neighbor-list");
+  const pathList = document.getElementById("path-list");
   const searchInput = document.getElementById("mapper-search");
   const kindFilters = document.getElementById("kind-filters");
   const legendEl = document.getElementById("legend");
@@ -41,13 +45,19 @@
   gRoot.setAttribute("class", "viewport");
   const gEdges = document.createElementNS("http://www.w3.org/2000/svg", "g");
   gEdges.setAttribute("class", "edges");
+  const gEdgeIcons = document.createElementNS("http://www.w3.org/2000/svg", "g");
+  gEdgeIcons.setAttribute("class", "edge-icons");
   const gNodes = document.createElementNS("http://www.w3.org/2000/svg", "g");
   gNodes.setAttribute("class", "nodes");
   gRoot.appendChild(gEdges);
+  gRoot.appendChild(gEdgeIcons);
   gRoot.appendChild(gNodes);
   svg.appendChild(gRoot);
 
-  const ICONS = {
+  const ICONS = Object.assign(
+    {},
+    window.ICON_SVG || {},
+    {
     layers: "M4 8l8-4 8 4-8 4-8-4zm0 4l8 4 8-4M4 16l8 4 8-4",
     key: "M14 8a4 4 0 11-4 4h-4v3H4v-3H2v-2h8a4 4 0 014-2zm2 2a1.5 1.5 0 100-3 1.5 1.5 0 000 3z",
     lock: "M7 10V7a5 5 0 0110 0v3h1a1 1 0 011 1v8a1 1 0 01-1 1H6a1 1 0 01-1-1v-8a1 1 0 011-1h1zm2 0h6V7a3 3 0 00-6 0v3z",
@@ -65,7 +75,8 @@
     monitor: "M4 6h16v10H4V6zm2 12h12v1H6v-1z",
     chip: "M8 8h8v8H8V8zm-2 2H4v1h2v-1zm0 3H4v1h2v-1zm12-3h2v1h-2v-1zm0 3h2v1h-2v-1zM10 4v2h1V4h-1zm3 0v2h1V4h-1zM10 18v2h1v-2h-1zm3 0v2h1v-2h-1z",
     wrench: "M14.5 5.5a3.5 3.5 0 00-4.6 4.6L4 16v4h4l5.9-5.9a3.5 3.5 0 004.6-4.6l-2.5 1.5-2-2 1.5-2.5z",
-  };
+  }
+  );
 
   function normalize(s) {
     return (s || "")
@@ -76,14 +87,15 @@
   }
 
   function nodeRadius(n) {
+    if (n.kind === "hub") return 26;
     if (n.kind === "group") return 22;
-    if (n.kind === "library") return 16;
+    if (n.kind === "library") return 17;
     if (n.kind === "lang") return 12;
     return 14;
   }
 
   function visibleNodes() {
-    return graph.nodes.filter((n) => state.kinds[n.kind]);
+    return graph.nodes.filter((n) => state.kinds[n.kind] !== false);
   }
 
   function visibleSet() {
@@ -101,7 +113,6 @@
     visibleNodes().forEach((n) => {
       if (normalize(n.searchText || n.label).includes(q)) set.add(n.id);
     });
-    // expand one hop for context
     const expanded = new Set(set);
     visibleEdges(visibleSet()).forEach((e) => {
       if (set.has(e.source) || set.has(e.target)) {
@@ -133,19 +144,72 @@
     return ICONS[name] || ICONS.cube;
   }
 
-  function createIcon(iconName, r) {
+  function createIcon(iconName, r, stroke = "#f4faf9") {
     const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
     g.setAttribute("class", "node-icon");
-    g.setAttribute("transform", `translate(${-8}, ${-8}) scale(${(r * 0.7) / 12})`);
+    const scale = (r * 0.7) / 12;
+    g.setAttribute("transform", `translate(${-8 * scale}, ${-8 * scale}) scale(${scale})`);
     const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
     path.setAttribute("d", iconPath(iconName));
     path.setAttribute("fill", "none");
-    path.setAttribute("stroke", "#f4faf9");
+    path.setAttribute("stroke", stroke);
     path.setAttribute("stroke-width", "1.6");
     path.setAttribute("stroke-linecap", "round");
     path.setAttribute("stroke-linejoin", "round");
     g.appendChild(path);
     return g;
+  }
+
+  function createEdgeIcon(e, ax, ay, bx, by, hot) {
+    const mx = (ax + bx) / 2;
+    const my = (ay + by) / 2;
+    const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    g.setAttribute("class", "edge-icon" + (hot ? " is-hot" : ""));
+    g.setAttribute("transform", `translate(${mx},${my})`);
+    const bg = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    bg.setAttribute("r", 8);
+    bg.setAttribute("class", "edge-icon-bg");
+    g.appendChild(bg);
+    const iconName =
+      e.icon ||
+      (nodeById[e.target]?.kind === "library"
+        ? nodeById[e.target].icon
+        : "cube");
+    g.appendChild(createIcon(iconName, 11, hot ? "#0c2a2e" : "#f4faf9"));
+    g.setAttribute("data-edge", e.id);
+    return g;
+  }
+
+  /** Mọi cạnh nằm trên ít nhất một đường ngắn tới thư viện từ selected / hub */
+  function computeLibPathHighlight(fromId) {
+    if (!window.pathsToLibraries || !fromId) return null;
+    const paths = window.pathsToLibraries(graph, fromId);
+    const nodeIds = new Set([fromId]);
+    const edgeIds = new Set();
+    paths.forEach((p) => {
+      p.nodes.forEach((id) => nodeIds.add(id));
+      p.edges.forEach((e) => edgeIds.add(e.id));
+    });
+    return { nodeIds, edgeIds, paths };
+  }
+
+  function allToLibraryEdgeIds() {
+    const set = new Set();
+    graph.edges.forEach((e) => {
+      if (
+        e.toLibrary ||
+        e.pathRole === "to-library" ||
+        e.kind === "implemented-by" ||
+        e.kind === "hub-link" ||
+        e.kind === "provides-match" ||
+        e.kind === "depends" ||
+        nodeById[e.target]?.kind === "library" ||
+        nodeById[e.source]?.kind === "library"
+      ) {
+        set.add(e.id);
+      }
+    });
+    return set;
   }
 
   function measure() {
@@ -160,14 +224,21 @@
     const cy = state.height / 2;
     nodes.forEach((n, i) => {
       if (n.x != null && n.y != null) return;
+      if (n.id === "hub:crypto-libs") {
+        n.x = cx;
+        n.y = cy;
+        n.vx = 0;
+        n.vy = 0;
+        return;
+      }
       const ring = n.ring != null ? n.ring : 1;
-      const baseR = 70 + ring * 95;
+      const baseR = 80 + ring * 100;
       const angle =
         n.angle != null
           ? n.angle
-          : (i / Math.max(nodes.length, 1)) * Math.PI * 2 + ring * 0.4;
-      n.x = cx + Math.cos(angle) * baseR + (Math.random() - 0.5) * 20;
-      n.y = cy + Math.sin(angle) * baseR + (Math.random() - 0.5) * 20;
+          : (i / Math.max(nodes.length, 1)) * Math.PI * 2 + ring * 0.35;
+      n.x = cx + Math.cos(angle) * baseR + (Math.random() - 0.5) * 16;
+      n.y = cy + Math.sin(angle) * baseR + (Math.random() - 0.5) * 16;
       n.vx = 0;
       n.vy = 0;
     });
@@ -191,10 +262,9 @@
     seedPositions(nodes);
 
     let ticks = 0;
-    const maxTicks = 280;
+    const maxTicks = 300;
 
     function tick() {
-      // repulsion
       for (let i = 0; i < nodes.length; i += 1) {
         for (let j = i + 1; j < nodes.length; j += 1) {
           const a = nodes[i];
@@ -202,7 +272,7 @@
           let dx = a.x - b.x;
           let dy = a.y - b.y;
           let dist = Math.hypot(dx, dy) || 0.01;
-          const minDist = nodeRadius(a) + nodeRadius(b) + 28;
+          const minDist = nodeRadius(a) + nodeRadius(b) + 26;
           if (dist < minDist * 3) {
             const force = ((minDist - dist) / dist) * 0.08;
             dx *= force;
@@ -215,7 +285,6 @@
         }
       }
 
-      // springs
       edges.forEach((e) => {
         const a = e.sourceNode;
         const b = e.targetNode;
@@ -223,7 +292,13 @@
         let dy = b.y - a.y;
         const dist = Math.hypot(dx, dy) || 0.01;
         const ideal =
-          e.kind === "contains" ? 90 : e.kind === "depends" ? 110 : 130;
+          e.kind === "hub-link"
+            ? 120
+            : e.kind === "contains"
+              ? 90
+              : e.kind === "depends"
+                ? 100
+                : 125;
         const f = ((dist - ideal) / dist) * 0.02;
         dx *= f;
         dy *= f;
@@ -233,27 +308,28 @@
         b.vy -= dy;
       });
 
-      // center gravity
       const cx = state.width / 2;
       const cy = state.height / 2;
       nodes.forEach((n) => {
-        n.vx += (cx - n.x) * 0.004;
-        n.vy += (cy - n.y) * 0.004;
+        if (n.id === "hub:crypto-libs") {
+          n.vx += (cx - n.x) * 0.05;
+          n.vy += (cy - n.y) * 0.05;
+        } else {
+          n.vx += (cx - n.x) * 0.003;
+          n.vy += (cy - n.y) * 0.003;
+        }
         n.vx *= 0.85;
         n.vy *= 0.85;
         n.x += n.vx;
         n.y += n.vy;
-        n.x = Math.max(30, Math.min(state.width - 30, n.x));
-        n.y = Math.max(30, Math.min(state.height - 30, n.y));
+        n.x = Math.max(28, Math.min(state.width - 28, n.x));
+        n.y = Math.max(28, Math.min(state.height - 28, n.y));
       });
 
       draw();
       ticks += 1;
-      if (ticks < maxTicks) {
-        state.sim = requestAnimationFrame(tick);
-      } else {
-        state.sim = null;
-      }
+      if (ticks < maxTicks) state.sim = requestAnimationFrame(tick);
+      else state.sim = null;
     }
 
     if (state.sim) cancelAnimationFrame(state.sim);
@@ -270,39 +346,48 @@
     const edges = visibleEdges(vis);
     const matches = matchIds();
     const selected = state.selectedId;
+    const libEdgeIds = state.showLibPaths ? allToLibraryEdgeIds() : null;
+    const pathHL = state.pathHighlight;
 
-    // edges
     gEdges.innerHTML = "";
+    gEdgeIcons.innerHTML = "";
+
     edges.forEach((e) => {
       const a = nodeById[e.source];
       const b = nodeById[e.target];
       if (!a || !b || a.x == null || b.x == null) return;
+
+      const onLibPath = libEdgeIds?.has(e.id);
+      const onSelectedPath = pathHL?.edgeIds?.has(e.id);
       const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
       line.setAttribute("x1", a.x);
       line.setAttribute("y1", a.y);
       line.setAttribute("x2", b.x);
       line.setAttribute("y2", b.y);
       line.setAttribute("class", "edge");
-      if (matches && (!matches.context.has(e.source) || !matches.context.has(e.target))) {
-        line.classList.add("is-dim");
-      }
+      if (onLibPath) line.classList.add("is-lib-path");
+      if (onSelectedPath) line.classList.add("is-path-hot");
       if (
         matches &&
-        matches.hit.has(e.source) &&
-        matches.hit.has(e.target)
+        (!matches.context.has(e.source) || !matches.context.has(e.target))
       ) {
+        line.classList.add("is-dim");
+      }
+      if (matches && matches.hit.has(e.source) && matches.hit.has(e.target)) {
         line.classList.add("is-hot");
       }
-      if (
-        selected &&
-        (e.source === selected || e.target === selected)
-      ) {
+      if (selected && (e.source === selected || e.target === selected)) {
         line.classList.add("is-selected");
       }
       gEdges.appendChild(line);
+
+      // Icon giữa cạnh — mọi đường tới thư viện
+      if (onLibPath || onSelectedPath || e.toLibrary || e.pathRole === "to-library") {
+        const hot = !!(onSelectedPath || (selected && (e.source === selected || e.target === selected)));
+        gEdgeIcons.appendChild(createEdgeIcon(e, a.x, a.y, b.x, b.y, hot));
+      }
     });
 
-    // nodes
     gNodes.innerHTML = "";
     visibleNodes().forEach((n) => {
       if (n.x == null) return;
@@ -314,6 +399,9 @@
       if (matches && !matches.context.has(n.id)) g.classList.add("is-dim");
       if (matches && matches.hit.has(n.id)) g.classList.add("is-match");
       if (selected === n.id) g.classList.add("is-selected");
+      if (pathHL?.nodeIds?.has(n.id)) g.classList.add("is-on-path");
+      if (n.kind === "library") g.classList.add("is-library");
+      if (n.kind === "hub") g.classList.add("is-hub");
 
       const r = nodeRadius(n);
       const color = KIND_META[n.kind]?.color || "#2a9a8f";
@@ -328,32 +416,76 @@
       core.setAttribute("r", r);
       core.setAttribute("fill", color);
       g.appendChild(core);
-
       g.appendChild(createIcon(n.icon || "cube", r));
 
       const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
       label.setAttribute("class", "node-label");
       label.setAttribute("y", r + 14);
-      const short =
+      label.textContent =
         n.label.length > 18 ? `${n.label.slice(0, 16)}…` : n.label;
-      label.textContent = short;
       g.appendChild(label);
 
       g.addEventListener("click", (ev) => {
         ev.stopPropagation();
         selectNode(n.id);
       });
-
       gNodes.appendChild(g);
     });
 
+    const libCount = graph.nodes.filter((n) => n.kind === "library").length;
+    const libEdges = libEdgeIds ? libEdgeIds.size : 0;
     const matchCount = matches ? matches.hit.size : visibleNodes().length;
-    statsEl.textContent = `${visibleNodes().length} node · ${edges.length} cạnh · khớp tìm: ${matchCount}${
-      selected ? ` · đang chọn: ${nodeById[selected]?.label || ""}` : ""
+    statsEl.textContent = `${visibleNodes().length} node · ${edges.length} cạnh · ${libCount} thư viện · ${libEdges} đường icon → lib · khớp: ${matchCount}${
+      selected ? ` · chọn: ${nodeById[selected]?.label || ""}` : ""
     }`;
   }
 
-  function selectNode(id) {
+  function renderPathsPanel(fromId) {
+    if (!pathList) return;
+    if (!window.pathsToLibraries || !fromId) {
+      pathList.innerHTML = "";
+      return;
+    }
+    const paths = window.pathsToLibraries(graph, fromId);
+    const hl = computeLibPathHighlight(fromId);
+    state.pathHighlight = hl;
+
+    pathList.innerHTML = `<h3>Đường đến thư viện (${paths.length})</h3><ul></ul>`;
+    const ul = pathList.querySelector("ul");
+    paths.slice(0, 40).forEach((p) => {
+      const li = document.createElement("li");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "neighbor-btn path-btn";
+      const via = p.nodes
+        .map((id) => nodeById[id]?.label || id)
+        .join(" → ");
+      const army = window.NETWORK_MAP?.iconArmy || {};
+      const iconCalls = (p.icons || p.nodes.map((id) => nodeById[id]?.icon).filter(Boolean) || [])
+        .map((n) => army[n]?.call || n)
+        .filter(Boolean);
+      const uniqueCalls = [...new Set(iconCalls)];
+      btn.innerHTML = `<strong>${escapeHtml(p.label)}</strong><small>${escapeHtml(
+        via
+      )} · ${p.length} bước</small><small class="icon-call-line">Mapper gọi: ${escapeHtml(
+        uniqueCalls.join(" → ") || "—"
+      )}</small>`;
+      btn.addEventListener("click", () => {
+        state.pathHighlight = {
+          nodeIds: new Set(p.nodes),
+          edgeIds: new Set(p.edges.map((e) => e.id)),
+          paths: [p],
+        };
+        selectNode(p.to, true);
+        focusNode(nodeById[p.to]);
+        draw();
+      });
+      li.appendChild(btn);
+      ul.appendChild(li);
+    });
+  }
+
+  function selectNode(id, skipPathRecompute) {
     state.selectedId = id;
     const n = nodeById[id];
     if (!n) return;
@@ -365,9 +497,22 @@
         ${n.tier ? `<span class="tag">${escapeHtml(n.tier)}</span>` : ""}
         ${n.level ? `<span class="tag">${escapeHtml(n.level)}</span>` : ""}
         ${n.category ? `<span class="tag">${escapeHtml(n.category)}</span>` : ""}
+        <span class="tag">icon:${escapeHtml(n.icon || "?")}</span>
+        ${
+          window.NETWORK_MAP?.iconArmy?.[n.icon]
+            ? `<span class="tag">${escapeHtml(window.NETWORK_MAP.iconArmy[n.icon].call)}</span>`
+            : ""
+        }
       </div>
       <h2>${escapeHtml(n.label)}</h2>
       <p>${escapeHtml(n.summary || "")}</p>
+      ${
+        window.NETWORK_MAP?.iconArmy?.[n.icon]
+          ? `<p class="icon-motto"><strong>Mapper gọi:</strong> ${escapeHtml(
+              window.NETWORK_MAP.iconArmy[n.icon].call
+            )} — ${escapeHtml(window.NETWORK_MAP.iconArmy[n.icon].motto || "")}</p>`
+          : ""
+      }
       ${
         n.provides?.length
           ? `<p><strong>Cung cấp:</strong> ${escapeHtml(n.provides.join(", "))}</p>`
@@ -380,7 +525,9 @@
       }
     `;
 
-    const neigh = neighborsOf(id).filter((x) => state.kinds[nodeById[x.other]?.kind]);
+    const neigh = neighborsOf(id).filter(
+      (x) => state.kinds[nodeById[x.other]?.kind] !== false
+    );
     neighborList.innerHTML = `<h3>Liên kết (${neigh.length})</h3><ul></ul>`;
     const ul = neighborList.querySelector("ul");
     neigh.forEach((x) => {
@@ -401,12 +548,13 @@
       ul.appendChild(li);
     });
 
+    if (!skipPathRecompute) renderPathsPanel(id);
     draw();
   }
 
   function focusNode(n) {
-    if (n.x == null) return;
-    const k = Math.max(state.transform.k, 1.15);
+    if (!n || n.x == null) return;
+    const k = Math.max(state.transform.k, 1.1);
     state.transform.k = k;
     state.transform.x = state.width / 2 - n.x * k;
     state.transform.y = state.height / 2 - n.y * k;
@@ -445,11 +593,10 @@
     Object.entries(KIND_META).forEach(([kind, meta]) => {
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = "kind-chip" + (state.kinds[kind] ? " is-active" : "");
+      btn.className = "kind-chip" + (state.kinds[kind] !== false ? " is-active" : "");
       btn.innerHTML = `<span class="dot" style="background:${meta.color}"></span>${meta.label}`;
       btn.addEventListener("click", () => {
-        state.kinds[kind] = !state.kinds[kind];
-        // keep at least one
+        state.kinds[kind] = !(state.kinds[kind] !== false);
         if (!Object.values(state.kinds).some(Boolean)) state.kinds[kind] = true;
         renderKindFilters();
         runSimulation(false);
@@ -460,12 +607,14 @@
   }
 
   function renderLegend() {
-    legendEl.innerHTML = Object.entries(KIND_META)
-      .map(
-        ([, meta]) =>
-          `<div class="legend-item"><span class="legend-swatch" style="background:${meta.color}"></span>${meta.label}</div>`
-      )
-      .join("");
+    legendEl.innerHTML =
+      Object.entries(KIND_META)
+        .map(
+          ([, meta]) =>
+            `<div class="legend-item"><span class="legend-swatch" style="background:${meta.color}"></span>${meta.label}</div>`
+        )
+        .join("") +
+      `<div class="legend-item"><span class="legend-swatch legend-edge-icon"></span>Icon đường → thư viện</div>`;
   }
 
   // Pan / zoom
@@ -484,19 +633,16 @@
       ty: state.transform.y,
     };
   });
-
   wrap.addEventListener("pointermove", (e) => {
     if (!panning) return;
     state.transform.x = panStart.tx + (e.clientX - panStart.x);
     state.transform.y = panStart.ty + (e.clientY - panStart.y);
     applyTransform();
   });
-
   wrap.addEventListener("pointerup", () => {
     panning = false;
     wrap.classList.remove("is-panning");
   });
-
   wrap.addEventListener(
     "wheel",
     (e) => {
@@ -527,20 +673,35 @@
     }
   });
 
-  document.getElementById("btn-fit").addEventListener("click", fitView);
-  document.getElementById("btn-relayout").addEventListener("click", () => {
+  document.getElementById("btn-fit")?.addEventListener("click", fitView);
+  document.getElementById("btn-relayout")?.addEventListener("click", () => {
     state.transform = { x: 0, y: 0, k: 1 };
     applyTransform();
     runSimulation(true);
   });
-  document.getElementById("btn-clear").addEventListener("click", () => {
+  document.getElementById("btn-clear")?.addEventListener("click", () => {
     searchInput.value = "";
     state.query = "";
     state.selectedId = null;
+    state.pathHighlight = null;
     sideDetail.innerHTML =
-      "<h2>Chọn một node</h2><p>Tìm kiếm hoặc chạm icon trên sơ đồ để xem quan hệ mạng.</p>";
+      "<h2>Chọn một node</h2><p>Icon trên mọi đường dẫn tới thư viện mật mã. Chạm hub hoặc khái niệm để xem đường đi.</p>";
     neighborList.innerHTML = "";
+    if (pathList) pathList.innerHTML = "";
     draw();
+  });
+
+  document.getElementById("toggle-lib-paths")?.addEventListener("change", (e) => {
+    state.showLibPaths = e.target.checked;
+    draw();
+  });
+
+  document.getElementById("btn-focus-hub")?.addEventListener("click", () => {
+    const hub = nodeById["hub:crypto-libs"];
+    if (hub) {
+      selectNode(hub.id);
+      focusNode(hub);
+    }
   });
 
   window.addEventListener("resize", () => {
@@ -548,16 +709,74 @@
     draw();
   });
 
-  // boot
-  renderKindFilters();
+  function renderIconAtlasPanel() {
+    const status = document.getElementById("icon-atlas-status");
+    const list = document.getElementById("icon-atlas-list");
+    if (!list || !window.buildIconLibraryAtlas) {
+      if (status) status.textContent = "Thiếu icon-atlas.js";
+      return;
+    }
+    const atlasMap = window.buildIconLibraryAtlas(atlas, netMeta, graph);
+    window.__MAMO_ICON_ATLAS__ = atlasMap;
+    if (status) {
+      status.textContent = atlasMap.ok
+        ? `${atlasMap.iconCount} icon · ${atlasMap.libraryCount} thư viện · docs đủ 100%`
+        : `Thiếu: icons ${atlasMap.coverage.missingDocs.join(", ") || "—"} · libs ${atlasMap.coverage.incompleteLibs.join(", ") || "—"}`;
+    }
+    list.innerHTML = atlasMap.icons
+      .map((e) => {
+        const libs = e.libraries
+          .slice(0, 8)
+          .map(
+            (l) =>
+              `<a href="${escapeHtml(l.url || "#")}" target="_blank" rel="noopener noreferrer">${escapeHtml(
+                l.name
+              )}</a>`
+          )
+          .join(", ");
+        const more =
+          e.libraryCount > 8 ? ` +${e.libraryCount - 8}` : "";
+        return `<details class="icon-doc-card" data-icon="${escapeHtml(e.icon)}">
+          <summary>
+            <span class="icon-doc-name">${escapeHtml(e.call)}</span>
+            <code>${escapeHtml(e.icon)}</code>
+            <span class="tag">${e.libraryCount} lib</span>
+            ${e.docsComplete ? '<span class="tag ok">docs✓</span>' : '<span class="tag bad">docs✗</span>'}
+          </summary>
+          <p>${escapeHtml(e.documentation.body || e.motto || "")}</p>
+          <p class="icon-doc-libs"><strong>Thư viện:</strong> ${libs}${more}</p>
+          <p class="icon-doc-appear">Xuất hiện: ${e.appears.nodes} node · ${e.appears.edges} cạnh · kinds: ${escapeHtml(
+            (e.appears.kinds || []).join(", ")
+          )}</p>
+        </details>`;
+      })
+      .join("");
+
+    list.querySelectorAll(".icon-doc-card").forEach((card) => {
+      card.addEventListener("toggle", () => {
+        if (!card.open) return;
+        const icon = card.getAttribute("data-icon");
+        const hit = graph.nodes.find((n) => n.icon === icon);
+        if (hit) {
+          selectNode(hit.id);
+          focusNode(hit);
+          draw();
+        }
+      });
+    });
+  }
+
+  windowKindFilters();
   renderLegend();
+  renderIconAtlasPanel();
   measure();
   applyTransform();
   runSimulation(true);
 
-  // After layout settles, fit once
   setTimeout(() => {
     fitView();
+    const hub = nodeById["hub:crypto-libs"];
+    if (hub) selectNode(hub.id);
     draw();
-  }, 900);
+  }, 950);
 })();

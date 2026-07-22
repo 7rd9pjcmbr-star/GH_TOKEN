@@ -1,26 +1,35 @@
 # Mã Mở
 
-Hệ thống kép:
-
-1. **Accessibility module** (`js/a11y/`) — hỗ trợ đặc biệt một công tắc  
-2. **MaMoCrypto** (`js/crypto/`) — thư viện mật mã học thông minh + **API tra cứu**
-
-## MaMoCrypto — 9 module + API
+Cấu trúc có **logics** rõ ràng (local):
 
 ```
-core · catalog · search · concepts · libraries
-recommend · graph · encode · api
+UI → js/logic (schema/analyze/rules/…) → MaMoCrypto / A11y → Data
+     ↘ /lab/ MaMoLab (Worker + Docker) — tách biệt, phòng thủ
 ```
+
+## Surfaces
+
+- `/` hỗ trợ đặc biệt (a11y)
+- `/atlas/` MaMoCrypto + API
+- `/mapper/` icon mọi đường tới thư viện — **gọi tên quân đội icon** trên dòng chảy
+- `/logic-view/` cấu trúc & thử logic (+ phản hồi icon)
+- `/lab/` **sandbox tách biệt** — phân tích tĩnh mã đáng ngờ + kiểm thử bảo mật
 
 ```js
-MaMoCrypto.lookup("AES-GCM")
-MaMoCrypto.search("password")
-MaMoCrypto.recommend({ need: "browser", language: "JavaScript" })
-MaMoCrypto.getLibrary("libsodium")
-MaMoCrypto.path("aes-gcm", "openssl")
+MaMoLogic.query("password") // meta.iconFeedback · meta.optimized · optPlan
+MaMoLogic.callIcons("concept:aead")
+MaMoLogic.mapIconLibraries() // 17/17 icon → 27 thư viện có tài liệu
+MaMoLogic.optimize.stats()   // LRU cache · adaptive · path memo
+MaMoLogic.vars.get("$upstream_addr") // biến nhúng nginx upstream
 ```
 
-Tài liệu: [`docs/CRYPTO-API.md`](docs/CRYPTO-API.md) · Atlas UI có tab **API tra cứu**.
+Docs: `docs/ICON-ATLAS.md` · `docs/LOGIC-ARCHITECTURE.md` · `docs/NGINX-UPSTREAM-VARS.md`
+
+## Lab (cô lập)
+
+- Browser: Web Worker + CSP `connect-src 'none'` — không thực thi mẫu
+- OS: `docker/lab` với `network_mode: none`
+- Docs: `docs/SECURITY-LAB.md`
 
 ## Chạy
 
@@ -28,10 +37,4 @@ Tài liệu: [`docs/CRYPTO-API.md`](docs/CRYPTO-API.md) · Atlas UI có tab **AP
 python3 -m http.server 8080
 ```
 
-- `/` — hỗ trợ đặc biệt  
-- `/atlas/` — MaMoCrypto Atlas + API playground  
-- `/mapper/` — network mapper  
-
-## Accessibility
-
-Xem [`docs/A11Y-ARCHITECTURE.md`](docs/A11Y-ARCHITECTURE.md).
+> Không commit/push khi cờ no-publish đang bật.
