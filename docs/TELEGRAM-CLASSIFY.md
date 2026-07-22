@@ -27,3 +27,12 @@ python3 scripts/classify_accounts.py path/to/file.txt --out reports/classify
 ```
 
 Gửi file `.txt/.csv/.json` vào chat bot (cùng `TELEGRAM_CHAT_ID`).
+
+## Khắc phục SĐT đơn hàng
+
+```bash
+python3 scripts/fix_order_phones.py quarantine/telegram/orders_detailed_*.csv \
+  --out reports/telegram-classify/phone-fix
+```
+
+Gắn nhãn `ok` / `missing` / `masked` / `invalid`, xuất `*.phone_fixed.csv` + todo khắc phục upstream (Pancake map, tắt PII mask, bắt buộc SĐT khi upload Telegram).
