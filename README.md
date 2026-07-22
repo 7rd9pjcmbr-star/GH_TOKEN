@@ -1,28 +1,26 @@
 # Mã Mở
 
-Hệ thống hỗ trợ giao tiếp (accessibility) + atlas mật mã, thiết kế **module hoá**.
+Hệ thống kép:
 
-## Accessibility — cấu trúc module
+1. **Accessibility module** (`js/a11y/`) — hỗ trợ đặc biệt một công tắc  
+2. **MaMoCrypto** (`js/crypto/`) — thư viện mật mã học thông minh + **API tra cứu**
+
+## MaMoCrypto — 9 module + API
 
 ```
-js/a11y/
-  core · store · speech · switch · scan
-  phrases · morse · braille · profiles · shell · bootstrap
+core · catalog · search · concepts · libraries
+recommend · graph · encode · api
 ```
 
-Chi tiết: [`docs/A11Y-ARCHITECTURE.md`](docs/A11Y-ARCHITECTURE.md)
+```js
+MaMoCrypto.lookup("AES-GCM")
+MaMoCrypto.search("password")
+MaMoCrypto.recommend({ need: "browser", language: "JavaScript" })
+MaMoCrypto.getLibrary("libsodium")
+MaMoCrypto.path("aes-gcm", "openssl")
+```
 
-### Chức năng hỗ trợ đặc biệt
-
-- **Hồ sơ**: locked-in / vận động hạn chế / thị lực kém / khó nói / Braille
-- **Một công tắc** + **quét tự động** + TTS
-- Câu nhanh · Morse · Braille
-- Prefs lưu `localStorage`
-
-## Atlas & Mapper
-
-- `/atlas/` — kiến thức + thư viện crypto  
-- `/mapper/` — Super Icon Network Mapper  
+Tài liệu: [`docs/CRYPTO-API.md`](docs/CRYPTO-API.md) · Atlas UI có tab **API tra cứu**.
 
 ## Chạy
 
@@ -30,6 +28,10 @@ Chi tiết: [`docs/A11Y-ARCHITECTURE.md`](docs/A11Y-ARCHITECTURE.md)
 python3 -m http.server 8080
 ```
 
-- http://localhost:8080/ — hỗ trợ đặc biệt  
-- http://localhost:8080/atlas/  
-- http://localhost:8080/mapper/  
+- `/` — hỗ trợ đặc biệt  
+- `/atlas/` — MaMoCrypto Atlas + API playground  
+- `/mapper/` — network mapper  
+
+## Accessibility
+
+Xem [`docs/A11Y-ARCHITECTURE.md`](docs/A11Y-ARCHITECTURE.md).

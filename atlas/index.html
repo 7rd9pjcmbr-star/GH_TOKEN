@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="description" content="Atlas mật mã học — bản đồ thư viện và kiến thức mã hoá / giải mã." />
-  <title>Atlas mật mã — Mã Mở</title>
+  <meta name="description" content="Atlas mật mã học thông minh — MaMoCrypto API tra cứu." />
+  <title>Atlas mật mã — MaMoCrypto API</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -23,6 +23,7 @@
       <button type="button" class="nav-btn is-active" data-view="concepts" aria-pressed="true">Kiến thức</button>
       <button type="button" class="nav-btn" data-view="libraries" aria-pressed="false">Thư viện</button>
       <button type="button" class="nav-btn" data-view="guide" aria-pressed="false">Chọn nhanh</button>
+      <button type="button" class="nav-btn" data-view="api" aria-pressed="false">API tra cứu</button>
       <a class="nav-btn nav-link" href="../mapper/index.html">Network Mapper</a>
       <a class="nav-btn nav-link" href="../index.html">Giải mã hỗ trợ</a>
     </nav>
@@ -32,12 +33,12 @@
     <section class="atlas-hero">
       <div class="atlas-hero-bg" aria-hidden="true"></div>
       <div class="atlas-hero-inner">
-        <p class="brand-hero">Atlas</p>
-        <h1>Bản đồ mật mã học</h1>
+        <p class="brand-hero">MaMoCrypto</p>
+        <h1>Thư viện mật mã học thông minh</h1>
         <p class="hero-lead">
-          Thu thập kiến thức mã hoá / giải mã và ánh xạ thư viện theo ngôn ngữ —
-          từ nguyên thuỷ cổ điển đến hậu lượng tử.
+          9 module + API tích hợp tra cứu: lookup, search, recommend, graph, encode.
         </p>
+        <p class="api-badge" id="crypto-api-badge">Đang nạp API…</p>
         <label class="search-wrap" for="atlas-search">
           <span class="visually-hidden">Tìm kiếm</span>
           <input id="atlas-search" type="search" placeholder="Tìm AES, libsodium, Argon2, TLS…" autocomplete="off" />
@@ -56,7 +57,7 @@
         <div class="view is-visible" id="view-concepts" data-view-panel="concepts">
           <div class="view-head">
             <h2>Kiến thức mã hoá &amp; giải mã</h2>
-            <p class="hint">Khái niệm theo tầng: nền tảng → đối xứng / bất đối xứng → giao thức → PQC.</p>
+            <p class="hint">Nguồn: <code>MaMoCrypto.listConcepts()</code></p>
           </div>
           <div id="concepts-grid" class="card-grid"></div>
         </div>
@@ -64,7 +65,7 @@
         <div class="view" id="view-libraries" data-view-panel="libraries" hidden>
           <div class="view-head">
             <h2>Bản đồ thư viện mật mã</h2>
-            <p class="hint">Engine, API hiện đại, stdlib ngôn ngữ, embedded, PQC và công cụ.</p>
+            <p class="hint">Nguồn: <code>MaMoCrypto.listLibraries({ language })</code></p>
           </div>
           <div class="lang-chips" id="lang-chips" role="group" aria-label="Lọc ngôn ngữ"></div>
           <div id="libraries-grid" class="card-grid"></div>
@@ -73,8 +74,16 @@
         <div class="view" id="view-guide" data-view-panel="guide" hidden>
           <div class="view-head">
             <h2>Chọn thư viện theo nhu cầu</h2>
-            <p class="hint">Gợi ý ngắn — luôn kiểm tra tài liệu và audit trước khi đưa vào sản xuất.</p>
+            <p class="hint">Dùng <code>MaMoCrypto.recommend(need)</code> để gợi ý thông minh.</p>
           </div>
+          <div class="api-recommend-box">
+            <label class="ctrl-inline" for="recommend-input">
+              <span>Nhu cầu</span>
+              <input id="recommend-input" type="search" placeholder="vd: browser encryption, mật khẩu, PQC…" />
+            </label>
+            <button type="button" class="btn btn-secondary" id="btn-recommend">Gợi ý</button>
+          </div>
+          <pre class="api-output" id="recommend-output" aria-live="polite">{}</pre>
           <div id="guide-list" class="guide-list"></div>
           <div class="cheat-grid">
             <div class="cheat-block do">
@@ -86,6 +95,41 @@
               <ul id="cheat-dont"></ul>
             </div>
           </div>
+        </div>
+
+        <div class="view" id="view-api" data-view-panel="api" hidden>
+          <div class="view-head">
+            <h2>API tra cứu tích hợp</h2>
+            <p class="hint">Thử <code>MaMoCrypto.lookup()</code> / <code>search()</code> / <code>path()</code> ngay trên trang.</p>
+          </div>
+          <div class="api-playground">
+            <label class="ctrl-inline" for="api-method">
+              <span>Phương thức</span>
+              <select id="api-method">
+                <option value="lookup">lookup(query)</option>
+                <option value="search">search(query)</option>
+                <option value="suggest">suggest(prefix)</option>
+                <option value="recommend">recommend(need)</option>
+                <option value="getLibrary">getLibrary(id)</option>
+                <option value="getConcept">getConcept(id)</option>
+                <option value="related">related(id)</option>
+                <option value="path">path(from, to)</option>
+                <option value="stats">stats()</option>
+                <option value="describe">describe()</option>
+              </select>
+            </label>
+            <label class="ctrl-inline" for="api-arg1">
+              <span>Tham số 1</span>
+              <input id="api-arg1" type="text" placeholder="AES-GCM / libsodium / password…" value="libsodium" />
+            </label>
+            <label class="ctrl-inline" for="api-arg2">
+              <span>Tham số 2</span>
+              <input id="api-arg2" type="text" placeholder="(path: đích)" value="openssl" />
+            </label>
+            <button type="button" class="btn btn-primary" id="btn-api-run">Chạy</button>
+          </div>
+          <pre class="api-output" id="api-output" aria-live="polite">{}</pre>
+          <div class="api-endpoints" id="api-endpoints"></div>
         </div>
 
         <p class="empty-state" id="empty-state" hidden>Không có mục khớp bộ lọc.</p>
@@ -104,10 +148,21 @@
   </dialog>
 
   <footer class="site-footer">
-    <p><span class="brand-name">Mã Mở</span> Atlas — tham chiếu giáo dục mật mã học.</p>
+    <p><span class="brand-name">Mã Mở</span> · MaMoCrypto API — xem <a href="../docs/CRYPTO-API.md">CRYPTO-API.md</a></p>
   </footer>
 
   <script src="../data/crypto-atlas.js"></script>
+  <script src="../data/network-map.js"></script>
+  <script src="../js/crypto/core.js"></script>
+  <script src="../js/crypto/catalog.js"></script>
+  <script src="../js/crypto/search.js"></script>
+  <script src="../js/crypto/concepts.js"></script>
+  <script src="../js/crypto/libraries.js"></script>
+  <script src="../js/crypto/recommend.js"></script>
+  <script src="../js/crypto/graph.js"></script>
+  <script src="../js/crypto/encode.js"></script>
+  <script src="../js/crypto/api.js"></script>
+  <script src="../js/crypto/bootstrap.js"></script>
   <script src="atlas.js"></script>
 </body>
 </html>

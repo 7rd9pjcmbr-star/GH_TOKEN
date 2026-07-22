@@ -1,10 +1,12 @@
 (() => {
   "use strict";
 
-  const atlas = window.CRYPTO_ATLAS;
-  if (!atlas) {
-    console.error("CRYPTO_ATLAS missing");
-    return;
+  function api() {
+    return window.MaMoCrypto;
+  }
+
+  function atlasRaw() {
+    return window.CRYPTO_ATLAS;
   }
 
   const state = {
@@ -30,26 +32,26 @@
     dialog: document.getElementById("detail-dialog"),
     detailTitle: document.getElementById("detail-title"),
     detailBody: document.getElementById("detail-body"),
+    recommendInput: document.getElementById("recommend-input"),
+    recommendOutput: document.getElementById("recommend-output"),
+    apiMethod: document.getElementById("api-method"),
+    apiArg1: document.getElementById("api-arg1"),
+    apiArg2: document.getElementById("api-arg2"),
+    apiOutput: document.getElementById("api-output"),
+    apiEndpoints: document.getElementById("api-endpoints"),
   };
 
-  const categoryName = Object.fromEntries(
-    atlas.taxonomy.map((t) => [t.id, t.name])
-  );
-
-  els.disclaimer.textContent = atlas.meta.disclaimer;
-
-  function normalize(s) {
-    return (s || "")
-      .toString()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .toLowerCase();
+  function categoryName(id) {
+    const tax = api()?.taxonomy?.() || atlasRaw()?.taxonomy || [];
+    return tax.find((t) => t.id === id)?.name || id;
   }
 
-  function matchesQuery(parts) {
-    const q = normalize(state.query).trim();
-    if (!q) return true;
-    return parts.some((p) => normalize(p).includes(q));
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
   }
 
   function switchView(view) {
@@ -68,16 +70,20 @@
   }
 
   function renderTaxonomy() {
+    const tax = api()?.taxonomy?.() || atlasRaw()?.taxonomy || [];
     const items = [
       { id: "all", name: "Tất cả", summary: "Toàn bộ mục trong atlas" },
-      ...atlas.taxonomy,
+      ...tax,
     ];
     els.taxonomy.innerHTML = "";
     items.forEach((item) => {
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = "filter-btn" + (state.category === item.id ? " is-active" : "");
-      btn.innerHTML = `<strong>${item.name}</strong><small>${item.summary}</small>`;
+      btn.className =
+        "filter-btn" + (state.category === item.id ? " is-active" : "");
+      btn.innerHTML = `<strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(
+        item.summary || ""
+      )}</small>`;
       btn.addEventListener("click", () => {
         state.category = item.id;
         renderTaxonomy();
@@ -87,17 +93,10 @@
     });
   }
 
-  function allLanguages() {
-    const set = new Set();
-    atlas.libraries.forEach((lib) => {
-      lib.languages.forEach((l) => set.add(l));
-    });
-    return ["all", ...[...set].sort((a, b) => a.localeCompare(b))];
-  }
-
   function renderLangChips() {
+    const langs = ["all", ...(api()?.languages?.() || [])];
     els.langChips.innerHTML = "";
-    allLanguages().forEach((lang) => {
+    langs.forEach((lang) => {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "chip" + (state.lang === lang ? " is-active" : "");
@@ -112,74 +111,76 @@
   }
 
   function filteredConcepts() {
-    return atlas.concepts.filter((c) => {
-      if (state.category !== "all" && c.category !== state.category) return false;
-      return matchesQuery([
-        c.name,
-        c.summary,
-        c.level,
-        categoryName[c.category],
-        ...(c.details || []),
-        ...(c.related || []),
-      ]);
-    });
+    const crypto = api();
+    if (crypto?.search && state.query.trim()) {
+      return crypto
+        .search(state.query, {
+          kind: "concept",
+          category: state.category === "all" ? undefined : state.category,
+          limit: 50,
+        })
+        .map((r) => crypto.getConcept(r.id))
+        .filter(Boolean);
+    }
+    let list = crypto?.listConcepts?.(
+      state.category === "all" ? {} : { category: state.category }
+    ) || atlasRaw()?.concepts || [];
+    if (state.query.trim() && !crypto?.search) {
+      const q = state.query.toLowerCase();
+      list = list.filter((c) =>
+        `${c.name} ${c.summary}`.toLowerCase().includes(q)
+      );
+    }
+    return list;
   }
 
   function filteredLibraries() {
-    return atlas.libraries.filter((lib) => {
-      if (state.lang !== "all" && !lib.languages.includes(state.lang)) return false;
-      // category filter for libs: map taxonomy loosely via provides/category keywords
-      if (state.category !== "all") {
-        const blob = normalize(
-          [lib.category, lib.summary, ...(lib.provides || []), lib.tier].join(" ")
-        );
-        const cat = normalize(state.category + " " + (categoryName[state.category] || ""));
-        const map = {
-          foundations: /platform|engine|modern|nguyen|nen/,
-          classical: /classical|co dien/,
-          symmetric: /aes|chacha|aead|secretbox|symmetric|doi xung/,
-          asymmetric: /rsa|ec|ed25519|x25519|sign|bat doi|asymmetric|hybrid/,
-          "hash-mac-kdf": /hash|hmac|argon|blake|sha|kdf|mac|bam/,
-          protocols: /tls|pgp|jose|signal|protocol|ssh|age/,
-          "post-quantum": /pqc|quantum|ml-kem|ml-dsa|oqs|post/,
-          encoding: /encode|base64|hex|morse/,
-        };
-        const re = map[state.category];
-        if (re && !re.test(blob) && !blob.includes(normalize(state.category))) {
-          // still allow if query empty and category is encoding-only miss — skip
-          if (!matchesQuery([lib.name]) || state.query) {
-            /* fall through to query check but require category hit */
-          }
-          if (!re.test(blob)) return false;
-        }
-      }
-      return matchesQuery([
-        lib.name,
-        lib.summary,
-        lib.tier,
-        lib.category,
-        lib.notes || "",
-        ...(lib.languages || []),
-        ...(lib.bindings || []),
-        ...(lib.provides || []),
-      ]);
-    });
+    const crypto = api();
+    if (crypto?.search && state.query.trim()) {
+      return crypto
+        .search(state.query, {
+          kind: "library",
+          language: state.lang === "all" ? undefined : state.lang,
+          category: state.category === "all" ? undefined : state.category,
+          limit: 50,
+        })
+        .map((r) => crypto.getLibrary(r.id))
+        .filter(Boolean);
+    }
+    const filter = {};
+    if (state.lang !== "all") filter.language = state.lang;
+    if (state.category !== "all") filter.category = state.category;
+    let list = crypto?.listLibraries?.(filter) || atlasRaw()?.libraries || [];
+    if (state.query.trim() && !crypto?.search) {
+      const q = state.query.toLowerCase();
+      list = list.filter((l) =>
+        `${l.name} ${l.summary}`.toLowerCase().includes(q)
+      );
+    }
+    return list;
   }
 
   function openConcept(c) {
+    const related = api()?.related?.(c.id);
     els.detailTitle.textContent = c.name;
     els.detailBody.innerHTML = `
       <div class="meta-row">
-        <span class="tag">${categoryName[c.category] || c.category}</span>
-        <span class="tag">${c.level}</span>
+        <span class="tag">${escapeHtml(categoryName(c.category))}</span>
+        <span class="tag">${escapeHtml(c.level || "")}</span>
       </div>
       <p>${escapeHtml(c.summary)}</p>
       <h3>Chi tiết</h3>
       <ul>${(c.details || []).map((d) => `<li>${escapeHtml(d)}</li>`).join("")}</ul>
       ${
-        c.related?.length
-          ? `<h3>Liên quan</h3><div class="meta-row">${c.related
-              .map((id) => `<span class="tag">${escapeHtml(id)}</span>`)
+        related?.graph?.length
+          ? `<h3>Graph neighbors</h3><div class="meta-row">${related.graph
+              .slice(0, 12)
+              .map(
+                (n) =>
+                  `<span class="tag">${escapeHtml(n.label)} · ${escapeHtml(
+                    n.relation
+                  )}</span>`
+              )
               .join("")}</div>`
           : ""
       }
@@ -188,43 +189,35 @@
   }
 
   function openLibrary(lib) {
+    const related = api()?.related?.(lib.id);
     els.detailTitle.textContent = lib.name;
     els.detailBody.innerHTML = `
       <div class="meta-row">
-        <span class="tag">${escapeHtml(lib.tier)}</span>
-        <span class="tag">${escapeHtml(lib.category)}</span>
-        ${(lib.languages || []).map((l) => `<span class="tag">${escapeHtml(l)}</span>`).join("")}
+        <span class="tag">${escapeHtml(lib.tier || "")}</span>
+        <span class="tag">${escapeHtml(lib.category || "")}</span>
+        ${(lib.languages || [])
+          .map((l) => `<span class="tag">${escapeHtml(l)}</span>`)
+          .join("")}
       </div>
       <p>${escapeHtml(lib.summary)}</p>
       <h3>Cung cấp</h3>
       <ul>${(lib.provides || []).map((p) => `<li>${escapeHtml(p)}</li>`).join("")}</ul>
-      ${
-        lib.bindings?.length
-          ? `<h3>Bindings / hệ sinh thái</h3><ul>${lib.bindings
-              .map((b) => `<li>${escapeHtml(b)}</li>`)
-              .join("")}</ul>`
-          : ""
-      }
       ${lib.notes ? `<h3>Ghi chú</h3><p>${escapeHtml(lib.notes)}</p>` : ""}
       ${
         lib.url
-          ? `<p><a href="${escapeAttr(lib.url)}" target="_blank" rel="noopener noreferrer">Tài liệu chính thức</a></p>`
+          ? `<p><a href="${escapeHtml(lib.url)}" target="_blank" rel="noopener noreferrer">Tài liệu</a></p>`
+          : ""
+      }
+      ${
+        related?.graph?.length
+          ? `<h3>Liên kết mạng</h3><div class="meta-row">${related.graph
+              .slice(0, 12)
+              .map((n) => `<span class="tag">${escapeHtml(n.label)}</span>`)
+              .join("")}</div>`
           : ""
       }
     `;
     els.dialog.showModal();
-  }
-
-  function escapeHtml(str) {
-    return String(str)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  }
-
-  function escapeAttr(str) {
-    return escapeHtml(str).replace(/'/g, "&#39;");
   }
 
   function renderConcepts() {
@@ -235,7 +228,9 @@
       btn.type = "button";
       btn.className = "atlas-card";
       btn.innerHTML = `
-        <span class="card-kicker">${escapeHtml(categoryName[c.category] || "")} · ${escapeHtml(c.level)}</span>
+        <span class="card-kicker">${escapeHtml(categoryName(c.category))} · ${escapeHtml(
+        c.level || ""
+      )}</span>
         <h3>${escapeHtml(c.name)}</h3>
         <p>${escapeHtml(c.summary)}</p>
       `;
@@ -253,7 +248,9 @@
       btn.type = "button";
       btn.className = "atlas-card";
       btn.innerHTML = `
-        <span class="card-kicker">${escapeHtml(lib.category)} · ${escapeHtml(lib.tier)}</span>
+        <span class="card-kicker">${escapeHtml(lib.category || "")} · ${escapeHtml(
+        lib.tier || ""
+      )}</span>
         <h3>${escapeHtml(lib.name)}</h3>
         <p>${escapeHtml(lib.summary)}</p>
         <div class="tags">${(lib.languages || [])
@@ -268,28 +265,50 @@
   }
 
   function renderGuide() {
+    const guide = atlasRaw()?.decisionGuide || [];
     els.guideList.innerHTML = "";
-    atlas.decisionGuide.forEach((g) => {
-      if (
-        !matchesQuery([g.need, g.pick]) &&
-        state.query.trim()
-      ) {
-        return;
+    guide.forEach((g) => {
+      if (state.query.trim()) {
+        const hit = api()?.search?.(state.query, { limit: 30 }) || [];
+        const blob = `${g.need} ${g.pick}`.toLowerCase();
+        if (
+          !blob.includes(state.query.toLowerCase()) &&
+          !hit.some((h) => blob.includes(h.name.toLowerCase()))
+        ) {
+          return;
+        }
       }
       const div = document.createElement("div");
       div.className = "guide-item";
-      div.innerHTML = `<strong>${escapeHtml(g.need)}</strong><span>${escapeHtml(g.pick)}</span>`;
+      div.innerHTML = `<strong>${escapeHtml(g.need)}</strong><span>${escapeHtml(
+        g.pick
+      )}</span>`;
       els.guideList.appendChild(div);
     });
-
-    els.cheatDo.innerHTML = atlas.cheatSheet.do
+    const sheet = api()?.cheatSheet?.() || atlasRaw()?.cheatSheet || { do: [], dont: [] };
+    els.cheatDo.innerHTML = sheet.do.map((x) => `<li>${escapeHtml(x)}</li>`).join("");
+    els.cheatDont.innerHTML = sheet.dont
       .map((x) => `<li>${escapeHtml(x)}</li>`)
       .join("");
-    els.cheatDont.innerHTML = atlas.cheatSheet.dont
-      .map((x) => `<li>${escapeHtml(x)}</li>`)
-      .join("");
-
     return els.guideList.children.length;
+  }
+
+  function renderApiPanel() {
+    const desc = api()?.describe?.();
+    if (els.apiEndpoints && desc) {
+      els.apiEndpoints.innerHTML = `
+        <h3 class="api-ep-title">Endpoints</h3>
+        <ul class="api-ep-list">
+          ${desc.endpoints
+            .map(
+              (e) =>
+                `<li><code>${escapeHtml(e.name)}</code> — ${escapeHtml(e.desc)}</li>`
+            )
+            .join("")}
+        </ul>
+      `;
+    }
+    return 1;
   }
 
   function render() {
@@ -297,22 +316,102 @@
     if (state.view === "concepts") count = renderConcepts();
     if (state.view === "libraries") count = renderLibraries();
     if (state.view === "guide") count = renderGuide();
-    els.empty.hidden = count > 0 || state.view === "guide";
-    if (state.view === "guide" && count === 0 && state.query.trim()) {
-      els.empty.hidden = false;
+    if (state.view === "api") count = renderApiPanel();
+    els.empty.hidden = count > 0 || state.view === "api" || state.view === "guide";
+  }
+
+  function runApi() {
+    const crypto = api();
+    if (!crypto) {
+      els.apiOutput.textContent = '{"error":"MaMoCrypto not ready"}';
+      return;
+    }
+    const method = els.apiMethod.value;
+    const a1 = els.apiArg1.value.trim();
+    const a2 = els.apiArg2.value.trim();
+    let result;
+    try {
+      switch (method) {
+        case "lookup":
+          result = crypto.lookup(a1);
+          break;
+        case "search":
+          result = crypto.search(a1, { limit: 12 });
+          break;
+        case "suggest":
+          result = crypto.suggest(a1);
+          break;
+        case "recommend":
+          result = crypto.recommend(a1);
+          break;
+        case "getLibrary":
+          result = crypto.getLibrary(a1);
+          break;
+        case "getConcept":
+          result = crypto.getConcept(a1);
+          break;
+        case "related":
+          result = crypto.related(a1);
+          break;
+        case "path":
+          result = crypto.path(a1, a2);
+          break;
+        case "stats":
+          result = crypto.stats();
+          break;
+        case "describe":
+          result = crypto.describe();
+          break;
+        default:
+          result = { error: "unknown method" };
+      }
+    } catch (err) {
+      result = { error: String(err.message || err) };
+    }
+    els.apiOutput.textContent = JSON.stringify(result, null, 2);
+  }
+
+  function runRecommend() {
+    const need = els.recommendInput?.value || "";
+    const result = api()?.recommend(need);
+    if (els.recommendOutput) {
+      els.recommendOutput.textContent = JSON.stringify(result, null, 2);
+    }
+  }
+
+  function bootUi() {
+    const raw = atlasRaw();
+    if (els.disclaimer) {
+      els.disclaimer.textContent =
+        raw?.meta?.disclaimer ||
+        "Thư viện giáo dục MaMoCrypto — ưu tiên thư viện đã kiểm chứng.";
+    }
+    renderTaxonomy();
+    renderLangChips();
+    render();
+    if (els.apiOutput && api()) {
+      els.apiOutput.textContent = JSON.stringify(api().stats(), null, 2);
     }
   }
 
   els.navBtns.forEach((btn) => {
     btn.addEventListener("click", () => switchView(btn.dataset.view));
   });
-
-  els.search.addEventListener("input", () => {
+  els.search?.addEventListener("input", () => {
     state.query = els.search.value;
     render();
   });
+  document.getElementById("btn-api-run")?.addEventListener("click", runApi);
+  document.getElementById("btn-recommend")?.addEventListener("click", runRecommend);
 
-  renderTaxonomy();
-  renderLangChips();
-  render();
+  // Wait for crypto bootstrap if needed
+  if (api()?.lookup) {
+    bootUi();
+  } else if (window.MaMoCryptoCore) {
+    window.MaMoCryptoCore.on("ready", bootUi);
+    // fallback timer
+    setTimeout(bootUi, 200);
+  } else {
+    bootUi();
+  }
 })();
