@@ -2,16 +2,18 @@
 <html lang="vi">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="description" content="Mã Mở — hệ thống giải mã Morse và Braille hỗ trợ người khiếm khuyết giao tiếp." />
-  <title>Mã Mở — Giải mã hỗ trợ người khiếm khuyết</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="description" content="Mã Mở — hỗ trợ giao tiếp cho người khiếm khuyết, gồm chế độ một công tắc cho người không vận động được." />
+  <title>Mã Mở — Hỗ trợ đặc biệt người khiếm khuyết</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
 </head>
-<body>
-  <a class="skip-link" href="#workspace">Bỏ qua đến khu vực làm việc</a>
+<body class="assist-ready">
+  <a class="skip-link" href="#special-panel">Bỏ qua đến chế độ đặc biệt</a>
+
+  <div class="a11y-live" id="a11y-live" aria-live="assertive" aria-atomic="true"></div>
 
   <header class="site-header">
     <div class="brand" aria-label="Mã Mở">
@@ -19,39 +21,99 @@
       <span class="brand-name">Mã Mở</span>
     </div>
     <nav class="site-nav" aria-label="Chế độ">
-      <button type="button" class="nav-btn is-active" data-mode="morse" aria-pressed="true">Morse</button>
-      <button type="button" class="nav-btn" data-mode="braille" aria-pressed="false">Braille</button>
+      <button type="button" class="nav-btn is-active" data-mode="special" aria-pressed="true">Đặc biệt</button>
       <button type="button" class="nav-btn" data-mode="phrases" aria-pressed="false">Câu nhanh</button>
-      <a class="nav-btn nav-link" href="atlas/index.html">Atlas mật mã</a>
-      <a class="nav-btn nav-link" href="mapper/index.html">Network Mapper</a>
+      <button type="button" class="nav-btn" data-mode="morse" aria-pressed="false">Morse</button>
+      <button type="button" class="nav-btn" data-mode="braille" aria-pressed="false">Braille</button>
+      <a class="nav-btn nav-link" href="atlas/index.html">Atlas</a>
+      <a class="nav-btn nav-link" href="mapper/index.html">Mapper</a>
     </nav>
   </header>
 
   <main>
-    <section class="hero" aria-labelledby="hero-title">
+    <section class="hero hero-compact" aria-labelledby="hero-title">
       <div class="hero-atmosphere" aria-hidden="true"></div>
       <div class="hero-content">
         <p class="brand-hero">Mã Mở</p>
-        <h1 id="hero-title">Giải mã để mọi người được nghe.</h1>
+        <h1 id="hero-title">Giao tiếp khi không thể cử động.</h1>
         <p class="hero-lead">
-          Hệ thống chuyển Morse và Braille thành lời nói, giúp người khiếm thị,
-          khiếm thính vận động hoặc khó nói giao tiếp rõ ràng hơn.
+          Chế độ đặc biệt: một công tắc + quét tự động + đọc to.
+          Space / Enter / chạm nút lớn để chọn khi khung sáng.
         </p>
         <div class="hero-actions">
-          <a class="btn btn-primary" href="#workspace">Bắt đầu giải mã</a>
-          <button type="button" class="btn btn-ghost" id="btn-demo-speak">Nghe giới thiệu</button>
+          <a class="btn btn-primary" href="#special-panel">Vào chế độ đặc biệt</a>
+          <button type="button" class="btn btn-ghost" id="btn-demo-speak">Nghe hướng dẫn</button>
         </div>
       </div>
     </section>
 
-    <section id="workspace" class="workspace" aria-labelledby="workspace-title">
+    <section id="workspace" class="workspace workspace-assist" aria-labelledby="workspace-title">
       <div class="workspace-head">
-        <h2 id="workspace-title">Không gian giải mã</h2>
-        <p class="workspace-lead">Chọn chế độ, nhập tín hiệu, đọc kết quả và phát âm.</p>
+        <h2 id="workspace-title">Hỗ trợ giao tiếp</h2>
+        <p class="workspace-lead" id="workspace-lead">
+          Dành cho người không / hạn chế khả năng hành động: chỉ cần một tín hiệu.
+        </p>
+      </div>
+
+      <!-- SPECIAL ACCESS -->
+      <div class="panel is-visible" id="special-panel" role="tabpanel" data-panel="special">
+        <div class="special-banner" role="status">
+          <strong>Chế độ một công tắc</strong>
+          <span>Quét sáng từng ô → bấm công tắc để nói câu đó. Không cần rê chuột chính xác.</span>
+        </div>
+
+        <div class="special-controls" aria-label="Tuỳ chọn hỗ trợ">
+          <label class="ctrl">
+            <span>Tốc độ quét</span>
+            <select id="scan-speed" aria-describedby="scan-speed-hint">
+              <option value="3500">Chậm (3.5s)</option>
+              <option value="2500" selected>Vừa (2.5s)</option>
+              <option value="1600">Nhanh (1.6s)</option>
+            </select>
+          </label>
+          <label class="ctrl check">
+            <input type="checkbox" id="scan-announce" checked />
+            <span>Đọc tên ô khi quét</span>
+          </label>
+          <label class="ctrl check">
+            <input type="checkbox" id="high-contrast" />
+            <span>Tương phản cao</span>
+          </label>
+          <label class="ctrl check">
+            <input type="checkbox" id="auto-scan" checked />
+            <span>Tự động quét</span>
+          </label>
+        </div>
+        <p class="hint" id="scan-speed-hint">Công tắc: phím Space, Enter, hoặc nút lớn phía dưới. Giữ lâu (&gt;0.4s) = gạch Morse.</p>
+
+        <div class="yesno-row" role="group" aria-label="Trả lời nhanh Có / Không">
+          <button type="button" class="scan-target yesno yes" data-scan-label="Có" data-phrase="Có">Có</button>
+          <button type="button" class="scan-target yesno no" data-scan-label="Không" data-phrase="Không">Không</button>
+          <button type="button" class="scan-target yesno help" data-scan-label="Cần giúp" data-phrase="Tôi cần giúp đỡ ngay">Cần giúp</button>
+        </div>
+
+        <div class="scan-board" id="scan-board" role="list" aria-label="Bảng câu quét tự động"></div>
+
+        <div class="special-extra">
+          <h3>Morse một công tắc</h3>
+          <p class="hint">Nhấn ngắn = chấm · Giữ lâu = gạch · Nghỉ = cách chữ · Nút giải mã đọc kết quả.</p>
+          <p class="morse-live" id="switch-morse-live" aria-live="polite">Morse: (trống)</p>
+          <div class="row-actions">
+            <button type="button" class="btn btn-secondary scan-target" id="btn-decode-switch-morse" data-scan-label="Giải mã Morse">Giải mã Morse</button>
+            <button type="button" class="btn btn-ghost scan-target" id="btn-clear-switch-morse" data-scan-label="Xóa Morse">Xóa Morse</button>
+            <button type="button" class="btn btn-ghost scan-target" id="btn-pause-scan" data-scan-label="Tạm dừng quét">Tạm dừng quét</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- PHRASES -->
+      <div class="panel" id="panel-phrases" role="tabpanel" data-panel="phrases" hidden>
+        <p class="hint phrases-intro">Chạm một câu để hiện trên kết quả và phát âm ngay.</p>
+        <div class="phrase-board" id="phrase-board" role="list"></div>
       </div>
 
       <!-- MORSE -->
-      <div class="panel is-visible" id="panel-morse" role="tabpanel" data-panel="morse">
+      <div class="panel" id="panel-morse" role="tabpanel" data-panel="morse" hidden>
         <div class="panel-grid">
           <div class="input-block">
             <label for="morse-input">Mã Morse</label>
@@ -121,54 +183,60 @@
         </div>
       </div>
 
-      <!-- PHRASES -->
-      <div class="panel" id="panel-phrases" role="tabpanel" data-panel="phrases" hidden>
-        <p class="hint phrases-intro">Chạm một câu để hiện trên kết quả và phát âm ngay.</p>
-        <div class="phrase-board" id="phrase-board" role="list"></div>
-      </div>
-
       <div class="result-block" aria-live="polite" aria-atomic="true">
         <div class="result-meta">
-          <h3>Kết quả</h3>
+          <h3>Kết quả / lời nói</h3>
           <span class="status-pill" id="status-pill">Sẵn sàng</span>
         </div>
-        <p class="result-text" id="result-text">Kết quả giải mã sẽ hiện ở đây.</p>
+        <p class="result-text" id="result-text">Chưa có câu nào được chọn.</p>
         <div class="row-actions">
-          <button type="button" class="btn btn-primary" id="btn-speak" disabled>Đọc to</button>
+          <button type="button" class="btn btn-primary" id="btn-speak" disabled>Đọc lại</button>
           <button type="button" class="btn btn-ghost" id="btn-copy" disabled>Sao chép</button>
-          <button type="button" class="btn btn-ghost" id="btn-stop-speak">Dừng</button>
+          <button type="button" class="btn btn-ghost" id="btn-stop-speak">Dừng đọc</button>
         </div>
       </div>
     </section>
 
     <section class="howto" aria-labelledby="howto-title">
-      <h2 id="howto-title">Dành cho ai?</h2>
+      <h2 id="howto-title">Tối ưu cho ai?</h2>
       <p class="howto-lead">
-        Một công cụ, ba cách mở lời khi giao tiếp thông thường bị hạn chế.
-        Cần bản đồ thư viện mật mã và kiến thức mã hoá/giải mã?
-        <a href="atlas/index.html">Mở Atlas mật mã học</a>.
+        Ưu tiên người <strong>không có khả năng hành động</strong> (liệt nặng, locked-in):
+        một công tắc + quét + TTS. Cũng hỗ trợ khiếm thị (Braille) và khó nói (câu nhanh).
       </p>
       <ul class="howto-list">
         <li>
-          <strong>Khiếm thị</strong>
-          <span>Nhập Braille, nghe kết quả bằng giọng nói.</span>
+          <strong>Không vận động</strong>
+          <span>Quét tự động + Space/Enter/nút lớn. Không cần chuột.</span>
         </li>
         <li>
-          <strong>Hạn chế vận động</strong>
-          <span>Gõ Morse bằng ít thao tác: chấm, gạch, cách chữ.</span>
+          <strong>Một cử động nhỏ</strong>
+          <span>Morse ngắn/dài trên cùng một công tắc.</span>
         </li>
         <li>
-          <strong>Khó nói</strong>
-          <span>Chọn câu nhanh và để máy đọc thay.</span>
+          <strong>Khó nói / khiếm thị</strong>
+          <span>Câu nhanh đọc to; Braille giải mã thành lời.</span>
         </li>
       </ul>
     </section>
   </main>
 
+  <!-- Giant switch dock — always reachable -->
+  <div class="switch-dock" role="region" aria-label="Công tắc hỗ trợ">
+    <button type="button" class="switch-btn" id="main-switch" aria-keyshortcuts="Space Enter">
+      <span class="switch-label">CÔNG TẮC</span>
+      <span class="switch-sub">Nhấn chọn · Giữ = gạch Morse</span>
+    </button>
+    <div class="dock-meta">
+      <span id="scan-indicator">Quét: tắt</span>
+      <button type="button" class="dock-mini" id="btn-toggle-scan">Bật/tắt quét</button>
+    </div>
+  </div>
+
   <footer class="site-footer">
-    <p><span class="brand-name">Mã Mở</span> — hỗ trợ giải mã Morse &amp; Braille cho người khiếm khuyết.</p>
+    <p><span class="brand-name">Mã Mở</span> — hỗ trợ đặc biệt cho người khiếm khuyết giao tiếp.</p>
   </footer>
 
   <script src="app.js"></script>
+  <script src="access.js"></script>
 </body>
 </html>

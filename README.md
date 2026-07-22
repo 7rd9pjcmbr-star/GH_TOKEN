@@ -1,9 +1,18 @@
 # Mã Mở
 
-Hệ thống kép:
+Hệ thống hỗ trợ giao tiếp + atlas mật mã:
 
-1. **Giải mã hỗ trợ** — Morse, Braille, câu nhanh + TTS cho người khiếm khuyết  
-2. **Atlas mật mã học** — bản đồ thư viện crypto và kiến thức mã hoá / giải mã
+1. **Chế độ đặc biệt** — một công tắc + quét tự động + TTS cho người không/hạn chế vận động  
+2. Câu nhanh · Morse · Braille  
+3. **Atlas mật mã** + **Super Icon Network Mapper**
+
+## Chế độ đặc biệt (ưu tiên)
+
+- Quét sáng từng câu (Có / Không / Cần giúp / nhu cầu cơ bản)
+- Công tắc: **Space**, **Enter**, hoặc **nút lớn** dưới màn hình
+- Nhấn ngắn = chọn câu đang sáng · Giữ lâu = gạch Morse
+- Tốc độ quét, đọc khi quét, tương phản cao
+- Morse một công tắc → giải mã → đọc to
 
 ## Chạy
 
@@ -11,24 +20,16 @@ Hệ thống kép:
 python3 -m http.server 8080
 ```
 
-- Trang hỗ trợ: http://localhost:8080/
-- Atlas mật mã: http://localhost:8080/atlas/
-- **Super Icon Network Mapper**: http://localhost:8080/mapper/
+- http://localhost:8080/ — hỗ trợ đặc biệt  
+- http://localhost:8080/atlas/ — atlas mật mã  
+- http://localhost:8080/mapper/ — network mapper  
 
 ## Cấu trúc
 
 | Đường dẫn | Mô tả |
 |-----------|--------|
-| `index.html` / `app.js` / `styles.css` | Công cụ Morse · Braille · câu nhanh |
-| `atlas/` | UI Atlas (kiến thức, thư viện, chọn nhanh) |
-| `mapper/` | Super Icon Mapper — sơ đồ network + tìm kiếm |
-| `data/crypto-atlas.js` | Dữ liệu thư viện + khái niệm |
-| `data/network-map.js` | Graph edges + icon map |
-| `docs/CRYPTO-ATLAS.md` | Bản tóm tắt markdown |
-
-## Atlas & Mapper
-
-- 20+ khái niệm · 27+ thư viện · decision guide
-- Network Mapper: icon node, pan/zoom, lọc loại, tìm kiếm toàn sơ đồ, cạnh quan hệ (cung cấp / phụ thuộc / ngôn ngữ)
-
-Tài liệu mang tính **giáo dục**; ưu tiên thư viện đã kiểm chứng, không kèm exploit.
+| `index.html` / `app.js` / `access.js` / `styles.css` | Module hỗ trợ + switch-scan |
+| `atlas/` | Kiến thức & thư viện crypto |
+| `mapper/` | Sơ đồ network icon |
+| `data/` | Atlas + graph data |
+| `docs/CRYPTO-ATLAS.md` | Tóm tắt markdown |

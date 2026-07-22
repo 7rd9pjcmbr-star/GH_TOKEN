@@ -62,7 +62,6 @@
     Object.entries(MORSE_TO_CHAR).map(([k, v]) => [v, k])
   );
 
-  // Grade-1 Braille (Unicode U+2800 block) for A–Z, 0–9, space, punctuation
   const BRAILLE_ALPHA = {
     a: "⠁",
     b: "⠃",
@@ -123,23 +122,30 @@
     Object.entries(BRAILLE_ALPHA).map(([ch, br]) => [br, ch])
   );
 
+  /** Ưu tiên câu khẩn + nhu cầu cơ bản cho người không hành động được */
   const PHRASES = [
-    "Xin chào",
-    "Cảm ơn",
     "Tôi cần giúp đỡ",
-    "Tôi đói",
-    "Tôi khát",
     "Tôi đau",
+    "Gọi người thân",
+    "Tôi khát",
+    "Tôi đói",
+    "Tôi mệt",
     "Đồng ý",
     "Không",
     "Xin chờ một chút",
-    "Gọi người thân",
+    "Xin chào",
+    "Cảm ơn",
     "Tôi ổn",
     "Xin lỗi",
+    "Tôi muốn nằm",
+    "Tôi muốn ngồi",
+    "Mở cửa sổ",
+    "Tắt đèn",
+    "Bật quạt",
   ];
 
   const el = {
-    navBtns: [...document.querySelectorAll(".nav-btn")],
+    navBtns: [...document.querySelectorAll(".nav-btn[data-mode]")],
     panels: [...document.querySelectorAll("[data-panel]")],
     morseInput: document.getElementById("morse-input"),
     textToMorse: document.getElementById("text-to-morse"),
@@ -152,21 +158,32 @@
     btnStop: document.getElementById("btn-stop-speak"),
     btnPlayMorse: document.getElementById("btn-play-morse"),
     phraseBoard: document.getElementById("phrase-board"),
+    scanBoard: document.getElementById("scan-board"),
     dots: [...document.querySelectorAll(".dot")],
+    a11yLive: document.getElementById("a11y-live"),
   };
 
   let lastMorseCode = "";
   let audioCtx = null;
+  let currentMode = "special";
 
-  function setStatus(text) {
-    el.statusPill.textContent = text;
+  function announce(text) {
+    if (!el.a11yLive) return;
+    el.a11yLive.textContent = "";
+    requestAnimationFrame(() => {
+      el.a11yLive.textContent = text;
+    });
   }
 
-  function setResult(text, status = "Đã giải mã") {
+  function setStatus(text) {
+    if (el.statusPill) el.statusPill.textContent = text;
+  }
+
+  function setResult(text, status = "Đã chọn") {
     const value = (text || "").trim() || "(trống)";
     el.resultText.textContent = value;
     setStatus(status);
-    const usable = value !== "(trống)";
+    const usable = value !== "(trống)" && value !== "Chưa có câu nào được chọn.";
     el.btnSpeak.disabled = !usable;
     el.btnCopy.disabled = !usable;
   }
@@ -302,7 +319,6 @@
   }
 
   function dotsToBrailleChar(activeDots) {
-    // Unicode Braille: bit0=dot1, bit1=dot2, bit2=dot3, bit3=dot4, bit4=dot5, bit5=dot6
     let mask = 0;
     for (const d of activeDots) {
       mask |= 1 << (d - 1);
@@ -320,18 +336,22 @@
     el.dots.forEach((btn) => btn.setAttribute("aria-pressed", "false"));
   }
 
-  function speak(text) {
-    if (!window.speechSynthesis || !text) return;
-    window.speechSynthesis.cancel();
+  function speak(text, opts = {}) {
+    if (!window.speechSynthesis || !text) return null;
+    if (!opts.queue) window.speechSynthesis.cancel();
     const utter = new SpeechSynthesisUtterance(text);
     utter.lang = "vi-VN";
-    utter.rate = 0.95;
+    utter.rate = opts.rate != null ? opts.rate : 0.95;
     const voices = window.speechSynthesis.getVoices();
     const vi = voices.find((v) => v.lang.toLowerCase().startsWith("vi"));
     if (vi) utter.voice = vi;
     window.speechSynthesis.speak(utter);
-    setStatus("Đang đọc…");
-    utter.onend = () => setStatus("Đã đọc xong");
+    if (!opts.quietStatus) setStatus("Đang đọc…");
+    utter.onend = () => {
+      if (!opts.quietStatus) setStatus("Đã đọc xong");
+      if (typeof opts.onend === "function") opts.onend();
+    };
+    return utter;
   }
 
   function ensureAudio() {
@@ -353,11 +373,15 @@
     gain.connect(ctx.destination);
     const now = ctx.currentTime;
     gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.2, now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.18, now + 0.01);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + durationMs / 1000);
     osc.start(now);
     osc.stop(now + durationMs / 1000 + 0.02);
     return durationMs + 40;
+  }
+
+  function blip(freq = 520) {
+    tone(55, freq);
   }
 
   async function playMorseAudio(code) {
@@ -384,6 +408,7 @@
   }
 
   function switchMode(mode) {
+    currentMode = mode;
     el.navBtns.forEach((btn) => {
       const active = btn.dataset.mode === mode;
       btn.classList.toggle("is-active", active);
@@ -394,16 +419,51 @@
       panel.hidden = !match;
       panel.classList.toggle("is-visible", match);
     });
+    document.body.classList.toggle("mode-special", mode === "special");
+    document.dispatchEvent(
+      new CustomEvent("mamo:mode", { detail: { mode } })
+    );
   }
 
   function appendMorse(token) {
     const cur = el.morseInput.value;
-    if (!cur || /[\s/]$/.test(cur)) {
-      el.morseInput.value = cur + token;
-    } else {
-      el.morseInput.value = cur + token;
+    el.morseInput.value = cur + token;
+  }
+
+  function sayPhrase(phrase) {
+    setResult(phrase, "Đã nói");
+    announce(phrase);
+    speak(phrase);
+  }
+
+  function buildPhraseBoards() {
+    if (el.phraseBoard) {
+      el.phraseBoard.innerHTML = "";
+      PHRASES.forEach((phrase) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "phrase-btn";
+        btn.setAttribute("role", "listitem");
+        btn.textContent = phrase;
+        btn.addEventListener("click", () => sayPhrase(phrase));
+        el.phraseBoard.appendChild(btn);
+      });
     }
-    el.morseInput.focus();
+
+    if (el.scanBoard) {
+      el.scanBoard.innerHTML = "";
+      PHRASES.forEach((phrase) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "scan-target phrase-scan";
+        btn.setAttribute("role", "listitem");
+        btn.dataset.scanLabel = phrase;
+        btn.dataset.phrase = phrase;
+        btn.textContent = phrase;
+        btn.addEventListener("click", () => sayPhrase(phrase));
+        el.scanBoard.appendChild(btn);
+      });
+    }
   }
 
   // --- Events ---
@@ -411,12 +471,23 @@
     btn.addEventListener("click", () => switchMode(btn.dataset.mode));
   });
 
-  document.getElementById("btn-decode-morse").addEventListener("click", () => {
-    const decoded = decodeMorse(el.morseInput.value);
-    setResult(decoded || "", decoded ? "Morse → chữ" : "Không có dữ liệu");
+  document.querySelectorAll(".yesno").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const phrase = btn.dataset.phrase;
+      if (phrase) sayPhrase(phrase);
+    });
   });
 
-  document.getElementById("btn-encode-morse").addEventListener("click", () => {
+  const decodeMorseBtn = document.getElementById("btn-decode-morse");
+  if (decodeMorseBtn) {
+    decodeMorseBtn.addEventListener("click", () => {
+      const decoded = decodeMorse(el.morseInput.value);
+      setResult(decoded || "", decoded ? "Morse → chữ" : "Không có dữ liệu");
+      if (decoded) speak(decoded);
+    });
+  }
+
+  document.getElementById("btn-encode-morse")?.addEventListener("click", () => {
     const encoded = encodeMorse(el.textToMorse.value);
     el.morseInput.value = encoded;
     lastMorseCode = encoded;
@@ -424,50 +495,51 @@
     setResult(encoded, "Chữ → Morse");
   });
 
-  document.getElementById("btn-clear-morse").addEventListener("click", () => {
+  document.getElementById("btn-clear-morse")?.addEventListener("click", () => {
     el.morseInput.value = "";
     el.textToMorse.value = "";
     el.btnPlayMorse.disabled = true;
-    setResult("Kết quả giải mã sẽ hiện ở đây.", "Sẵn sàng");
+    setResult("Chưa có câu nào được chọn.", "Sẵn sàng");
     el.btnSpeak.disabled = true;
     el.btnCopy.disabled = true;
   });
 
-  document.getElementById("tap-dot").addEventListener("click", () => appendMorse("."));
-  document.getElementById("tap-dash").addEventListener("click", () => appendMorse("-"));
-  document.getElementById("tap-letter").addEventListener("click", () => {
+  document.getElementById("tap-dot")?.addEventListener("click", () => appendMorse("."));
+  document.getElementById("tap-dash")?.addEventListener("click", () => appendMorse("-"));
+  document.getElementById("tap-letter")?.addEventListener("click", () => {
     const v = el.morseInput.value;
     if (v && !/\s$/.test(v)) el.morseInput.value = v + " ";
   });
-  document.getElementById("tap-word").addEventListener("click", () => {
+  document.getElementById("tap-word")?.addEventListener("click", () => {
     const v = el.morseInput.value.trimEnd();
     el.morseInput.value = v ? `${v} / ` : "";
   });
-  document.getElementById("tap-back").addEventListener("click", () => {
+  document.getElementById("tap-back")?.addEventListener("click", () => {
     el.morseInput.value = el.morseInput.value.slice(0, -1);
   });
 
-  document.getElementById("btn-play-morse").addEventListener("click", () => {
+  document.getElementById("btn-play-morse")?.addEventListener("click", () => {
     const code = el.morseInput.value.trim() || lastMorseCode;
     if (code) playMorseAudio(code);
   });
 
-  document.getElementById("btn-decode-braille").addEventListener("click", () => {
+  document.getElementById("btn-decode-braille")?.addEventListener("click", () => {
     const decoded = decodeBraille(el.brailleInput.value);
     setResult(decoded || "", decoded ? "Braille → chữ" : "Không có dữ liệu");
+    if (decoded) speak(decoded);
   });
 
-  document.getElementById("btn-encode-braille").addEventListener("click", () => {
+  document.getElementById("btn-encode-braille")?.addEventListener("click", () => {
     const encoded = encodeBraille(el.textToBraille.value);
     el.brailleInput.value = encoded;
     setResult(encoded, "Chữ → Braille");
   });
 
-  document.getElementById("btn-clear-braille").addEventListener("click", () => {
+  document.getElementById("btn-clear-braille")?.addEventListener("click", () => {
     el.brailleInput.value = "";
     el.textToBraille.value = "";
     clearDots();
-    setResult("Kết quả giải mã sẽ hiện ở đây.", "Sẵn sàng");
+    setResult("Chưa có câu nào được chọn.", "Sẵn sàng");
     el.btnSpeak.disabled = true;
     el.btnCopy.disabled = true;
   });
@@ -479,38 +551,24 @@
     });
   });
 
-  document.getElementById("btn-commit-braille").addEventListener("click", () => {
-    const cell = dotsToBrailleChar(getActiveDots());
-    el.brailleInput.value += cell;
+  document.getElementById("btn-commit-braille")?.addEventListener("click", () => {
+    el.brailleInput.value += dotsToBrailleChar(getActiveDots());
     clearDots();
   });
 
-  document.getElementById("btn-space-braille").addEventListener("click", () => {
+  document.getElementById("btn-space-braille")?.addEventListener("click", () => {
     el.brailleInput.value += "⠀";
   });
 
-  document.getElementById("btn-back-braille").addEventListener("click", () => {
+  document.getElementById("btn-back-braille")?.addEventListener("click", () => {
     const chars = [...el.brailleInput.value];
     chars.pop();
     el.brailleInput.value = chars.join("");
   });
 
-  PHRASES.forEach((phrase) => {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "phrase-btn";
-    btn.setAttribute("role", "listitem");
-    btn.textContent = phrase;
-    btn.addEventListener("click", () => {
-      setResult(phrase, "Câu nhanh");
-      speak(phrase);
-    });
-    el.phraseBoard.appendChild(btn);
-  });
-
   el.btnSpeak.addEventListener("click", () => {
     const text = el.resultText.textContent;
-    if (text && text !== "(trống)" && text !== "Kết quả giải mã sẽ hiện ở đây.") {
+    if (text && text !== "(trống)" && text !== "Chưa có câu nào được chọn.") {
       speak(text);
     }
   });
@@ -530,18 +588,44 @@
     }
   });
 
-  document.getElementById("btn-demo-speak").addEventListener("click", () => {
+  document.getElementById("btn-demo-speak")?.addEventListener("click", () => {
     speak(
-      "Xin chào. Đây là Mã Mở, hệ thống giải mã Morse và Braille hỗ trợ người khiếm khuyết giao tiếp."
+      "Xin chào. Đây là chế độ đặc biệt của Mã Mở. Máy sẽ quét từng câu. Khi câu bạn muốn sáng lên, hãy nhấn công tắc Space, Enter, hoặc nút lớn phía dưới để đọc to câu đó."
     );
   });
 
-  // Prefill helpful demos
-  el.morseInput.value = ".... . .-.. .-.. --- / .-- --- .-. .-.. -..";
-  el.textToBraille.value = "xin chao";
+  buildPhraseBoards();
+
+  if (el.morseInput) {
+    el.morseInput.value = "";
+  }
+  if (el.textToBraille) {
+    el.textToBraille.value = "xin chao";
+  }
+
+  document.body.classList.add("mode-special");
 
   if (window.speechSynthesis) {
     window.speechSynthesis.getVoices();
     window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
   }
+
+  window.MaMo = {
+    PHRASES,
+    MORSE_TO_CHAR,
+    speak,
+    setResult,
+    setStatus,
+    announce,
+    decodeMorse,
+    encodeMorse,
+    blip,
+    tone,
+    ensureAudio,
+    sayPhrase,
+    switchMode,
+    getMode: () => currentMode,
+    getMorseInput: () => el.morseInput,
+    appendMorse,
+  };
 })();
