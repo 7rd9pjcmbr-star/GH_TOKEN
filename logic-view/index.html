@@ -131,6 +131,17 @@
       </article>
 
       <article class="logic-card wide">
+        <h2>Đường ống dữ liệu (pipe)</h2>
+        <p class="hint">Đấu nối module → channel → module. Chạy query để xem pipeTrace realtime.</p>
+        <div class="logic-run">
+          <button type="button" class="btn btn-secondary" id="btn-pipe-map">Xem pipeMap</button>
+          <button type="button" class="btn btn-secondary" id="btn-pipe-trace">pipeTrace (ô query)</button>
+        </div>
+        <ol class="pipe-flow" id="pipe-flow" aria-label="Luồng pipe"></ol>
+        <pre class="logic-out" id="pipe-output">{}</pre>
+      </article>
+
+      <article class="logic-card wide">
         <h2>Thử logic</h2>
         <div class="logic-run">
           <input id="logic-input" type="search" placeholder="vd: password, browser, path tới thư viện, libsodium…" value="password hashing" />

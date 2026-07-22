@@ -156,9 +156,17 @@
       reason: result.reason,
       primaryOwner: result.meta?.primaryOwner,
       formatId: result.meta?.formatId || null,
+      translation: result.meta?.translation
+        ? {
+            ok: result.meta.translation.ok,
+            method: result.meta.translation.method,
+            plaintext: result.meta.translation.plaintext,
+          }
+        : null,
       optimized: result.meta?.optimized || null,
       optPlan: result.meta?.optPlan || null,
       stageTiming: result.meta?.stageTiming || null,
+      pipeSummary: result.meta?.pipeSummary || [],
       iconFeedback: result.meta?.iconFeedback || icons?.feedback || null,
       iconChant: icons?.callChant || null,
       iconsCalled: (icons?.uniqueIcons || []).map((name) => {
@@ -175,6 +183,7 @@
         category: r.category,
         commercial: r.commercial,
         iconCall: r.iconCall,
+        translation: r.translation,
         summary: r.summary,
       })),
       paths: (result.paths || []).slice(0, 6).map((p) => ({
@@ -192,12 +201,50 @@
             format: result.meta.enrichment.format?.primary || null,
             formatCandidates: result.meta.enrichment.format?.candidateCount || 0,
             encodeNote: result.meta.enrichment.encodeNote,
+            translationOk: result.meta.enrichment.translation?.ok || null,
           }
         : null,
       log: result.meta?.log || [],
     };
     out.textContent = JSON.stringify(view, null, 2);
     renderIconStrip(icons);
+    renderPipe(result.meta?.pipe || [], result.meta?.pipeSummary || []);
+  }
+
+  function renderPipe(pipe, summary) {
+    const flow = document.getElementById("pipe-flow");
+    const pout = document.getElementById("pipe-output");
+    if (flow) {
+      const links = pipe?.length
+        ? pipe
+        : (summary || []).map((s) => {
+            const m = String(s).match(/^([^→]+)→([^:]+):(.+)$/);
+            return m
+              ? { from: m[1], to: m[2], channel: m[3] }
+              : { from: "?", to: "?", channel: s };
+          });
+      flow.innerHTML = links.length
+        ? links
+            .map(
+              (p) =>
+                `<li><code>${escapeHtml(p.from)}</code> → <code>${escapeHtml(
+                  p.to
+                )}</code> <span class="pipe-ch">${escapeHtml(p.channel)}</span></li>`
+            )
+            .join("")
+        : `<li class="hint">Chưa có pipe — chạy query.</li>`;
+    }
+    if (pout && pipe) {
+      pout.textContent = JSON.stringify(
+        {
+          links: pipe.length,
+          summary: summary || pipe.map((p) => `${p.from}→${p.to}:${p.channel}`),
+          sample: pipe.slice(0, 12),
+        },
+        null,
+        2
+      );
+    }
   }
 
   function renderIconStrip(icons) {
@@ -364,6 +411,27 @@
   });
   document.getElementById("btn-logic-run")?.addEventListener("click", run);
   document.getElementById("btn-format-analyze")?.addEventListener("click", runFormat);
+  document.getElementById("btn-pipe-map")?.addEventListener("click", () => {
+    const map = window.MaMoLogic?.pipeMap?.() || {};
+    const out = document.getElementById("pipe-output");
+    if (out) out.textContent = JSON.stringify(map, null, 2);
+    renderPipe(
+      (map.links || []).map((l) => ({
+        from: l.from,
+        to: l.to,
+        channel: l.channel,
+      })),
+      (map.links || []).map((l) => `${l.from}→${l.to}:${l.channel}`)
+    );
+  });
+  document.getElementById("btn-pipe-trace")?.addEventListener("click", () => {
+    const q = document.getElementById("logic-input")?.value || "";
+    window.MaMoLogic?.optimize?.invalidate?.();
+    const trace = window.MaMoLogic?.pipeTrace?.(q);
+    const out = document.getElementById("pipe-output");
+    if (out) out.textContent = JSON.stringify(trace, null, 2);
+    renderPipe(trace?.pipe || [], trace?.pipeSummary || []);
+  });
   document.getElementById("btn-icon-map")?.addEventListener("click", () => {
     const out = document.getElementById("icon-map-output");
     if (!window.MaMoLogic?.mapIconLibraries) {

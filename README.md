@@ -16,7 +16,9 @@ UI → js/logic (schema/analyze/rules/…) → MaMoCrypto / A11y → Data
 - `/lab/` **sandbox tách biệt** — phân tích tĩnh mã đáng ngờ + kiểm thử bảo mật
 
 ```js
-MaMoLogic.query("password") // meta.iconFeedback · meta.optimized · optPlan
+MaMoLogic.query("password") // meta.iconFeedback · meta.optimized · optPlan · meta.pipe
+MaMoLogic.pipeTrace(text)   // đường ống module→module realtime
+MaMoLogic.pipeMap()         // bản đồ đấu nối tĩnh
 MaMoLogic.analyze(text)     // panorama + analysis + translation (+ icons)
 MaMoLogic.panorama(text)    // toàn cảnh từ config
 MaMoLogic.translate(text)   // thông dịch encoding

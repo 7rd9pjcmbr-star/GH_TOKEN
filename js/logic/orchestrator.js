@@ -9,7 +9,7 @@
   }
 
   const Orchestrator = {
-    version: "1.2.0",
+    version: "1.3.0",
 
     query(input) {
       return M("router").handle(input);
@@ -71,6 +71,27 @@
         limit: 1,
       });
       return report?.translation || null;
+    },
+
+    /** Bản đồ đấu nối đường ống module (tĩnh) */
+    pipeMap() {
+      return M("pipeline")?.describePipe?.() || M("pipeline")?.pipeMap || [];
+    },
+
+    /** Chạy query và trả về chỉ đường ống dữ liệu */
+    pipeTrace(input) {
+      const decision = Orchestrator.query(input);
+      return {
+        ok: decision?.ok !== false,
+        action: decision?.action,
+        primaryOwner: decision?.meta?.primaryOwner,
+        formatId: decision?.meta?.formatId,
+        translation: decision?.meta?.translation || null,
+        pipe: decision?.meta?.pipe || [],
+        pipeSummary: decision?.meta?.pipeSummary || [],
+        stages: (decision?.meta?.log || []).map((l) => l.stage),
+        timing: decision?.meta?.stageTiming || null,
+      };
     },
 
     classifyFormat(input) {
@@ -157,11 +178,12 @@
         flow: [
           "validate(+opt plan) → analyze? → resolve → classify(+refine plan) → rules → search → paths? → icons? → finalize(rank/dedupe)",
           "optimize: soft-screen (sàng lọc, không loại bỏ) · LRU · path memo · rank",
+          "pipe: đấu nối dữ liệu module→module (meta.pipe / pipeTrace)",
           "icons: mapper gọi tên quân đội icon trên dòng chảy dữ liệu",
           "first-wins trên domain owns → không dẫm chân",
         ],
         api: [
-          "query / decide",
+          "query / decide / pipeTrace / pipeMap",
           "analyze (panorama + analysis + translation) / panorama / translate",
           "classifyFormat",
           "callIcons / mapIconLibraries / iconCoverage",
@@ -191,6 +213,8 @@
         panorama: Orchestrator.panorama,
         translate: Orchestrator.translate,
         classifyFormat: Orchestrator.classifyFormat,
+        pipeMap: Orchestrator.pipeMap,
+        pipeTrace: Orchestrator.pipeTrace,
         callIcons: Orchestrator.callIcons,
         iconArmy: Orchestrator.iconArmy,
         mapIconLibraries: Orchestrator.mapIconLibraries,

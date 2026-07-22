@@ -341,3 +341,33 @@
     grid-template-columns: 1fr;
   }
 }
+
+.pipe-flow {
+  list-style: none;
+  margin: 0.75rem 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+  max-height: 14rem;
+  overflow: auto;
+  font-size: 0.85rem;
+}
+
+.pipe-flow li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.5rem;
+  align-items: baseline;
+  padding: 0.3rem 0.45rem;
+  background: rgba(12, 42, 46, 0.05);
+  border-left: 3px solid rgba(31, 111, 106, 0.55);
+}
+
+.pipe-flow .pipe-ch {
+  opacity: 0.75;
+  font-size: 0.78rem;
+}
+
+.pipe-flow code {
+  font-size: 0.8rem;
+}
