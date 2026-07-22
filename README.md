@@ -13,6 +13,7 @@ python3 -m http.server 8080
 
 - Trang hỗ trợ: http://localhost:8080/
 - Atlas mật mã: http://localhost:8080/atlas/
+- **Super Icon Network Mapper**: http://localhost:8080/mapper/
 
 ## Cấu trúc
 
@@ -20,13 +21,14 @@ python3 -m http.server 8080
 |-----------|--------|
 | `index.html` / `app.js` / `styles.css` | Công cụ Morse · Braille · câu nhanh |
 | `atlas/` | UI Atlas (kiến thức, thư viện, chọn nhanh) |
+| `mapper/` | Super Icon Mapper — sơ đồ network + tìm kiếm |
 | `data/crypto-atlas.js` | Dữ liệu thư viện + khái niệm |
+| `data/network-map.js` | Graph edges + icon map |
 | `docs/CRYPTO-ATLAS.md` | Bản tóm tắt markdown |
 
-## Atlas gồm
+## Atlas & Mapper
 
-- 20+ khái niệm (đối xứng, bất đối xứng, hash/KDF, TLS, PQC…)
-- 25+ thư viện (OpenSSL, libsodium, WebCrypto, pyca, Go/Rust/Java/.NET, liboqs…)
-- Decision guide + checklist nên / không nên
+- 20+ khái niệm · 27+ thư viện · decision guide
+- Network Mapper: icon node, pan/zoom, lọc loại, tìm kiếm toàn sơ đồ, cạnh quan hệ (cung cấp / phụ thuộc / ngôn ngữ)
 
 Tài liệu mang tính **giáo dục**; ưu tiên thư viện đã kiểm chứng, không kèm exploit.
