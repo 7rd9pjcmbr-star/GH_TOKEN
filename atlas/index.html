@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Atlas mật mã học — bản đồ thư viện và kiến thức mã hoá / giải mã." />
+  <title>Atlas mật mã — Mã Mở</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="atlas.css" />
+</head>
+<body class="atlas-page">
+  <a class="skip-link" href="#atlas-main">Bỏ qua đến nội dung</a>
+
+  <header class="site-header">
+    <a class="brand" href="../index.html" aria-label="Mã Mở — về trang chủ">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">Mã Mở</span>
+    </a>
+    <nav class="site-nav" aria-label="Chuyên mục atlas">
+      <button type="button" class="nav-btn is-active" data-view="concepts" aria-pressed="true">Kiến thức</button>
+      <button type="button" class="nav-btn" data-view="libraries" aria-pressed="false">Thư viện</button>
+      <button type="button" class="nav-btn" data-view="guide" aria-pressed="false">Chọn nhanh</button>
+      <a class="nav-btn nav-link" href="../index.html">Giải mã hỗ trợ</a>
+    </nav>
+  </header>
+
+  <main id="atlas-main">
+    <section class="atlas-hero">
+      <div class="atlas-hero-bg" aria-hidden="true"></div>
+      <div class="atlas-hero-inner">
+        <p class="brand-hero">Atlas</p>
+        <h1>Bản đồ mật mã học</h1>
+        <p class="hero-lead">
+          Thu thập kiến thức mã hoá / giải mã và ánh xạ thư viện theo ngôn ngữ —
+          từ nguyên thuỷ cổ điển đến hậu lượng tử.
+        </p>
+        <label class="search-wrap" for="atlas-search">
+          <span class="visually-hidden">Tìm kiếm</span>
+          <input id="atlas-search" type="search" placeholder="Tìm AES, libsodium, Argon2, TLS…" autocomplete="off" />
+        </label>
+      </div>
+    </section>
+
+    <section class="atlas-shell">
+      <aside class="atlas-filters" aria-label="Lọc theo nhóm">
+        <h2 class="filters-title">Phân loại</h2>
+        <div id="taxonomy-list" class="filter-list"></div>
+        <p class="atlas-disclaimer" id="atlas-disclaimer"></p>
+      </aside>
+
+      <div class="atlas-content">
+        <div class="view is-visible" id="view-concepts" data-view-panel="concepts">
+          <div class="view-head">
+            <h2>Kiến thức mã hoá &amp; giải mã</h2>
+            <p class="hint">Khái niệm theo tầng: nền tảng → đối xứng / bất đối xứng → giao thức → PQC.</p>
+          </div>
+          <div id="concepts-grid" class="card-grid"></div>
+        </div>
+
+        <div class="view" id="view-libraries" data-view-panel="libraries" hidden>
+          <div class="view-head">
+            <h2>Bản đồ thư viện mật mã</h2>
+            <p class="hint">Engine, API hiện đại, stdlib ngôn ngữ, embedded, PQC và công cụ.</p>
+          </div>
+          <div class="lang-chips" id="lang-chips" role="group" aria-label="Lọc ngôn ngữ"></div>
+          <div id="libraries-grid" class="card-grid"></div>
+        </div>
+
+        <div class="view" id="view-guide" data-view-panel="guide" hidden>
+          <div class="view-head">
+            <h2>Chọn thư viện theo nhu cầu</h2>
+            <p class="hint">Gợi ý ngắn — luôn kiểm tra tài liệu và audit trước khi đưa vào sản xuất.</p>
+          </div>
+          <div id="guide-list" class="guide-list"></div>
+          <div class="cheat-grid">
+            <div class="cheat-block do">
+              <h3>Nên</h3>
+              <ul id="cheat-do"></ul>
+            </div>
+            <div class="cheat-block dont">
+              <h3>Không nên</h3>
+              <ul id="cheat-dont"></ul>
+            </div>
+          </div>
+        </div>
+
+        <p class="empty-state" id="empty-state" hidden>Không có mục khớp bộ lọc.</p>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="detail-dialog" class="detail-dialog">
+    <form method="dialog" class="detail-form">
+      <header class="detail-head">
+        <h2 id="detail-title"></h2>
+        <button type="submit" class="btn btn-ghost detail-close" value="close" aria-label="Đóng">Đóng</button>
+      </header>
+      <div id="detail-body" class="detail-body"></div>
+    </form>
+  </dialog>
+
+  <footer class="site-footer">
+    <p><span class="brand-name">Mã Mở</span> Atlas — tham chiếu giáo dục mật mã học.</p>
+  </footer>
+
+  <script src="../data/crypto-atlas.js"></script>
+  <script src="atlas.js"></script>
+</body>
+</html>

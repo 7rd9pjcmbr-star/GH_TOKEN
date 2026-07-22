@@ -1,33 +1,32 @@
-# Mã Mở — Hệ thống giải mã hỗ trợ người khiếm khuyết
+# Mã Mở
 
-Ứng dụng web hỗ trợ giao tiếp cho người khiếm thị, hạn chế vận động, hoặc khó nói.
+Hệ thống kép:
 
-## Tính năng
+1. **Giải mã hỗ trợ** — Morse, Braille, câu nhanh + TTS cho người khiếm khuyết  
+2. **Atlas mật mã học** — bản đồ thư viện crypto và kiến thức mã hoá / giải mã
 
-- **Morse**: giải mã / mã hóa, bàn phím chấm–gạch, phát âm thanh Morse
-- **Braille**: giải mã / mã hóa grade 1, bàn phím 6 điểm
-- **Câu nhanh**: bảng câu giao tiếp thường dùng + đọc to (TTS tiếng Việt)
-- Giao diện lớn, có skip-link, `aria-live`, và tôn trọng `prefers-reduced-motion`
-
-## Chạy locally
-
-Mở `index.html` trong trình duyệt, hoặc:
+## Chạy
 
 ```bash
 python3 -m http.server 8080
 ```
 
-Sau đó vào `http://localhost:8080`.
+- Trang hỗ trợ: http://localhost:8080/
+- Atlas mật mã: http://localhost:8080/atlas/
 
 ## Cấu trúc
 
-| File | Mô tả |
-|------|--------|
-| `index.html` | Giao diện chính |
-| `styles.css` | Giao diện & accessibility |
-| `app.js` | Logic Morse, Braille, TTS |
+| Đường dẫn | Mô tả |
+|-----------|--------|
+| `index.html` / `app.js` / `styles.css` | Công cụ Morse · Braille · câu nhanh |
+| `atlas/` | UI Atlas (kiến thức, thư viện, chọn nhanh) |
+| `data/crypto-atlas.js` | Dữ liệu thư viện + khái niệm |
+| `docs/CRYPTO-ATLAS.md` | Bản tóm tắt markdown |
 
-## Ghi chú
+## Atlas gồm
 
-- TTS dùng Web Speech API (`vi-VN` nếu trình duyệt có giọng Việt).
-- Chữ có dấu được bỏ dấu trước khi mã hóa Morse/Braille Latin grade 1.
+- 20+ khái niệm (đối xứng, bất đối xứng, hash/KDF, TLS, PQC…)
+- 25+ thư viện (OpenSSL, libsodium, WebCrypto, pyca, Go/Rust/Java/.NET, liboqs…)
+- Decision guide + checklist nên / không nên
+
+Tài liệu mang tính **giáo dục**; ưu tiên thư viện đã kiểm chứng, không kèm exploit.
