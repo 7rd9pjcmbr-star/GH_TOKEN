@@ -64,6 +64,10 @@
 
         <div class="special-controls" aria-label="Tuỳ chọn hỗ trợ">
           <label class="ctrl">
+            <span>Hồ sơ hỗ trợ</span>
+            <select id="profile-select" aria-describedby="profile-summary"></select>
+          </label>
+          <label class="ctrl">
             <span>Tốc độ quét</span>
             <select id="scan-speed" aria-describedby="scan-speed-hint">
               <option value="3500">Chậm (3.5s)</option>
@@ -84,7 +88,15 @@
             <span>Tự động quét</span>
           </label>
         </div>
+        <p class="hint" id="profile-summary">Chọn hồ sơ phù hợp nhu cầu vận động / thị giác / giao tiếp.</p>
         <p class="hint" id="scan-speed-hint">Công tắc: phím Space, Enter, hoặc nút lớn phía dưới. Giữ lâu (&gt;0.4s) = gạch Morse.</p>
+
+        <details class="arch-panel">
+          <summary>Cấu trúc module accessibility <span id="a11y-arch-badge" class="arch-badge">…</span></summary>
+          <p class="hint">Kiến trúc tách module: core → store/speech/switch/scan/phrases/morse/braille/profiles/shell.</p>
+          <ul id="module-map-list" class="module-map-list"></ul>
+          <p class="hint"><a href="docs/A11Y-ARCHITECTURE.md">Xem tài liệu kiến trúc</a></p>
+        </details>
 
         <div class="yesno-row" role="group" aria-label="Trả lời nhanh Có / Không">
           <button type="button" class="scan-target yesno yes" data-scan-label="Có" data-phrase="Có">Có</button>
@@ -99,8 +111,8 @@
           <p class="hint">Nhấn ngắn = chấm · Giữ lâu = gạch · Nghỉ = cách chữ · Nút giải mã đọc kết quả.</p>
           <p class="morse-live" id="switch-morse-live" aria-live="polite">Morse: (trống)</p>
           <div class="row-actions">
-            <button type="button" class="btn btn-secondary scan-target" id="btn-decode-switch-morse" data-scan-label="Giải mã Morse">Giải mã Morse</button>
-            <button type="button" class="btn btn-ghost scan-target" id="btn-clear-switch-morse" data-scan-label="Xóa Morse">Xóa Morse</button>
+            <button type="button" class="btn btn-secondary scan-target" id="btn-decode-switch-morse" data-scan-label="Giải mã Morse" data-action="decode-morse">Giải mã Morse</button>
+            <button type="button" class="btn btn-ghost scan-target" id="btn-clear-switch-morse" data-scan-label="Xóa Morse" data-action="clear-morse">Xóa Morse</button>
             <button type="button" class="btn btn-ghost scan-target" id="btn-pause-scan" data-scan-label="Tạm dừng quét">Tạm dừng quét</button>
           </div>
         </div>
@@ -236,7 +248,17 @@
     <p><span class="brand-name">Mã Mở</span> — hỗ trợ đặc biệt cho người khiếm khuyết giao tiếp.</p>
   </footer>
 
-  <script src="app.js"></script>
-  <script src="access.js"></script>
+  <!-- A11y modular stack (order matters) -->
+  <script src="js/a11y/core.js"></script>
+  <script src="js/a11y/store.js"></script>
+  <script src="js/a11y/speech.js"></script>
+  <script src="js/a11y/switch.js"></script>
+  <script src="js/a11y/scan.js"></script>
+  <script src="js/a11y/phrases.js"></script>
+  <script src="js/a11y/morse.js"></script>
+  <script src="js/a11y/braille.js"></script>
+  <script src="js/a11y/profiles.js"></script>
+  <script src="js/a11y/shell.js"></script>
+  <script src="js/a11y/bootstrap.js"></script>
 </body>
 </html>

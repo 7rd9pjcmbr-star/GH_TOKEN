@@ -742,10 +742,66 @@ body.assist-ready {
   outline: 3px solid #fff;
 }
 
+.arch-panel {
+  margin: 0.85rem 0 1rem;
+  padding: 0.75rem 0.9rem;
+  border-radius: var(--radius);
+  border: 1px dashed rgba(31, 111, 106, 0.35);
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.arch-panel summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.arch-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(31, 111, 106, 0.14);
+  color: var(--teal);
+}
+
+.module-map-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  list-style: none;
+  margin: 0.65rem 0;
+  padding: 0;
+}
+
+.module-map-list li {
+  margin: 0;
+}
+
+.module-map-list code {
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.25rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(12, 42, 46, 0.08);
+  color: var(--ink);
+}
+
 .special-extra {
   margin-top: 1.35rem;
   padding-top: 1rem;
   border-top: 1px solid var(--line);
+}
+
+body.large-targets .scan-target,
+body.large-targets .phrase-btn,
+body.large-targets .yesno {
+  min-height: 4.75rem;
+  font-size: 1.1rem;
 }
 
 .special-extra h3 {
