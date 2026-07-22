@@ -121,12 +121,16 @@ File: `js/logic/config.js` + `pipeline.js`
 
 Module `analyze` — **mỗi định dạng một detector cấu trúc riêng** (JWT ≠ Base64 ≠ Morse ≠ Braille ≠ PEM ≠ hash-hex…).
 
-Owns: `format-detect`, `format-classify` — không chiếm `resolve` / `recommend`.
+Owns: `format-detect`, `format-classify`, `encoding-translate` — không chiếm `resolve` / `recommend`.
 
 ```js
-MaMoLogic.analyze("eyJhbGciOiJIUzI1NiJ9.e30.signature")
+const r = MaMoLogic.analyze(".... . .-.. .-.. ---")
+// r.panorama     — đọc MaMoLogic.config (pipeline, soft-screen, catalog, plan)
+// r.analysis     — primary / candidates / summary
+// r.translation  — thông dịch encoding (Morse→text, Base64→utf8, JWT header+payload…)
+MaMoLogic.panorama(text)
+MaMoLogic.translate(text)
 MaMoLogic.classifyFormat(".... . .-.. .-.. ---")
-// → primary + candidates[] + uniqueness + structure
 ```
 
 Pipeline stage `analyze` chạy sau `validate`, trước `resolve`; kết quả gắn `meta.enrichment.format`.

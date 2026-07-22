@@ -497,60 +497,538 @@
     return num / (n * (n - 1));
   }
 
+  function cfgApi() {
+    return global.MaMoLogicModules?.config;
+  }
+
+  function feat(name, fallback) {
+    const c = cfgApi();
+    if (!c) return fallback;
+    return c.feature("analyze", name, fallback);
+  }
+
+  function encodeApi() {
+    return (
+      global.MaMoCrypto?.encode ||
+      global.MaMoCryptoModules?.encode ||
+      global.MaMoCryptoCore?.get?.("encode") ||
+      null
+    );
+  }
+
   /**
-   * Phân tích sâu: chạy TỪNG detector cấu trúc riêng → xếp hạng.
-   * Không ép mọi format qua cùng một parser.
+   * Đọc cấu hình hệ thống → bức tranh toàn cảnh trước khi phân tích.
+   */
+  function buildPanorama(input, opts = {}) {
+    const conf = cfgApi()?.get?.() || null;
+    const conflicts = cfgApi()?.detectConflicts?.() || null;
+    const analyzeMod = conf?.modules?.analyze || null;
+    const optimizeMod = conf?.modules?.optimize || null;
+    const families = {};
+    FORMATS.forEach((f) => {
+      families[f.family] = (families[f.family] || 0) + 1;
+    });
+    let optPlan = null;
+    try {
+      optPlan =
+        global.MaMoLogicModules?.optimize?.plan?.({
+          text: String(input || ""),
+          intent: global.MaMoLogicModules?.rules?.classifyIntent?.(input),
+        }) || null;
+    } catch {
+      optPlan = null;
+    }
+
+    return {
+      title: "Toàn cảnh cấu hình phân tích",
+      config: conf
+        ? {
+            version: conf.version,
+            conflictPolicy: conf.conflictPolicy,
+            enrichmentPolicy: conf.enrichmentPolicy,
+            pipeline: conf.pipeline,
+            ownershipOk: conflicts?.ok !== false,
+            domainOwners: conflicts?.domainOwners || null,
+          }
+        : null,
+      analyzeModule: analyzeMod
+        ? {
+            enabled: analyzeMod.enabled,
+            priority: analyzeMod.priority,
+            owns: analyzeMod.owns,
+            features: analyzeMod.features,
+          }
+        : null,
+      optimize: optimizeMod
+        ? {
+            enabled: optimizeMod.enabled,
+            softScreen: optimizeMod.features?.softScreen !== false,
+            cacheSize: optimizeMod.cacheSize,
+            features: optimizeMod.features,
+          }
+        : null,
+      plan: optPlan
+        ? {
+            mode: optPlan.mode,
+            runAnalyze: optPlan.runAnalyze,
+            runPaths: optPlan.runPaths,
+            runIcons: optPlan.runIcons,
+            analyzeDepth: optPlan.analyzeDepth,
+            analyzeLimit: optPlan.analyzeLimit,
+            reason: optPlan.reason,
+          }
+        : null,
+      catalog: {
+        formatCount: FORMATS.length,
+        families,
+        formats: FORMATS.map((f) => ({ id: f.id, label: f.label, family: f.family })),
+      },
+      capabilities: {
+        deepStructuralDetect: feat("deepStructuralDetect", true),
+        readConfigPanorama: feat("readConfigPanorama", true),
+        translateEncoding: feat("translateEncoding", true),
+        multiCandidateDiscriminate: feat("multiCandidateDiscriminate", true),
+        callIconsOnAnalyze:
+          conf?.modules?.icons?.features?.callOnAnalyze !== false,
+      },
+      layers: ["UI", "Logic.analyze", "Domain(crypto.encode)", "Data(config+atlas)"],
+      note:
+        opts.note ||
+        "Toàn cảnh đọc từ MaMoLogic.config — soft-screen sàng lọc nhẹ, không loại bỏ năng lực phát hiện.",
+    };
+  }
+
+  function isPrintableText(str) {
+    if (!str) return false;
+    const s = String(str);
+    let printable = 0;
+    for (const ch of s) {
+      const cp = ch.codePointAt(0);
+      if (cp === 9 || cp === 10 || cp === 13 || (cp >= 32 && cp < 127) || cp >= 0xa0) {
+        printable++;
+      }
+    }
+    return printable / [...s].length >= 0.85;
+  }
+
+  function hexToUtf8(hex) {
+    const raw = String(hex || "").replace(/[\s:]/g, "");
+    if (raw.length % 2 || !/^[0-9a-fA-F]+$/.test(raw)) return null;
+    try {
+      const bytes = raw.match(/.{1,2}/g).map((h) => parseInt(h, 16));
+      if (typeof TextDecoder !== "undefined") {
+        return new TextDecoder("utf-8", { fatal: false }).decode(Uint8Array.from(bytes));
+      }
+      return String.fromCharCode(...bytes);
+    } catch {
+      return null;
+    }
+  }
+
+  function bitsToAscii(bits) {
+    const b = String(bits || "").replace(/\s/g, "");
+    if (b.length < 8 || b.length % 8) return null;
+    let out = "";
+    for (let i = 0; i < b.length; i += 8) {
+      out += String.fromCharCode(parseInt(b.slice(i, i + 8), 2));
+    }
+    return out;
+  }
+
+  /**
+   * Thông dịch / giải mã biểu diễn (encoding) — giáo dục, không phá mật mã.
+   */
+  function translateEncoding(input, primary, opts = {}) {
+    const text = String(input ?? "");
+    const enc = encodeApi();
+    const id = primary?.id || opts.formatId || "unknown";
+    const base = {
+      ok: false,
+      formatId: id,
+      kind: "encoding-translate",
+      disclaimer:
+        "Thông dịch biểu diễn (encoding/armor/tín hiệu) — không phải phá ciphertext / không verify chữ ký mật mã.",
+      method: null,
+      plaintext: null,
+      structured: null,
+      steps: [],
+      reversible: false,
+    };
+
+    if (!feat("translateEncoding", true) && !opts.force) {
+      return { ...base, skipped: "feature-disabled" };
+    }
+
+    try {
+      switch (id) {
+        case "morse": {
+          const plain = enc?.fromMorse
+            ? enc.fromMorse(text)
+            : text
+                .trim()
+                .replace(/[·•]/g, ".")
+                .replace(/[−–—_]/g, "-");
+          return {
+            ...base,
+            ok: !!plain,
+            method: "morse→latin",
+            plaintext: plain || null,
+            reversible: true,
+            steps: ["Chuẩn hoá . -", "Ánh xạ token Morse → chữ cái", "Ghép từ theo /"],
+            explain: enc?.explain?.("morse") || "Morse là tín hiệu, không phải encryption.",
+          };
+        }
+        case "braille-unicode": {
+          const plain = enc?.fromBraille ? enc.fromBraille(text) : null;
+          return {
+            ...base,
+            ok: !!plain,
+            method: "braille-unicode→latin",
+            plaintext: plain || null,
+            reversible: true,
+            steps: ["Đọc ô Braille U+2800", "Ánh xạ grade-1 → Latin"],
+            explain: enc?.explain?.("braille") || "Braille trợ năng.",
+          };
+        }
+        case "base64": {
+          const plain = enc?.fromBase64
+            ? enc.fromBase64(text.trim().replace(/\s/g, ""))
+            : (() => {
+                try {
+                  return decodeURIComponent(escape(atob(text.trim().replace(/\s/g, ""))));
+                } catch {
+                  return null;
+                }
+              })();
+          return {
+            ...base,
+            ok: !!plain,
+            method: "base64→utf8",
+            plaintext: plain || null,
+            reversible: true,
+            steps: ["Bỏ whitespace", "atob / fromBase64", "UTF-8 text"],
+            explain: enc?.explain?.("base64") || "Base64 ai cũng giải được.",
+          };
+        }
+        case "base64url": {
+          let plain = null;
+          try {
+            plain = b64urlDecode(text.trim().replace(/=+$/, ""));
+            if (!isPrintableText(plain)) {
+              // thử UTF-8 qua encodeURIComponent path
+              try {
+                plain = decodeURIComponent(escape(plain));
+              } catch {
+                /* keep */
+              }
+            }
+          } catch {
+            plain = null;
+          }
+          return {
+            ...base,
+            ok: !!plain,
+            method: "base64url→utf8",
+            plaintext: plain,
+            reversible: true,
+            steps: ["Map -_ → +/", "Pad =", "Decode"],
+          };
+        }
+        case "jwt": {
+          const parts = text.trim().split(".");
+          let header = null;
+          let payload = null;
+          try {
+            header = JSON.parse(b64urlDecode(parts[0]));
+          } catch {
+            header = null;
+          }
+          try {
+            payload = JSON.parse(b64urlDecode(parts[1]));
+          } catch {
+            payload = null;
+          }
+          return {
+            ...base,
+            ok: !!(header || payload),
+            method: "jwt-compact→header+payload (không verify signature)",
+            plaintext: payload
+              ? JSON.stringify(payload, null, 2)
+              : null,
+            structured: {
+              header,
+              payload,
+              signaturePresent: !!(parts[2] && parts[2].length),
+              verified: false,
+            },
+            reversible: false,
+            steps: [
+              "Tách 3 đoạn base64url",
+              "JSON.parse header",
+              "JSON.parse payload",
+              "Không kiểm tra chữ ký (giáo dục)",
+            ],
+          };
+        }
+        case "url-encoded": {
+          const pairs = {};
+          text
+            .trim()
+            .split("&")
+            .filter(Boolean)
+            .forEach((p) => {
+              const i = p.indexOf("=");
+              const k = i >= 0 ? p.slice(0, i) : p;
+              const v = i >= 0 ? p.slice(i + 1) : "";
+              try {
+                pairs[decodeURIComponent(k.replace(/\+/g, " "))] = decodeURIComponent(
+                  v.replace(/\+/g, " ")
+                );
+              } catch {
+                pairs[k] = v;
+              }
+            });
+          return {
+            ...base,
+            ok: Object.keys(pairs).length > 0,
+            method: "application/x-www-form-urlencoded→object",
+            plaintext: JSON.stringify(pairs, null, 2),
+            structured: { pairs },
+            reversible: true,
+            steps: ["Tách &", "decodeURIComponent key/value"],
+          };
+        }
+        case "hex-blob": {
+          const plain = hexToUtf8(text);
+          return {
+            ...base,
+            ok: !!(plain && isPrintableText(plain)),
+            method: "hex→utf8 (best-effort)",
+            plaintext: plain && isPrintableText(plain) ? plain : null,
+            structured: {
+              bytes: (text.replace(/[\s:]/g, "").length / 2) | 0,
+              utf8Preview: plain ? plain.slice(0, 200) : null,
+              printable: !!(plain && isPrintableText(plain)),
+            },
+            reversible: true,
+            steps: ["Bỏ khoảng/colon", "Ghép byte", "UTF-8 decode"],
+          };
+        }
+        case "bitstring": {
+          const plain = bitsToAscii(text);
+          return {
+            ...base,
+            ok: !!(plain && isPrintableText(plain)),
+            method: "bitstring→ascii (8-bit groups)",
+            plaintext: plain && isPrintableText(plain) ? plain : null,
+            structured: { bits: text.replace(/\s/g, "").length, ascii: plain },
+            reversible: true,
+            steps: ["Nhóm 8 bit", "CharCode"],
+          };
+        }
+        case "json":
+        case "jose-json": {
+          try {
+            const v = JSON.parse(text.trim());
+            return {
+              ...base,
+              ok: true,
+              method: id === "jose-json" ? "JOSE-JSON parse" : "JSON parse",
+              plaintext: JSON.stringify(v, null, 2),
+              structured: v,
+              reversible: true,
+              steps: ["JSON.parse", "Pretty-print"],
+            };
+          } catch {
+            return { ...base, ok: false, method: "json-parse-failed" };
+          }
+        }
+        case "nginx-upstream-var": {
+          const name = text.trim().startsWith("$")
+            ? text.trim()
+            : `$${text.trim().replace(/^\$/, "")}`;
+          const hit = global.MaMoLogicModules?.vars?.get?.(name);
+          return {
+            ...base,
+            ok: !!hit,
+            method: "nginx-upstream-var→docs",
+            plaintext: hit
+              ? `${hit.name}: ${hit.summary || hit.details || ""}`
+              : null,
+            structured: hit,
+            reversible: false,
+            steps: ["Chuẩn hoá $upstream_*", "Tra catalog nginx-upstream-vars"],
+          };
+        }
+        case "nginx-resolver":
+        case "nginx-queue": {
+          const dir = global.MaMoLogicModules?.vars?.getDirective?.(
+            id === "nginx-queue" ? "queue" : "resolver"
+          );
+          return {
+            ...base,
+            ok: !!dir,
+            method: `${id}→directive-docs`,
+            plaintext: dir
+              ? `${dir.name}: ${dir.summary || dir.syntax || ""}`
+              : null,
+            structured: dir,
+            reversible: false,
+            steps: ["Khớp chỉ thị", "Đọc cú pháp / ngữ cảnh upstream"],
+          };
+        }
+        case "pem-armor": {
+          const m = text.match(
+            /-----BEGIN ([A-Z0-9 ]+)-----([\s\S]+?)-----END \1-----/
+          );
+          return {
+            ...base,
+            ok: !!m,
+            method: "pem-armor→banner+body-meta (không giải mật mã)",
+            plaintext: m ? `Loại: ${m[1]} · body ${m[2].replace(/\s/g, "").length} ký tự base64` : null,
+            structured: m
+              ? { banner: m[1], bodyLen: m[2].replace(/\s/g, "").length }
+              : null,
+            reversible: false,
+            steps: ["Đọc BEGIN/END", "Đo độ dài thân base64", "Không giải khoá riêng tư"],
+          };
+        }
+        case "uuid":
+          return {
+            ...base,
+            ok: true,
+            method: "uuid→identity (không decode nội dung)",
+            plaintext: text.trim().toLowerCase(),
+            structured: primary?.features || null,
+            reversible: false,
+            steps: ["Chuẩn hoá lowercase", "Báo version/variant"],
+          };
+        case "hash-hex":
+          return {
+            ...base,
+            ok: true,
+            method: "hash-hex→classify-only",
+            plaintext: null,
+            structured: {
+              digest: text.trim().toLowerCase(),
+              likely: primary?.features?.likely || null,
+              note: "Hash một chiều — không thông dịch ngược plaintext.",
+            },
+            reversible: false,
+            steps: ["Nhận diện độ dài", "Gán họ thuật toán ước lượng", "Không preimage"],
+          };
+        case "classical-alpha":
+        case "high-entropy-text":
+          return {
+            ...base,
+            ok: true,
+            method: "ciphertext-like→no-decrypt",
+            plaintext: null,
+            structured: {
+              note: "Không phá mã. Chỉ phân loại heuristic / entropy.",
+              features: primary?.features || null,
+            },
+            reversible: false,
+            steps: ["Heuristic cấu trúc", "Từ chối cryptanalysis tấn"],
+          };
+        default:
+          return {
+            ...base,
+            ok: false,
+            method: "unsupported",
+            steps: ["Không có bộ thông dịch cho định dạng này"],
+          };
+      }
+    } catch (err) {
+      return { ...base, ok: false, error: String(err.message || err) };
+    }
+  }
+
+  /**
+   * Phân tích sâu: panorama cấu hình → detector cấu trúc → thông dịch mã hoá.
    */
   function analyzeDeep(input, opts = {}) {
     const text = String(input ?? "");
     const limit = opts.limit || 5;
-    const hits = [];
+    const withPanorama = opts.panorama !== false && feat("readConfigPanorama", true);
+    const withTranslate = opts.translate !== false && feat("translateEncoding", true);
 
-    FORMATS.forEach((fmt) => {
-      let result = null;
-      try {
-        result = fmt.test(text);
-      } catch {
-        result = null;
-      }
-      if (!result) return;
-      hits.push({
-        id: fmt.id,
-        label: fmt.label,
-        family: fmt.family,
-        uniqueness: fmt.uniqueness,
-        structure: fmt.structure,
-        confidence: Number(result.confidence.toFixed(3)),
-        features: result.features || {},
-        relatedConcepts: suggestConcepts(fmt.id),
+    const panorama = withPanorama ? buildPanorama(text, opts) : null;
+    const effectiveLimit =
+      opts.limit ||
+      panorama?.plan?.analyzeLimit ||
+      limit;
+
+    const hits = [];
+    if (feat("deepStructuralDetect", true) !== false) {
+      FORMATS.forEach((fmt) => {
+        let result = null;
+        try {
+          result = fmt.test(text);
+        } catch {
+          result = null;
+        }
+        if (!result) return;
+        hits.push({
+          id: fmt.id,
+          label: fmt.label,
+          family: fmt.family,
+          uniqueness: fmt.uniqueness,
+          structure: fmt.structure,
+          confidence: Number(result.confidence.toFixed(3)),
+          features: result.features || {},
+          relatedConcepts: suggestConcepts(fmt.id),
+        });
       });
-    });
+    }
 
     hits.sort((a, b) => b.confidence - a.confidence);
-    const top = hits.slice(0, limit);
+    const top = hits.slice(0, effectiveLimit);
     const primary = top[0] || null;
+
+    const analysis = {
+      primary,
+      candidates: top,
+      candidateCount: hits.length,
+      discriminated:
+        top.length > 1 && feat("multiCandidateDiscriminate", true)
+          ? {
+              note: "Nhiều ứng viên — mỗi cái khác cấu trúc; chọn theo confidence + uniqueness",
+              vs: top.slice(0, 3).map((c) => ({
+                id: c.id,
+                uniqueness: c.uniqueness,
+                confidence: c.confidence,
+              })),
+            }
+          : null,
+      summary: primary
+        ? `${primary.label} (${primary.family}) · tin cậy ${primary.confidence}`
+        : "Không khớp định dạng có cấu trúc trong catalog",
+    };
+
+    const translation = withTranslate
+      ? translateEncoding(text, primary, opts)
+      : { skipped: "disabled" };
 
     return {
       ok: true,
       inputPreview: text.length > 120 ? `${text.slice(0, 117)}…` : text,
       inputLength: text.length,
+      // ba khối kết quả chính
+      panorama,
+      analysis,
+      translation,
+      // tương thích API cũ
       primary,
       candidates: top,
       candidateCount: hits.length,
-      discriminated: top.length > 1
-        ? {
-            note: "Nhiều ứng viên — mỗi cái khác cấu trúc; chọn theo confidence + uniqueness",
-            vs: top.slice(0, 3).map((c) => ({
-              id: c.id,
-              uniqueness: c.uniqueness,
-              confidence: c.confidence,
-            })),
-          }
-        : null,
+      discriminated: analysis.discriminated,
       meta: {
         analyzer: "MaMoLogic.analyze",
-        version: "1.0.0",
+        version: "1.1.0",
         formatCatalogSize: FORMATS.length,
+        panorama: !!panorama,
+        translated: !!(translation && translation.ok),
       },
     };
   }
@@ -588,10 +1066,12 @@
       structure: f.structure,
     })),
 
+    panorama: buildPanorama,
+    translate: translateEncoding,
     analyze: analyzeDeep,
 
     classify(input) {
-      const r = analyzeDeep(input, { limit: 1 });
+      const r = analyzeDeep(input, { limit: 1, panorama: false, translate: false });
       return r.primary
         ? {
             id: r.primary.id,

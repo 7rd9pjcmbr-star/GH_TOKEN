@@ -39,7 +39,7 @@
       return M("rules").classifyIntent(text);
     },
 
-    /** Phân tích sâu định dạng mã (cấu trúc duy nhất từng loại) + gọi icon */
+    /** Phân tích sâu: toàn cảnh cấu hình + kết quả + thông dịch mã hoá (+ icon) */
     analyze(input, opts) {
       const report = M("analyze")?.analyze(input, opts) || null;
       if (!report) return null;
@@ -50,6 +50,27 @@
         icons: iconCall,
         feedback: iconCall?.feedback || null,
       };
+    },
+
+    /** Chỉ bức tranh toàn cảnh từ cấu hình */
+    panorama(input) {
+      return M("analyze")?.panorama?.(input) || null;
+    },
+
+    /** Thông dịch biểu diễn theo định dạng đã biết / tự nhận */
+    translate(input, opts) {
+      const analyzer = M("analyze");
+      if (!analyzer?.translate) return null;
+      if (opts?.formatId || opts?.primary) {
+        return analyzer.translate(input, opts.primary || { id: opts.formatId }, opts);
+      }
+      const report = analyzer.analyze(input, {
+        ...opts,
+        panorama: false,
+        translate: true,
+        limit: 1,
+      });
+      return report?.translation || null;
     },
 
     classifyFormat(input) {
@@ -141,7 +162,8 @@
         ],
         api: [
           "query / decide",
-          "analyze / classifyFormat",
+          "analyze (panorama + analysis + translation) / panorama / translate",
+          "classifyFormat",
           "callIcons / mapIconLibraries / iconCoverage",
           "vars.get / vars.search / vars.describe",
           "optimize.stats / optimize.invalidate / optimize.planPreview",
@@ -166,6 +188,8 @@
         rules: Orchestrator.rules,
         classify: Orchestrator.classify,
         analyze: Orchestrator.analyze,
+        panorama: Orchestrator.panorama,
+        translate: Orchestrator.translate,
         classifyFormat: Orchestrator.classifyFormat,
         callIcons: Orchestrator.callIcons,
         iconArmy: Orchestrator.iconArmy,

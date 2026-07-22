@@ -39,9 +39,11 @@
         enabled: true,
         priority: 8,
         label: "Format analyze",
-        owns: ["format-detect", "format-classify"],
+        owns: ["format-detect", "format-classify", "encoding-translate"],
         features: {
           deepStructuralDetect: true,
+          readConfigPanorama: true, // đọc cấu hình → bức tranh toàn cảnh
+          translateEncoding: true, // thông dịch / giải mã biểu diễn
           multiCandidateDiscriminate: true,
           attachToDecision: true,
           // không chiếm resolve/recommend

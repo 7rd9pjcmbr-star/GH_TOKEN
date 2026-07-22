@@ -17,6 +17,9 @@ UI → js/logic (schema/analyze/rules/…) → MaMoCrypto / A11y → Data
 
 ```js
 MaMoLogic.query("password") // meta.iconFeedback · meta.optimized · optPlan
+MaMoLogic.analyze(text)     // panorama + analysis + translation (+ icons)
+MaMoLogic.panorama(text)    // toàn cảnh từ config
+MaMoLogic.translate(text)   // thông dịch encoding
 MaMoLogic.callIcons("concept:aead")
 MaMoLogic.mapIconLibraries() // 17/17 icon → 27 thư viện có tài liệu
 MaMoLogic.optimize.stats()   // LRU cache · adaptive · path memo

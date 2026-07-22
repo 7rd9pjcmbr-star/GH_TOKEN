@@ -4,28 +4,139 @@
   function runFormat() {
     const input = document.getElementById("format-input");
     const out = document.getElementById("format-output");
+    const panEl = document.getElementById("format-panorama");
+    const anaEl = document.getElementById("format-analysis");
+    const trEl = document.getElementById("format-translation");
     if (!window.MaMoLogic?.analyze) {
-      out.textContent = JSON.stringify({ error: "analyze module missing" }, null, 2);
+      const err = { error: "analyze module missing" };
+      if (out) out.textContent = JSON.stringify(err, null, 2);
       return;
     }
     const report = window.MaMoLogic.analyze(input.value || "");
-    out.textContent = JSON.stringify(
-      {
-        primary: report.primary,
-        feedback: report.feedback || report.icons?.feedback || null,
-        icons: report.icons
-          ? {
-              lead: report.icons.lead,
-              callChant: report.icons.callChant,
-              uniqueIcons: report.icons.uniqueIcons,
-            }
-          : null,
-        discriminated: report.discriminated,
-        candidates: report.candidates,
-      },
-      null,
-      2
-    );
+    const pan = report.panorama || {};
+    const ana = report.analysis || {
+      primary: report.primary,
+      candidates: report.candidates,
+      summary: report.primary?.label,
+    };
+    const tr = report.translation || {};
+
+    if (panEl) {
+      panEl.innerHTML = `
+        <ul class="deep-kv">
+          <li><span>Policy</span><code>${escapeHtml(pan.config?.conflictPolicy || "—")}</code></li>
+          <li><span>Pipeline</span><code>${escapeHtml((pan.config?.pipeline || []).join(" → ") || "—")}</code></li>
+          <li><span>Analyze</span><code>${escapeHtml(
+            pan.analyzeModule
+              ? `P${pan.analyzeModule.priority} · ${
+                  pan.analyzeModule.enabled ? "on" : "off"
+                }`
+              : "—"
+          )}</code></li>
+          <li><span>Soft-screen</span><code>${escapeHtml(
+            pan.optimize?.softScreen ? "on" : "off"
+          )}</code></li>
+          <li><span>Catalog</span><code>${escapeHtml(
+            String(pan.catalog?.formatCount ?? "—")
+          )} định dạng</code></li>
+          <li><span>Kế hoạch</span><code>${escapeHtml(
+            pan.plan
+              ? `${pan.plan.mode || "?"} · depth ${pan.plan.analyzeDepth || "?"} · limit ${
+                  pan.plan.analyzeLimit ?? "?"
+                }`
+              : "—"
+          )}</code></li>
+        </ul>
+        <p class="hint">${escapeHtml(pan.note || "")}</p>
+      `;
+    }
+
+    if (anaEl) {
+      const primary = ana.primary || report.primary;
+      const cands = (ana.candidates || report.candidates || [])
+        .slice(0, 5)
+        .map(
+          (c) =>
+            `<li><code>${escapeHtml(c.id)}</code> ${escapeHtml(
+              String(c.confidence)
+            )} — ${escapeHtml(c.uniqueness || "")}</li>`
+        )
+        .join("");
+      anaEl.innerHTML = primary
+        ? `
+        <p class="deep-summary"><strong>${escapeHtml(
+          primary.label
+        )}</strong> · ${escapeHtml(primary.family)} · tin cậy ${escapeHtml(
+          String(primary.confidence)
+        )}</p>
+        <p class="hint">${escapeHtml(primary.uniqueness || "")}</p>
+        <pre class="deep-mini">${escapeHtml(
+          JSON.stringify(primary.features || {}, null, 2)
+        )}</pre>
+        <ul class="deep-cands">${cands}</ul>
+        ${
+          report.feedback
+            ? `<p class="icon-feedback">${escapeHtml(report.feedback)}</p>`
+            : ""
+        }
+      `
+        : `<p class="hint">${escapeHtml(ana.summary || "Không xác định")}</p>`;
+    }
+
+    if (trEl) {
+      if (tr.skipped) {
+        trEl.innerHTML = `<p class="hint">Thông dịch tắt: ${escapeHtml(
+          String(tr.skipped)
+        )}</p>`;
+      } else {
+        const steps = (tr.steps || [])
+          .map((s) => `<li>${escapeHtml(s)}</li>`)
+          .join("");
+        trEl.innerHTML = `
+          <p class="deep-summary"><strong>${escapeHtml(
+            tr.method || "—"
+          )}</strong> · ${tr.ok ? "OK" : "không giải được"}</p>
+          ${
+            tr.plaintext
+              ? `<pre class="deep-plain">${escapeHtml(tr.plaintext)}</pre>`
+              : `<p class="hint">Không có plaintext (hash/ciphertext/armor-only).</p>`
+          }
+          ${steps ? `<ol class="deep-steps">${steps}</ol>` : ""}
+          <p class="hint">${escapeHtml(tr.disclaimer || tr.explain || "")}</p>
+        `;
+      }
+    }
+
+    if (out) {
+      out.textContent = JSON.stringify(
+        {
+          panorama: {
+            policy: pan.config?.conflictPolicy,
+            pipeline: pan.config?.pipeline,
+            capabilities: pan.capabilities,
+            plan: pan.plan,
+            catalogSize: pan.catalog?.formatCount,
+          },
+          analysis: {
+            summary: ana.summary,
+            primary: ana.primary || report.primary,
+            candidates: ana.candidates || report.candidates,
+            discriminated: ana.discriminated || report.discriminated,
+          },
+          translation: tr,
+          feedback: report.feedback || report.icons?.feedback || null,
+          icons: report.icons
+            ? {
+                lead: report.icons.lead,
+                callChant: report.icons.callChant,
+                uniqueIcons: report.icons.uniqueIcons,
+              }
+            : null,
+        },
+        null,
+        2
+      );
+    }
     if (report.icons) renderIconStrip(report.icons);
   }
 

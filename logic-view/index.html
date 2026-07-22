@@ -59,13 +59,33 @@
       </article>
 
       <article class="logic-card wide">
-        <h2>Phân tích sâu định dạng mã</h2>
-        <p class="hint">Mỗi loại mã có chữ ký cấu trúc riêng — mapper gọi tên icon phản hồi trên dòng chảy.</p>
+        <h2>Phân tích cấu trúc sâu</h2>
+        <p class="hint">
+          Đọc cấu hình → <strong>toàn cảnh</strong> · nhận dạng chữ ký cấu trúc ·
+          <strong>thông dịch mã hoá</strong> (encoding, không phá ciphertext).
+        </p>
         <div class="logic-run">
           <input id="format-input" type="text" placeholder="Dán chuỗi: Morse, Braille, JWT, Base64, PEM, hex hash…" value=".... . .-.. .-.. --- / .-- --- .-. .-.. -.." />
-          <button type="button" class="btn btn-secondary" id="btn-format-analyze">Phân loại</button>
+          <button type="button" class="btn btn-secondary" id="btn-format-analyze">Phân tích sâu</button>
         </div>
-        <pre class="logic-out" id="format-output">{}</pre>
+        <div class="deep-analyze-panels" id="deep-analyze-panels" aria-live="polite">
+          <section class="deep-panel" data-panel="panorama">
+            <h3>Toàn cảnh cấu hình</h3>
+            <div class="deep-panel-body" id="format-panorama">Đang chờ…</div>
+          </section>
+          <section class="deep-panel" data-panel="analysis">
+            <h3>Kết quả phân tích</h3>
+            <div class="deep-panel-body" id="format-analysis">Đang chờ…</div>
+          </section>
+          <section class="deep-panel" data-panel="translation">
+            <h3>Thông dịch mã hoá</h3>
+            <div class="deep-panel-body" id="format-translation">Đang chờ…</div>
+          </section>
+        </div>
+        <details class="deep-raw">
+          <summary>JSON đầy đủ</summary>
+          <pre class="logic-out" id="format-output">{}</pre>
+        </details>
       </article>
 
       <article class="logic-card wide">
