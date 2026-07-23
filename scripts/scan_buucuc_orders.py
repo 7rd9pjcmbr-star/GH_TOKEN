@@ -526,86 +526,113 @@ def scan_vnpost(env: dict[str, str], *, days: int, limit: int) -> dict[str, Any]
     return result
 
 
-def scan_pancake_shipping(env: dict[str, str], *, days: int, limit: int) -> dict[str, Any]:
-    """Pancake POS orders (Bearer/api_key) — remote, không đọc file danh_sach."""
-    result: dict[str, Any] = {
-        "backend": "Pancake",
-        "buucuc": "Pancake-partner",
-        "status": "missing_cred",
-        "fetched": 0,
-        "orders": [],
-        "attempts": [],
-        "detail": "",
+def _pancake_tokens(env: dict[str, str]) -> list[dict[str, str]]:
+    """Primary + secondary + secrets/pancake_multi_accounts.json (owned)."""
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    def add(token: str, *, name: str = "", uid: str = "") -> None:
+        t = (token or "").strip()
+        if not t or t in seen:
+            return
+        seen.add(t)
+        out.append({"token": t, "name": name or "", "uid": uid or ""})
+
+    add(env.get("PANCAKE_POS_ACCESS_TOKEN") or "", name=env.get("PANCAKE_USER") or "")
+    add(
+        env.get("PANCAKE_POS_SECONDARY_ACCESS_TOKEN") or "",
+        name=env.get("PANCAKE_POS_SECONDARY_USER") or "secondary",
+    )
+    raw_multi = (env.get("PANCAKE_POS_ACCESS_TOKENS") or "").strip()
+    if raw_multi:
+        if raw_multi.startswith("["):
+            try:
+                arr = json.loads(raw_multi)
+                for item in arr:
+                    if isinstance(item, str):
+                        add(item)
+                    elif isinstance(item, dict):
+                        add(str(item.get("token") or ""), name=str(item.get("name") or ""))
+            except json.JSONDecodeError:
+                pass
+        else:
+            for part in raw_multi.replace(";", ",").split(","):
+                add(part.strip())
+
+    multi_path = SECRETS / "pancake_multi_accounts.json"
+    if multi_path.is_file():
+        try:
+            data = json.loads(multi_path.read_text(encoding="utf-8"))
+            for acc in data.get("accounts") or []:
+                if isinstance(acc, dict):
+                    add(
+                        str(acc.get("token") or ""),
+                        name=str(acc.get("name") or ""),
+                        uid=str(acc.get("uid") or ""),
+                    )
+        except Exception:  # noqa: BLE001
+            pass
+    return out
+
+
+def _scan_pancake_one(
+    *,
+    token: str,
+    account_name: str,
+    days: int,
+    limit: int,
+    base: str,
+    start: datetime,
+    end: datetime,
+    seen: set[str],
+) -> tuple[list[dict], list[dict], dict[str, Any]]:
+    """Quét 1 pos_jwt → shops của đúng account đó (không trộn shop_id account khác)."""
+    import requests
+
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {token}",
+        "Cookie": f"pos_jwt={token}; pos_locale=vi",
     }
+    meta: dict[str, Any] = {"account": account_name, "shops": [], "fetched": 0}
+    attempts: list[dict] = []
     try:
-        from pancake_pos_client import auth_ready, resolve_credentials
-        import requests
-    except Exception as e:  # noqa: BLE001
-        result["detail"] = f"pancake client: {e}"
-        return result
-
-    if env.get("PANCAKE_POS_ACCESS_TOKEN"):
-        creds = {"api_key": "", "access_token": env["PANCAKE_POS_ACCESS_TOKEN"].strip()}
-    else:
-        creds = resolve_credentials()
-    if not auth_ready(creds):
-        result["detail"] = "Thiếu PANCAKE_POS_API_KEY / Bearer — không quét shipping Pancake"
-        return result
-
-    headers = {"Accept": "application/json"}
-    params_auth: dict[str, Any] = {}
-    if creds.get("api_key"):
-        params_auth["api_key"] = creds["api_key"]
-    else:
-        headers["Authorization"] = f"Bearer {creds['access_token']}"
-        headers["Cookie"] = f"pos_jwt={creds['access_token']}; pos_locale=vi"
-
-    base = (env.get("PANCAKE_POS_BASE_URL") or "https://pos.pancake.vn/api/v1").rstrip("/")
-    try:
-        sr = requests.get(f"{base}/shops", headers=headers, params=params_auth, timeout=30)
-        result["attempts"].append({"url": f"{base}/shops", "http": sr.status_code})
+        sr = requests.get(f"{base}/shops", headers=headers, timeout=30)
+        attempts.append({"account": account_name, "url": f"{base}/shops", "http": sr.status_code})
         shops = (sr.json().get("shops") or []) if sr.ok else []
     except Exception as e:  # noqa: BLE001
-        result["status"] = "error"
-        result["detail"] = str(e)[:160]
-        return result
+        meta["error"] = str(e)[:160]
+        return [], attempts, meta
 
-    shop_meta: dict[str, str] = {
+    shop_meta = {
         str(s.get("id")): str(s.get("name") or s.get("shop_name") or "")
         for s in shops
         if s.get("id")
     }
     shop_ids = list(shop_meta.keys())
-    for key in ("PANCAKE_POS_SHOP_IDS", "PANCAKE_SHOP_ID", "PANCAKE_SECONDARY_SHOP_IDS"):
-        raw = (env.get(key) or "").strip()
-        for part in raw.replace(";", ",").split(","):
-            p = part.strip()
-            if p and p not in shop_ids:
-                shop_ids.append(p)
-                shop_meta.setdefault(p, "")
+    meta["shops"] = [{"id": sid, "name": shop_meta[sid]} for sid in shop_ids]
     if not shop_ids:
-        result["detail"] = "Có Pancake token nhưng không lấy được shop_id"
-        return result
+        meta["detail"] = "token ok nhưng 0 shop"
+        return [], attempts, meta
 
-    start, end = _window(days)
-    result["window"] = {"start": start.isoformat(), "end": end.isoformat(), "days": days}
     orders: list[dict] = []
-    seen: set[str] = set()
     page_size = 100
     for shop in shop_ids:
+        if len(orders) >= limit:
+            break
         page = 1
         while len(orders) < limit and page <= 200:
             try:
                 rr = requests.get(
                     f"{base}/shops/{shop}/orders",
                     headers=headers,
-                    params={**params_auth, "page_number": page, "page_size": page_size},
+                    params={"page_number": page, "page_size": page_size},
                     timeout=45,
                 )
             except Exception as e:  # noqa: BLE001
-                result["attempts"].append({"shop": shop, "page": page, "error": str(e)[:120]})
+                attempts.append({"account": account_name, "shop": shop, "page": page, "error": str(e)[:120]})
                 break
-            result["attempts"].append({"shop": shop, "page": page, "http": rr.status_code})
+            attempts.append({"account": account_name, "shop": shop, "page": page, "http": rr.status_code})
             if not rr.ok:
                 break
             rows = rr.json().get("data") or []
@@ -658,11 +685,12 @@ def scan_pancake_shipping(env: dict[str, str], *, days: int, limit: int) -> dict
                     district=str(sa.get("district_name") or "") or None,
                     ward=str(sa.get("commnue_name") or sa.get("commune_name") or "") or None,
                     cod_amount=float(row["cod"]) if row.get("cod") is not None else None,
-                    extra={"partner_id": partner, "warehouse": wh.get("name")},
+                    extra={"partner_id": partner, "warehouse": wh.get("name"), "account": account_name},
                 )
                 item["warehouse_id"] = row.get("warehouse_id")
                 item["kho"] = wh.get("name")
                 item["shop_name"] = shop_meta.get(shop) or None
+                item["account"] = account_name
                 item["custom_id"] = row.get("custom_id") or row.get("display_id")
                 item["status_raw"] = row.get("status")
                 item["total_price"] = row.get("total_price") or row.get("total") or row.get("cod")
@@ -684,12 +712,88 @@ def scan_pancake_shipping(env: dict[str, str], *, days: int, limit: int) -> dict
                 break
             page += 1
 
+    meta["fetched"] = len(orders)
+    return orders, attempts, meta
+
+
+def scan_pancake_shipping(env: dict[str, str], *, days: int, limit: int) -> dict[str, Any]:
+    """Pancake POS — quét MỌI owned token (primary+secondary+multi), mỗi token đúng shop của nó."""
+    result: dict[str, Any] = {
+        "backend": "Pancake",
+        "buucuc": "Pancake-partner",
+        "status": "missing_cred",
+        "fetched": 0,
+        "orders": [],
+        "attempts": [],
+        "accounts": [],
+        "detail": "",
+    }
+    try:
+        import requests  # noqa: F401
+    except Exception as e:  # noqa: BLE001
+        result["detail"] = f"requests: {e}"
+        return result
+
+    tokens = _pancake_tokens(env)
+    if not tokens:
+        # fallback api_key path
+        try:
+            from pancake_pos_client import auth_ready, resolve_credentials
+        except Exception as e:  # noqa: BLE001
+            result["detail"] = f"pancake client: {e}"
+            return result
+        creds = resolve_credentials()
+        if not auth_ready(creds):
+            result["detail"] = "Thiếu PANCAKE_POS_API_KEY / Bearer — không quét shipping Pancake"
+            return result
+        if creds.get("access_token"):
+            tokens = [{"token": creds["access_token"], "name": "api", "uid": ""}]
+        else:
+            result["detail"] = "Chỉ có api_key — cần pos_jwt để quét multi-shop"
+            return result
+
+    base = (env.get("PANCAKE_POS_BASE_URL") or "https://pos.pancake.vn/api/v1").rstrip("/")
+    start, end = _window(days)
+    result["window"] = {"start": start.isoformat(), "end": end.isoformat(), "days": days}
+
+    orders: list[dict] = []
+    seen: set[str] = set()
+    for acc in tokens:
+        if len(orders) >= limit:
+            break
+        remaining = limit - len(orders)
+        chunk, attempts, meta = _scan_pancake_one(
+            token=acc["token"],
+            account_name=acc.get("name") or "pancake",
+            days=days,
+            limit=remaining,
+            base=base,
+            start=start,
+            end=end,
+            seen=seen,
+        )
+        result["attempts"].extend(attempts)
+        result["accounts"].append(
+            {
+                "name": meta.get("account"),
+                "shops_n": len(meta.get("shops") or []),
+                "shops": meta.get("shops"),
+                "fetched": meta.get("fetched"),
+                "error": meta.get("error"),
+                "detail": meta.get("detail"),
+            }
+        )
+        orders.extend(chunk)
+
     result["orders"] = orders[:limit]
     result["fetched"] = len(result["orders"])
     result["status"] = "ok" if result["fetched"] else "empty"
+    acc_bits = ", ".join(
+        f"{a.get('name')}={a.get('fetched')}@{a.get('shops_n')}shops" for a in result["accounts"]
+    )
     result["detail"] = (
-        f"Pancake shipping quét {result['fetched']} đơn / {days}d "
-        f"(shops={len(shop_ids)} · window={start.date()}→{end.date()})"
+        f"Pancake multi-account quét {result['fetched']} đơn / {days}d "
+        f"(accounts={len(result['accounts'])} · window={start.date()}→{end.date()} · {acc_bits})"
     )
     return result
 
