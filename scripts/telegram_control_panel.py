@@ -538,7 +538,7 @@ def fmt_dg_tbl(_a: dict | None = None) -> str:
     try:
         from dang_giao_chi_tiet_table import build_report, format_text, write_outputs
 
-        report = build_report()
+        report = build_report()  # as_of = hôm nay UTC
         write_outputs(report)
         return format_text(report)[:3800]
     except Exception as e:  # noqa: BLE001
@@ -547,7 +547,7 @@ def fmt_dg_tbl(_a: dict | None = None) -> str:
             return path.read_text(encoding="utf-8")[:3800]
         return (
             f"Bảng đang giao lỗi: {e}\n"
-            "Chạy: python3 scripts/dang_giao_chi_tiet_table.py"
+            "Chạy: python3 scripts/dang_giao_chi_tiet_table.py --as-of $(date -u +%F)"
         )
 
 

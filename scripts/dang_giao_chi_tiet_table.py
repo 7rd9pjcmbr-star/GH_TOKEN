@@ -48,6 +48,19 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def today_utc() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def parse_as_of(raw: str | None) -> str:
+    """YYYY-MM-DD; mặc định hôm nay (UTC)."""
+    if not raw:
+        return today_utc()
+    s = str(raw).strip()[:10]
+    datetime.strptime(s, "%Y-%m-%d")  # validate
+    return s
+
+
 def is_in_transit(status: str | None, *, include_shipped: bool = True) -> bool:
     s = (status or "").strip().lower()
     if not s:
@@ -129,11 +142,18 @@ def enrich_from_pipe(rec: dict, pipe_idx: dict[str, dict]) -> dict:
     return out
 
 
-def scan_orders(*, include_shipped: bool = True, ingest_limit: int = 8000) -> list[dict]:
+def scan_orders(
+    *,
+    include_shipped: bool = True,
+    ingest_limit: int = 8000,
+    as_of: str | None = None,
+) -> list[dict]:
     from buucuc_backend_db_query import classify_buucuc, kho_key, resolve_backend
     from oms_interconnect import ingest_local_orders
     from order_pipe_kho_buucuc_db import so_noi_bo, van_tay
 
+    ngay_dang_giao = parse_as_of(as_of)
+    now = utc_now()
     pipe_idx = load_pipe_index()
     local = ingest_local_orders(limit_per_file=max(100, ingest_limit))
     rows: list[dict] = []
@@ -167,6 +187,11 @@ def scan_orders(*, include_shipped: bool = True, ingest_limit: int = 8000) -> li
             )
             if x
         ) or rec.get("full_address")
+
+        # Giữ ngày gốc; cập nhật ngày đang giao = as_of (snapshot hiện tại)
+        created_goc = rec.get("order_created_at") or rec.get("created_at")
+        synced_goc = rec.get("synced_at")
+        updated_goc = rec.get("updated_at")
 
         rows.append(
             {
@@ -207,19 +232,24 @@ def scan_orders(*, include_shipped: bool = True, ingest_limit: int = 8000) -> li
                 "source": rec.get("source"),
                 "channel": rec.get("channel"),
                 "file": rec.get("file"),
-                "order_created_at": rec.get("order_created_at") or rec.get("created_at"),
-                "synced_at": rec.get("synced_at"),
-                "updated_at": rec.get("updated_at"),
+                "order_created_at": created_goc,
+                "order_created_at_goc": created_goc,
+                "synced_at_goc": synced_goc,
+                "updated_at_goc": updated_goc,
+                "synced_at": f"{ngay_dang_giao}T00:00:00Z",
+                "updated_at": now,
+                "ngay_dang_giao": ngay_dang_giao,
+                "ngay_cap_nhat": now,
                 "picked_at": rec.get("picked_at"),
                 "delivered_at": rec.get("delivered_at"),
                 "flow_path": rec.get("flow_path")
                 or (
                     f"kho:{kho} → {backend} → buucuc:{buu} → "
-                    f"track:{rec.get('tracking_code') or '∅'} → [{status}] → "
+                    f"track:{rec.get('tracking_code') or '∅'} → [{status}] @ {ngay_dang_giao} → "
                     f"{geo or '(chưa địa chỉ)'}"
                 ),
                 "icon_chant": rec.get("icon_chant"),
-                "scanned_at": utc_now(),
+                "scanned_at": now,
             }
         )
 
@@ -235,6 +265,11 @@ def scan_orders(*, include_shipped: bool = True, ingest_limit: int = 8000) -> li
         for fld, val in r.items():
             if not merged.get(fld) and val:
                 merged[fld] = val
+        # luôn giữ ngày đang giao mới nhất
+        merged["ngay_dang_giao"] = r.get("ngay_dang_giao") or merged.get("ngay_dang_giao")
+        merged["ngay_cap_nhat"] = r.get("ngay_cap_nhat") or merged.get("ngay_cap_nhat")
+        merged["synced_at"] = r.get("synced_at") or merged.get("synced_at")
+        merged["updated_at"] = r.get("updated_at") or merged.get("updated_at")
         dedup[key] = merged
     return list(dedup.values())
 
@@ -282,8 +317,13 @@ def materialize(rows: list[dict]) -> dict:
           channel TEXT,
           file TEXT,
           order_created_at TEXT,
+          order_created_at_goc TEXT,
+          synced_at_goc TEXT,
+          updated_at_goc TEXT,
           synced_at TEXT,
           updated_at TEXT,
+          ngay_dang_giao TEXT,
+          ngay_cap_nhat TEXT,
           picked_at TEXT,
           delivered_at TEXT,
           flow_path TEXT,
@@ -297,6 +337,7 @@ def materialize(rows: list[dict]) -> dict:
         CREATE INDEX idx_dg_shop ON don_dang_giao(shop_id);
         CREATE INDEX idx_dg_vt ON don_dang_giao(van_tay);
         CREATE INDEX idx_dg_prov ON don_dang_giao(province);
+        CREATE INDEX idx_dg_ngay ON don_dang_giao(ngay_dang_giao);
         CREATE TABLE kho_buucuc_summary (
           kho TEXT,
           buucuc TEXT,
@@ -348,8 +389,13 @@ def materialize(rows: list[dict]) -> dict:
         "channel",
         "file",
         "order_created_at",
+        "order_created_at_goc",
+        "synced_at_goc",
+        "updated_at_goc",
         "synced_at",
         "updated_at",
+        "ngay_dang_giao",
+        "ngay_cap_nhat",
         "picked_at",
         "delivered_at",
         "flow_path",
@@ -387,16 +433,32 @@ def materialize(rows: list[dict]) -> dict:
         "INSERT INTO meta(key,value) VALUES ('table', ?)",
         ("don_dang_giao",),
     )
+    ngay = rows[0].get("ngay_dang_giao") if rows else today_utc()
+    conn.execute("INSERT INTO meta(key,value) VALUES ('ngay_dang_giao', ?)", (ngay,))
+    conn.execute("INSERT INTO meta(key,value) VALUES ('ngay_cap_nhat', ?)", (utc_now(),))
     conn.commit()
-    info = {"path": str(DB_PATH), "orders": len(rows), "table": "don_dang_giao"}
+    info = {
+        "path": str(DB_PATH),
+        "orders": len(rows),
+        "table": "don_dang_giao",
+        "ngay_dang_giao": ngay,
+    }
     conn.close()
     return info
 
 
-def build_report(*, include_shipped: bool = True, ingest_limit: int = 8000) -> dict:
+def build_report(
+    *,
+    include_shipped: bool = True,
+    ingest_limit: int = 8000,
+    as_of: str | None = None,
+) -> dict:
     from realtime_icon_feedback_mapper import chant, feedback_line
 
-    rows = scan_orders(include_shipped=include_shipped, ingest_limit=ingest_limit)
+    ngay = parse_as_of(as_of)
+    rows = scan_orders(
+        include_shipped=include_shipped, ingest_limit=ingest_limit, as_of=ngay
+    )
     db = materialize(rows)
 
     by_kho: Counter = Counter()
@@ -446,6 +508,8 @@ def build_report(*, include_shipped: bool = True, ingest_limit: int = 8000) -> d
                 "customer_name": r.get("customer_name"),
                 "phone_class": r.get("phone_class"),
                 "address": r.get("full_address") or r.get("province"),
+                "ngay_dang_giao": r.get("ngay_dang_giao"),
+                "order_created_at_goc": r.get("order_created_at_goc"),
                 "flow_path": r.get("flow_path"),
                 "file": r.get("file"),
             }
@@ -454,18 +518,25 @@ def build_report(*, include_shipped: bool = True, ingest_limit: int = 8000) -> d
     icons = ["cube", "network", "monitor", "hash", "compass"]
     top_fb = feedback_line(
         icons,
-        f"đang giao chi tiết · n={len(rows)} · kho={len(by_kho)} · "
+        f"đang giao @ {ngay} · n={len(rows)} · kho={len(by_kho)} · "
         f"buucuc={len(by_buucuc)} · backend={len(by_backend)} → 1 bảng {db['table']}",
+    )
+
+    by_created_goc = Counter(
+        str(r.get("order_created_at_goc") or "")[:10] or "(none)" for r in rows
     )
 
     return {
         "ok": True,
         "query": "Quét đơn đang giao chi tiết từ mọi kho × mọi bưu cục → 1 bảng",
         "checked_at": utc_now(),
+        "ngay_dang_giao": ngay,
+        "ngay_cap_nhat": utc_now(),
         "include_shipped": include_shipped,
         "db": db,
         "summary": {
             "orders": len(rows),
+            "ngay_dang_giao": ngay,
             "kho_n": len(by_kho),
             "buucuc_n": len(by_buucuc),
             "backend_n": len(by_backend),
@@ -476,6 +547,7 @@ def build_report(*, include_shipped: bool = True, ingest_limit: int = 8000) -> d
             "by_kho": by_kho.most_common(),
             "by_buucuc": by_buucuc.most_common(),
             "by_backend": by_backend.most_common(),
+            "by_created_goc": by_created_goc.most_common(12),
             "icon_chant": chant(icons),
             "feedback": top_fb,
         },
@@ -483,17 +555,17 @@ def build_report(*, include_shipped: bool = True, ingest_limit: int = 8000) -> d
         "samples": samples,
         "verdict": top_fb,
         "next_actions": [
-            f"SQL: SELECT * FROM don_dang_giao LIMIT 20 — {DB_PATH}",
-            "SQL: SELECT kho, buucuc, orders FROM kho_buucuc_summary ORDER BY orders DESC",
-            "SQL: SELECT * FROM don_dang_giao WHERE buucuc LIKE '%SPX%' OR tracking_code != ''",
-            "Re-scan: python3 scripts/dang_giao_chi_tiet_table.py",
-            "Pipe enrich: python3 scripts/order_pipe_kho_buucuc_db.py && re-scan",
-            "Owned VTP/GHN token → đơn đang giao live sẽ vào cùng bảng sau khi export OMS",
+            f"Ngày đang giao đã cập nhật: {ngay}",
+            f"SQL: SELECT ngay_dang_giao, COUNT(*) FROM don_dang_giao GROUP BY 1 — {DB_PATH}",
+            "SQL: SELECT * FROM don_dang_giao WHERE ngay_dang_giao = date('now') LIMIT 20",
+            "Đổi ngày: python3 scripts/dang_giao_chi_tiet_table.py --as-of 2026-07-23",
+            "Re-scan hôm nay: python3 scripts/dang_giao_chi_tiet_table.py",
         ],
         "safety": {
             "secrets_only": True,
             "no_dump_login": True,
             "no_mass_vtp_login": True,
+            "keeps_original_created_at": True,
         },
     }
 
@@ -503,6 +575,7 @@ def format_text(report: dict) -> str:
     L = lines.append
     L("📦 BẢNG CHI TIẾT ĐƠN ĐANG GIAO · MỌI KHO × MỌI BƯU CỤC")
     L(f"Lúc: {report['checked_at']}")
+    L(f"📅 Ngày đang giao hàng: {report.get('ngay_dang_giao')} · cập nhật: {report.get('ngay_cap_nhat')}")
     L(report["verdict"])
     L("")
     s = report["summary"]
@@ -510,12 +583,16 @@ def format_text(report: dict) -> str:
     L(f"✨ {s.get('feedback')}")
     L(f"Chant: {s.get('icon_chant')}")
     L(
-        f"orders={s['orders']} kho={s['kho_n']} buucuc={s['buucuc_n']} "
+        f"orders={s['orders']} @ {s.get('ngay_dang_giao')} · kho={s['kho_n']} buucuc={s['buucuc_n']} "
         f"backend={s['backend_n']} track={s['with_tracking']} addr={s['with_address']}"
     )
     L(f"phone={s.get('phone')}")
-    L(f"DB: {db.get('path')} · table={db.get('table')}")
+    L(f"DB: {db.get('path')} · table={db.get('table')} · ngay_dang_giao={db.get('ngay_dang_giao')}")
     L(f"include_shipped={report.get('include_shipped')}")
+    L("")
+    L("=== Ngày tạo gốc (giữ nguyên) ===")
+    for d, n in (s.get("by_created_goc") or [])[:10]:
+        L(f"· created_goc {d}: {n}")
     L("")
     L("=== Theo status ===")
     for st, n in s.get("by_status") or []:
@@ -543,10 +620,12 @@ def format_text(report: dict) -> str:
     L("=== Mẫu đơn chi tiết ===")
     for r in (report.get("samples") or [])[:16]:
         L(
-            f"· [{r.get('van_tay')}] so={r.get('so_noi_bo')} "
+            f"· [{r.get('van_tay')}] @{r.get('ngay_dang_giao')} so={r.get('so_noi_bo')} "
             f"{r.get('kho')}/{r.get('buucuc')} track={r.get('tracking') or '∅'} "
             f"· {r.get('status')} · {r.get('phone_class')} · {r.get('address') or '∅addr'}"
         )
+        if r.get("order_created_at_goc"):
+            L(f"  tạo gốc={r.get('order_created_at_goc')}")
         if r.get("flow_path"):
             L(f"  flow: {r['flow_path']}")
     L("")
@@ -598,9 +677,19 @@ def main() -> int:
         action="store_true",
         help="Chỉ status Đang giao (bỏ Đã gửi hàng)",
     )
+    ap.add_argument(
+        "--as-of",
+        dest="as_of",
+        default=None,
+        help="Ngày đang giao hàng YYYY-MM-DD (mặc định hôm nay UTC)",
+    )
     ap.add_argument("--limit", type=int, default=8000)
     args = ap.parse_args()
-    report = build_report(include_shipped=not args.strict, ingest_limit=args.limit)
+    report = build_report(
+        include_shipped=not args.strict,
+        ingest_limit=args.limit,
+        as_of=args.as_of,
+    )
     write_outputs(report)
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2, default=list))
