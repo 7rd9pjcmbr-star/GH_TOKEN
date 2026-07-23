@@ -161,6 +161,9 @@ def panel_keyboard() -> dict:
                 {"text": "🔎 Rà soát DB BC", "callback_data": "q:bc_audit"},
                 {"text": "🧬 Pipe kho·BC·FP", "callback_data": "q:pipe_fp"},
             ],
+            [
+                {"text": "🔁 Truy vấn ngược", "callback_data": "q:rev_q"},
+            ],
             [{"text": "🔁 Làm mới phân tích", "callback_data": "q:refresh"}],
         ]
     }
@@ -513,6 +516,23 @@ def fmt_pipe_fp(_a: dict | None = None) -> str:
         )
 
 
+def fmt_rev_q(_a: dict | None = None) -> str:
+    try:
+        from order_pipe_reverse_query import build_report, format_text, write_outputs
+
+        report = build_report()
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "order_pipe_reverse_query.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Truy vấn ngược lỗi: {e}\n"
+            "Chạy: python3 scripts/order_pipe_reverse_query.py"
+        )
+
+
 def fmt_urls(_a: dict | None = None) -> str:
     path = ROOT / "reports" / "telegram-classify" / "url_paths_expanded.txt"
     alt = ROOT / "reports" / "telegram-classify" / "url_paths_expanded.json"
@@ -606,6 +626,7 @@ HANDLERS = {
     "q:bc_db": fmt_bc_db,
     "q:bc_audit": fmt_bc_audit,
     "q:pipe_fp": fmt_pipe_fp,
+    "q:rev_q": fmt_rev_q,
 }
 
 
@@ -673,6 +694,7 @@ def main() -> int:
         "q:bc_db",
         "q:bc_audit",
         "q:pipe_fp",
+        "q:rev_q",
     ]:
         send(
             token,
@@ -699,6 +721,7 @@ def main() -> int:
                 "q:bc_db",
                 "q:bc_audit",
                 "q:pipe_fp",
+                "q:rev_q",
             }
             else None,
         )
