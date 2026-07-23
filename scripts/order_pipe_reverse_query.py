@@ -483,10 +483,13 @@ def reverse_by_warehouse_id(conn: sqlite3.Connection, wid: str, limit: int = 30)
     )
 
 
-def reverse_chain_asumee(conn: sqlite3.Connection, *, deep: bool = False) -> list[dict]:
+def reverse_chain_asumee(
+    conn: sqlite3.Connection, *, deep: bool = False, hop2: bool = False
+) -> list[dict]:
     """Chuỗi truy vấn ngược đào sâu cho kho ASUMEE / UUID chính.
 
-    deep=True: tiếp tục ngược dòng chảy — status → ward → so → tracking → address.
+    deep=True: status → ward → so → tracking → address.
+    hop2=True: cohort gaps → geo recover → icon → drill van_tay.
     """
     wid = "55e5f0e1-ed06-4dad-b35a-406bee25cdea"
     results = [
@@ -589,7 +592,239 @@ def reverse_chain_asumee(conn: sqlite3.Connection, *, deep: bool = False) -> lis
         if vt:
             results.append(reverse_by_van_tay(conn, str(vt)))
 
+    if hop2:
+        results.extend(reverse_chain_asumee_hop2(conn, wid))
+
     return results
+
+
+def reverse_chain_asumee_hop2(conn: sqlite3.Connection, wid: str) -> list[dict]:
+    """Hop-2 ngược dòng: cohort thiếu tỉnh/địa chỉ/SĐT → van_tay/so → recover geo → icon."""
+    out: list[dict] = []
+    out.append(reverse_gap_cohort(conn, wid, "no_province"))
+    out.append(reverse_gap_cohort(conn, wid, "no_address"))
+    out.append(reverse_gap_cohort(conn, wid, "canceled_missing_phone"))
+    out.append(reverse_gap_cohort(conn, wid, "mask_phone_delivered"))
+    out.append(reverse_geo_recover(conn, wid))
+    out.append(reverse_by_icon_chant(conn, "Khối Kho", limit=10))
+    out.append(reverse_by_icon_chant(conn, "Tia Lửa", limit=8))
+
+    # Drill van_tay/so từ no_province + canceled missing
+    for sql, label in (
+        (
+            """
+            SELECT van_tay, so_noi_bo FROM orders
+            WHERE warehouse_id = ? AND (province IS NULL OR province = '')
+              AND van_tay IS NOT NULL
+            ORDER BY piped_at DESC LIMIT 4
+            """,
+            "no_province",
+        ),
+        (
+            """
+            SELECT van_tay, so_noi_bo FROM orders
+            WHERE warehouse_id = ? AND status = 'canceled'
+              AND (receiver_phone IS NULL OR receiver_phone = '')
+              AND van_tay IS NOT NULL
+            ORDER BY piped_at DESC LIMIT 3
+            """,
+            "canceled_missing",
+        ),
+        (
+            """
+            SELECT van_tay, so_noi_bo FROM orders
+            WHERE warehouse_id = ? AND status = 'delivered'
+              AND receiver_phone LIKE '%*%'
+            ORDER BY piped_at DESC LIMIT 3
+            """,
+            "delivered_mask",
+        ),
+    ):
+        rows = conn.execute(sql, (wid,)).fetchall()
+        for vt, so in rows:
+            if vt:
+                r = reverse_by_van_tay(conn, str(vt))
+                r["gap_cohort"] = label
+                out.append(r)
+            if so:
+                r = reverse_by_so_noi_bo(conn, str(so))
+                r["gap_cohort"] = label
+                out.append(r)
+
+    # Address fragments suy ra từ full_address khi thiếu province (vd Huế)
+    hints = conn.execute(
+        """
+        SELECT full_address FROM orders
+        WHERE warehouse_id = ?
+          AND (province IS NULL OR province = '')
+          AND full_address IS NOT NULL AND full_address != ''
+        ORDER BY piped_at DESC LIMIT 8
+        """,
+        (wid,),
+    ).fetchall()
+    seen_frag: set[str] = set()
+    for (addr,) in hints:
+        frag = _geo_hint_from_address(str(addr))
+        if frag and frag not in seen_frag:
+            seen_frag.add(frag)
+            out.append(reverse_by_address(conn, frag, limit=6))
+            out.append(reverse_by_province(conn, frag, limit=6))
+    return out
+
+
+def _geo_hint_from_address(addr: str) -> str | None:
+    """Lấy gợi ý tỉnh/thành từ full_address khi province trống."""
+    if not addr:
+        return None
+    # Patterns: "Việt Nam, Huế, …" / ", Ninh Bình," / tỉnh names
+    parts = [p.strip() for p in re.split(r"[,/|]", addr) if p.strip()]
+    skip = {"việt nam", "vietnam", "vn"}
+    for p in parts[:4]:
+        low = p.lower()
+        if low in skip:
+            continue
+        if p.startswith("Xã ") or p.startswith("Phường ") or p.startswith("Thị "):
+            continue
+        if "*" in p:
+            continue
+        if len(p) >= 3:
+            return p
+    return None
+
+
+def reverse_gap_cohort(conn: sqlite3.Connection, wid: str, kind: str) -> dict:
+    """Cohort lỗ hổng dòng chảy + mẫu đơn + unmask path."""
+    where = {
+        "no_province": "(province IS NULL OR province = '')",
+        "no_address": "(full_address IS NULL OR full_address = '')",
+        "canceled_missing_phone": (
+            "status = 'canceled' AND (receiver_phone IS NULL OR receiver_phone = '')"
+        ),
+        "mask_phone_delivered": "status = 'delivered' AND receiver_phone LIKE '%*%'",
+    }.get(kind, "1=0")
+    n = conn.execute(
+        f"SELECT COUNT(*) FROM orders WHERE warehouse_id = ? AND {where}", (wid,)
+    ).fetchone()[0]
+    samples = [
+        dict(r)
+        for r in conn.execute(
+            f"""
+            SELECT van_tay, so_noi_bo, tracking_code, status, province, ward,
+                   full_address, receiver_name, receiver_phone, flow_path
+            FROM orders WHERE warehouse_id = ? AND {where}
+            ORDER BY piped_at DESC LIMIT 10
+            """,
+            (wid,),
+        )
+    ]
+    by_status = [
+        dict(r)
+        for r in conn.execute(
+            f"""
+            SELECT status, COUNT(*) AS orders FROM orders
+            WHERE warehouse_id = ? AND {where}
+            GROUP BY status ORDER BY orders DESC
+            """,
+            (wid,),
+        )
+    ]
+    unmask = {
+        "no_province": {
+            "path_id": "PATH-MISSING-GEO",
+            "action": "recover_province_from_full_address_or_refetch",
+        },
+        "no_address": {
+            "path_id": "PATH-MISSING",
+            "action": "backfill_shipping_address_from_pancake",
+        },
+        "canceled_missing_phone": {
+            "path_id": "PATH-MISSING",
+            "action": "backfill_or_accept_canceled_without_phone",
+        },
+        "mask_phone_delivered": {
+            "path_id": "PATH-MASK-REDACTION",
+            "action": "fetch_unmasked_from_source_api",
+        },
+    }.get(kind, {"path_id": "PATH-UNKNOWN", "action": "inspect"})
+    return _attach_flow(
+        {
+            "query_type": "gap_cohort",
+            "query": kind,
+            "hit": n > 0,
+            "warehouse_id": wid,
+            "count": n,
+            "by_status": by_status,
+            "sample_orders": [
+                # wrap as minimal order dicts for panorama when enough fields
+                {
+                    **s,
+                    "kho": "ASUMEE",
+                    "warehouse_id": wid,
+                    "backend": "OMS-pipe-bus",
+                    "buucuc": "Pancake",
+                }
+                for s in samples
+            ],
+            "unmask_map": unmask,
+            "path": f"gap:{kind} n={n} ← ASUMEE ← status×{len(by_status)}",
+        }
+    )
+
+
+def reverse_geo_recover(conn: sqlite3.Connection, wid: str) -> dict:
+    """Truy vấn ngược: đơn thiếu province nhưng còn full_address → gợi ý geo."""
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT van_tay, so_noi_bo, status, full_address, receiver_name, receiver_phone
+            FROM orders
+            WHERE warehouse_id = ?
+              AND (province IS NULL OR province = '')
+              AND full_address IS NOT NULL AND full_address != ''
+            ORDER BY piped_at DESC LIMIT 25
+            """,
+            (wid,),
+        )
+    ]
+    recovered = []
+    for r in rows:
+        hint = _geo_hint_from_address(str(r.get("full_address") or ""))
+        recovered.append(
+            {
+                "van_tay": r.get("van_tay"),
+                "so_noi_bo": r.get("so_noi_bo"),
+                "status": r.get("status"),
+                "hint_province": hint,
+                "full_address": (r.get("full_address") or "")[:120],
+                "receiver_phone": r.get("receiver_phone"),
+                "phone_class": (
+                    "MASKED"
+                    if r.get("receiver_phone") and "*" in str(r.get("receiver_phone"))
+                    else ("MISSING" if not r.get("receiver_phone") else "OK")
+                ),
+            }
+        )
+    by_hint: dict[str, int] = {}
+    for x in recovered:
+        h = x.get("hint_province") or "(none)"
+        by_hint[h] = by_hint.get(h, 0) + 1
+    return {
+        "query_type": "geo_recover",
+        "query": wid,
+        "hit": bool(recovered),
+        "count": len(recovered),
+        "by_hint_province": [
+            {"hint": k, "orders": v}
+            for k, v in sorted(by_hint.items(), key=lambda kv: -kv[1])
+        ],
+        "samples": recovered[:12],
+        "path": f"geo_recover: {len(recovered)} đơn thiếu province → hint×{len(by_hint)}",
+        "unmask_map": {
+            "note": "Recover geo từ address text; PII vẫn MASK nếu có *",
+            "path_id": "PATH-MASK-REDACTION",
+        },
+    }
 
 
 def reverse_flow_gaps(conn: sqlite3.Connection, wid: str) -> dict:
@@ -1030,9 +1265,9 @@ def build_report(
         re.I,
     )
 
-    # «Tiếp tục ngược dòng chảy» → deep chain (gaps/status/ward/so/tracking)
+    # «Tiếp tục ngược dòng chảy» → deep + hop2 (gaps cohort / geo recover / icon)
     if continue_flow or continue_asumee:
-        results.extend(reverse_chain_asumee(conn, deep=True))
+        results.extend(reverse_chain_asumee(conn, deep=True, hop2=True))
 
     if q:
         qq = q.strip()
@@ -1197,10 +1432,9 @@ def build_report(
             "python3 scripts/order_pipe_reverse_query.py --continue-asumee",
             "python3 scripts/order_pipe_reverse_query.py --warehouse 55e5f0e1-ed06-4dad-b35a-406bee25cdea",
             "python3 scripts/order_pipe_reverse_query.py --kho ASUMEE",
+            "python3 scripts/order_pipe_reverse_query.py --address Huế",
             "python3 scripts/order_pipe_reverse_query.py --so SAPO-1990252568_664140",
-            "python3 scripts/order_pipe_reverse_query.py --tracking SPXVN067431106264",
-            "python3 scripts/order_pipe_reverse_query.py --buucuc SPX",
-            "python3 scripts/order_pipe_reverse_query.py --province 'Nam Định'",
+            "python3 scripts/crypto_decode_assist.py --unmask",
             "python3 scripts/inner_unmask_deep_mapper.py --warehouse 55e5f0e1-ed06-4dad-b35a-406bee25cdea",
             "python3 scripts/order_pipe_kho_buucuc_db.py   # re-pipe nếu thiếu địa chỉ",
         ],
@@ -1330,10 +1564,23 @@ def format_text(report: dict) -> str:
                 L(
                     f"  · ward {m.get('province')}/{m.get('ward')}: n={m.get('orders')}"
                 )
+        if r.get("by_hint_province"):
+            for m in r["by_hint_province"][:8]:
+                L(f"  · geo_hint {m.get('hint')}: n={m.get('orders')}")
+        if r.get("samples") and r.get("query_type") == "geo_recover":
+            for s in r["samples"][:5]:
+                L(
+                    f"  · recover van_tay={s.get('van_tay')} hint={s.get('hint_province')!r} "
+                    f"phone={s.get('phone_class')} addr={(s.get('full_address') or '')[:50]!r}"
+                )
+        if r.get("gap_cohort"):
+            L(f"  · gap_cohort={r.get('gap_cohort')}")
         if r.get("count") and r.get("query_type") in {
             "status_warehouse",
             "ward_warehouse",
             "flow_gaps",
+            "gap_cohort",
+            "geo_recover",
         }:
             L(f"  · count={r.get('count')} status={r.get('status')}")
     if report.get("panorama_samples"):
@@ -1383,7 +1630,7 @@ def main() -> int:
     ap.add_argument(
         "--continue-flow",
         action="store_true",
-        help="Tiếp tục ngược dòng chảy ASUMEE: gaps→status→ward→so→tracking→address",
+        help="Tiếp tục ngược dòng chảy ASUMEE deep+hop2: gaps→status→ward→cohort→geo_recover→icon",
     )
     ap.add_argument("--buucuc")
     ap.add_argument("--province", help="Tỉnh/thành nhận")
