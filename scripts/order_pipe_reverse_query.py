@@ -1472,10 +1472,15 @@ def reverse_carrier_buucuc_remap(
             WHERE warehouse_id = ?
               AND (
                 (carrier IS NOT NULL AND carrier != '' AND carrier != 'Pancake'
-                 AND (buucuc IS NULL OR buucuc = '' OR buucuc = 'Pancake'))
+                 AND (buucuc IS NULL OR buucuc = '' OR buucuc = 'Pancake'
+                      OR buucuc = carrier))
                 OR (tracking_provider IS NOT NULL AND tracking_provider != '')
                 OR (tracking_code GLOB '26*' AND length(tracking_code)=14)
                 OR (upper(tracking_code) LIKE 'SPX%')
+                OR (upper(tracking_code) LIKE 'VNGH%')
+                OR (upper(tracking_code) LIKE 'GHN%')
+                OR (carrier LIKE '%Giao%')
+                OR (carrier LIKE '%hàng nhanh%')
               )
             ORDER BY piped_at DESC
             """,
