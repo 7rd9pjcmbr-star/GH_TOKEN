@@ -444,6 +444,27 @@ class NginxOrderEmbed:
             ensure=ensure,
         )
 
+    def buucuc_scan(
+        self,
+        *,
+        days: int = 3,
+        limit: int = 10000,
+        backends: list[str] | None = None,
+        notify: bool = False,
+        ensure: bool = True,
+    ) -> dict:
+        """Pipeline: nginx → scan_buucuc_orders (GHN/VTP/SPX/VNPost/Pancake remote)."""
+        payload: dict[str, Any] = {"days": days, "limit": limit, "notify": notify, "pipe": True}
+        if backends:
+            payload["backends"] = backends
+        return self.call_json(
+            "/v1/buucuc/scan",
+            method="POST",
+            payload=payload,
+            timeout=180.0,
+            ensure=ensure,
+        )
+
     def token_realtime_pipeline(self, *, limit: int = 20, notify: bool = False, auto_stop: bool | None = None) -> dict:
         """Toàn bộ: bật nginx → nạp/ensure token module → gọi đơn RT → (optional) stop."""
         stop = self.auto_stop if auto_stop is None else auto_stop
@@ -706,12 +727,16 @@ def main(argv: list[str] | None = None) -> int:
             "orders",
             "order",
             "token-realtime",
+            "buucuc-scan",
             "test",
             "describe",
         ],
     )
     ap.add_argument("--id", default="OMS-NGX-001", help="order id cho lệnh order")
     ap.add_argument("--limit", type=int, default=20, help="limit đơn realtime")
+    ap.add_argument("--days", type=int, default=3, help="số ngày quét bưu cục")
+    ap.add_argument("--buucuc-limit", type=int, default=10000, help="limit quét bưu cục")
+    ap.add_argument("--notify", action="store_true", help="gửi Telegram sau quét")
     ap.add_argument("--keep", action="store_true", help="once/token-realtime không auto-stop")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--base", default=DEFAULT_BASE)
@@ -728,6 +753,26 @@ def main(argv: list[str] | None = None) -> int:
         report.setdefault("base", mod.base)
         report.setdefault("upstream", mod.upstream)
         write_outputs(report)
+    elif cmd == "buucuc-scan":
+        started = mod.ensure_up()
+        try:
+            report = mod.buucuc_scan(
+                days=args.days,
+                limit=args.buucuc_limit,
+                notify=args.notify,
+                ensure=False,
+            )
+            report["start"] = started
+            report["verdict"] = (
+                f"✅ buucuc-scan via nginx · count={(report.get('payload') or {}).get('orders_count')}"
+                if report.get("ok")
+                else "❌ buucuc-scan"
+            )
+            report["checked_at"] = utc_now()
+            write_outputs(report)
+        finally:
+            if not args.keep:
+                mod.stop()
     elif cmd == "test":
         report = mod.test()
     elif cmd == "start":

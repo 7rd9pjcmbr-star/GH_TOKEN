@@ -162,7 +162,10 @@ def panel_keyboard() -> dict:
                 {"text": "🧬 Pipe kho·BC·FP", "callback_data": "q:pipe_fp"},
             ],
             [
+                {"text": "📡 Quét BC remote", "callback_data": "q:bc_scan"},
                 {"text": "🌊 Ngược·dòng chảy", "callback_data": "q:rev_q"},
+            ],
+            [
                 {"text": "📦 Đang giao·bảng", "callback_data": "q:dg_tbl"},
             ],
             [
@@ -516,6 +519,50 @@ def fmt_bc_audit(_a: dict | None = None) -> str:
         )
 
 
+def fmt_bc_scan(_a: dict | None = None) -> str:
+    """Quét đơn bưu cục remote qua nginx embed (không đọc danh_sach)."""
+    try:
+        from nginx_order_embed import NginxOrderEmbed
+
+        mod = NginxOrderEmbed(auto_stop=False)
+        started = mod.ensure_up()
+        if not started.get("ok"):
+            # fallback CLI trực tiếp nếu nginx fail
+            from scan_buucuc_orders import build_report, format_text, write_outputs
+
+            report = build_report(days=3, limit=10000, notify=True)
+            write_outputs(report)
+            return ("⚠ nginx embed fail — chạy direct\n" + format_text(report))[:3800]
+        report = mod.buucuc_scan(days=3, limit=10000, notify=True, ensure=False)
+        payload = report.get("payload") if isinstance(report.get("payload"), dict) else {}
+        from scan_buucuc_orders import format_text
+
+        # format từ payload slim
+        text = format_text(
+            {
+                "checked_at": payload.get("checked_at") or report.get("checked_at"),
+                "request": payload.get("request") or {"days": 3},
+                "count": payload.get("orders_count") or payload.get("count") or 0,
+                "target": payload.get("target") or 10000,
+                "verdict": payload.get("verdict") or report.get("verdict"),
+                "backends": payload.get("backends") or [],
+                "blockers": payload.get("blockers") or [],
+                "by_buucuc": payload.get("by_buucuc") or {},
+                "next": payload.get("next") or [],
+            }
+        )
+        return text[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "scan_buucuc_orders.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Quét BC remote lỗi: {e}\n"
+            "Chạy: python3 scripts/nginx_order_embed.py buucuc-scan --days 3 --buucuc-limit 10000 --notify --keep\n"
+            "hoặc: python3 scripts/scan_buucuc_orders.py --days 3 --limit 10000 --notify"
+        )
+
+
 def fmt_pipe_fp(_a: dict | None = None) -> str:
     try:
         from order_pipe_kho_buucuc_db import build_report, format_text, write_outputs
@@ -800,6 +847,7 @@ HANDLERS = {
     "q:kho_shop": fmt_kho_shop,
     "q:bc_db": fmt_bc_db,
     "q:bc_audit": fmt_bc_audit,
+    "q:bc_scan": fmt_bc_scan,
     "q:pipe_fp": fmt_pipe_fp,
     "q:rev_q": fmt_rev_q,
     "q:dg_tbl": fmt_dg_tbl,

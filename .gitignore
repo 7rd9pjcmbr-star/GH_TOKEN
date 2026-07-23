@@ -23,3 +23,4 @@ docker/nginx-order/logs/
 docker/nginx-order/tmp/
 
 docker/nginx-order/orders_local_cache.json
+docker/nginx-order/orders_buucuc_scan_cache.json

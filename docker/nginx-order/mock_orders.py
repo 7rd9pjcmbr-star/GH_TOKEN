@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Upstream đơn + token (127.0.0.1:18081) — mọi thao tác đi sau nginx embed.
+"""Upstream đơn + token + quét bưu cục (127.0.0.1:18081) — sau nginx embed.
 
 Endpoints:
   GET  /health
-  GET  /orders · /order/<id>          — danh sách đơn mẫu (local)
+  GET  /orders · /orders/local · /orders/buucuc · /order/<id>
   GET  /v1/token/status
-  POST /v1/token/set                  — nạp access token sở hữu → secrets
-  POST /v1/token/refresh              — refresh ViettelPost owned
-  POST /v1/token/ensure               — probe + auto-refresh VTP
-  POST /v1/orders/realtime            — ensure → danh sách đơn realtime
+  POST /v1/token/set|/refresh|/ensure
+  POST /v1/owned/fill
+  POST /v1/orders/realtime
+  POST /v1/buucuc/scan · /v1/orders/buucuc/scan
 
-Owned-only. Không dump-login / Acc_all / stealer.
+Owned-only. Không dump-login / Acc_all / stealer. Không pad demo khi đã có scan.
 """
 
 from __future__ import annotations
@@ -21,43 +21,13 @@ import sys
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 CACHE_PATH = Path(__file__).resolve().parent / "orders_local_cache.json"
-
-ORDERS = [
-    {
-        "order_id": "OMS-NGX-001",
-        "tracking_code": "SPXVN067431106264",
-        "status": "Đang giao",
-        "backend": "SPX",
-        "shop_id": "shop-demo-1",
-        "province": "Nam Định",
-        "created_at": "2026-07-23T08:00:00Z",
-    },
-    {
-        "order_id": "OMS-NGX-002",
-        "tracking_code": "GHN1234567890",
-        "status": "Đã gửi hàng",
-        "backend": "GHN",
-        "shop_id": "shop-demo-2",
-        "province": "Hồ Chí Minh",
-        "created_at": "2026-07-23T09:15:00Z",
-    },
-    {
-        "order_id": "OMS-NGX-003",
-        "tracking_code": "VTP99887766",
-        "status": "Mới tạo",
-        "backend": "ViettelPost",
-        "shop_id": "shop-demo-1",
-        "province": "Hà Nội",
-        "created_at": "2026-07-23T10:00:00Z",
-    },
-]
+BUUCUC_CACHE = Path(__file__).resolve().parent / "orders_buucuc_scan_cache.json"
 
 
 def load_local_orders() -> list[dict]:
@@ -71,17 +41,26 @@ def load_local_orders() -> list[dict]:
     return orders if isinstance(orders, list) else []
 
 
+def load_buucuc_scan_orders() -> list[dict]:
+    if not BUUCUC_CACHE.is_file():
+        return []
+    try:
+        data = json.loads(BUUCUC_CACHE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    orders = data.get("orders") if isinstance(data, dict) else None
+    return orders if isinstance(orders, list) else []
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _reject_dump_payload(payload: dict) -> str | None:
-    """Chặn payload dump/stealer bulk."""
     blob = json.dumps(payload, ensure_ascii=False).lower()
     for mark in ("acc_all", "stealer", "internal_search", "ghn_tokens", "valid_accounts", "results_cookies"):
         if mark in blob:
             return f"rejected_dump_marker:{mark}"
-    # bulk array of credentials
     if isinstance(payload.get("accounts"), list) and len(payload["accounts"]) > 3:
         return "rejected_bulk_accounts"
     if isinstance(payload.get("tokens"), list) and len(payload["tokens"]) > 3:
@@ -101,7 +80,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("X-Mock-Upstream", "order-token-backend")
-        self.send_header("X-Via-Module", "access_token_rotate")
+        self.send_header("X-Via-Module", "access_token_rotate+buucuc_scan")
         if extra:
             for k, v in extra.items():
                 self.send_header(k, str(v))
@@ -122,41 +101,67 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         if path in {"/health", "/"}:
             local = load_local_orders()
+            buu = load_buucuc_scan_orders()
             self._send(
                 200,
                 {
                     "ok": True,
-                    "service": "mock-order-upstream",
-                    "role": "token+orders after nginx",
-                    "orders_mock": len(ORDERS),
+                    "service": "order-upstream",
+                    "role": "token+orders+buucuc-scan after nginx",
                     "orders_local": len(local),
+                    "orders_buucuc_scan": len(buu),
                     "routes": [
                         "/orders",
                         "/orders/local",
+                        "/orders/buucuc",
                         "/v1/orders/local",
                         "/v1/token/status",
                         "/v1/token/set",
                         "/v1/token/ensure",
                         "/v1/owned/fill",
                         "/v1/orders/realtime",
+                        "/v1/buucuc/scan",
+                        "/v1/orders/buucuc/scan",
                     ],
+                },
+            )
+            return
+        if path in {"/orders/buucuc", "/v1/orders/buucuc"}:
+            buu = load_buucuc_scan_orders()
+            qs = parse_qs(parsed.query)
+            limit = int((qs.get("limit") or ["500"])[0] or 500)
+            limit = max(1, min(limit, 10000))
+            self._send(
+                200,
+                {
+                    "ok": True,
+                    "source": "buucuc_remote_scan",
+                    "checked_at": utc_now(),
+                    "total": len(buu),
+                    "count": min(limit, len(buu)),
+                    "orders": buu[:limit],
                 },
             )
             return
         if path == "/orders":
             local = load_local_orders()
-            # Prefer owned local exports when available; keep mock as fallback samples.
-            merged = (local[:200] if local else []) + ORDERS
+            buu = load_buucuc_scan_orders()
+            if buu:
+                merged, source = buu, "buucuc_remote_scan"
+            elif local:
+                merged, source = local, "owned_local_exports"
+            else:
+                merged, source = [], "empty_no_demo"
             self._send(
                 200,
                 {
                     "ok": True,
-                    "source": "owned_local_exports+mock" if local else "mock-order-upstream",
+                    "source": source,
                     "checked_at": utc_now(),
                     "count": len(merged),
                     "local_total": len(local),
-                    "mock_total": len(ORDERS),
-                    "orders": merged,
+                    "buucuc_scan_total": len(buu),
+                    "orders": merged[:500],
                 },
             )
             return
@@ -172,17 +177,9 @@ class Handler(BaseHTTPRequestHandler):
             if shop:
                 filtered = [o for o in filtered if str(o.get("shop_id")) == str(shop)]
             if status:
-                filtered = [
-                    o
-                    for o in filtered
-                    if status.lower() in str(o.get("status") or "").lower()
-                ]
+                filtered = [o for o in filtered if status.lower() in str(o.get("status") or "").lower()]
             if platform:
-                filtered = [
-                    o
-                    for o in filtered
-                    if platform.lower() in str(o.get("platform") or "").lower()
-                ]
+                filtered = [o for o in filtered if platform.lower() in str(o.get("platform") or "").lower()]
             self._send(
                 200,
                 {
@@ -200,11 +197,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path.startswith("/order/"):
             oid = path.rsplit("/", 1)[-1]
-            local = load_local_orders()
+            pool = load_buucuc_scan_orders() + load_local_orders()
             hit = next(
                 (
                     o
-                    for o in (local + ORDERS)
+                    for o in pool
                     if str(o.get("order_id")) == oid
                     or str(o.get("tracking_code") or "") == oid
                     or str(o.get("order_key") or "") == oid
@@ -242,6 +239,28 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
+        if path in {"/v1/buucuc/scan", "/v1/orders/buucuc/scan"}:
+            from scan_buucuc_orders import build_report
+
+            days = int(payload.get("days") or 3)
+            limit = int(payload.get("limit") or 10000)
+            backends = payload.get("backends") if isinstance(payload.get("backends"), list) else None
+            notify = bool(payload.get("notify"))
+            report = build_report(
+                days=days,
+                limit=limit,
+                backends=backends,
+                pipe=bool(payload.get("pipe", True)),
+                write_cache=True,
+                notify=notify,
+            )
+            out = {k: v for k, v in report.items() if k != "orders"}
+            out["orders_count"] = report.get("count")
+            out["orders_preview"] = (report.get("orders") or [])[:20]
+            out["via"] = "nginx→upstream→scan_buucuc_orders"
+            self._send(200 if report.get("ok") else 400, out)
+            return
+
         if path == "/v1/token/set":
             from access_token_rotate import set_access_token
 
@@ -257,7 +276,6 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/v1/owned/fill":
-            # Nhúng shop_id / user / extras / token sở hữu → secrets (owned-only)
             from access_token_rotate import (
                 SHOP_KEYS,
                 TOKEN_KEYS,
@@ -276,7 +294,6 @@ class Handler(BaseHTTPRequestHandler):
                 key = k.strip().upper()
                 if not key or not isinstance(v, (str, int)):
                     continue
-                # chặn password-like keys
                 if any(x in key for x in ("PASS", "SECRET", "COOKIE", "PRIVATE")):
                     continue
                 updates[key] = str(v).strip()
@@ -290,14 +307,9 @@ class Handler(BaseHTTPRequestHandler):
             if plat and plat in SHOP_KEYS and shop_id:
                 updates[SHOP_KEYS[plat]] = shop_id
 
-            token_result = None
             if plat and token and plat in TOKEN_KEYS:
                 token_result = set_access_token(
-                    plat,
-                    token,
-                    user=user,
-                    shop_id=shop_id,
-                    as_api_key=bool(payload.get("as_api_key")),
+                    plat, token, user=user, shop_id=shop_id, as_api_key=bool(payload.get("as_api_key"))
                 )
             elif updates:
                 path_env = upsert_env_values(updates)
@@ -348,29 +360,38 @@ class Handler(BaseHTTPRequestHandler):
             from access_token_rotate import ensure_tokens
 
             plats = payload.get("platforms")
-            if isinstance(plats, list):
-                platforms = [str(x) for x in plats]
-            else:
-                platforms = None
+            platforms = [str(x) for x in plats] if isinstance(plats, list) else None
             report = ensure_tokens(platforms=platforms, auto_refresh_vtp=True)
             report["via"] = "nginx→upstream→access_token_rotate.ensure"
             self._send(200 if report.get("ok") else 400, report)
             return
 
         if path == "/v1/orders/realtime":
-            # Nội bộ upstream: KHÔNG gọi lại nginx (tránh đệ quy).
             from access_token_rotate import apply_realtime
 
             limit = int(payload.get("limit") or 20)
             notify = bool(payload.get("notify"))
             report = apply_realtime(limit=limit, notify=notify, via_nginx=False)
             report["via"] = "nginx→upstream→access_token_rotate→realtime_order_sync"
-            report["nginx_mock_orders"] = ORDERS
-            report["policy"] = {"owned_only": True, "no_dump_login": True, "via_nginx": True}
+            if payload.get("buucuc_scan"):
+                from scan_buucuc_orders import build_report as buucuc_scan
+
+                scan = buucuc_scan(
+                    days=int(payload.get("days") or 3),
+                    limit=int(payload.get("buucuc_limit") or 10000),
+                    notify=False,
+                )
+                report["buucuc_scan"] = {k: v for k, v in scan.items() if k != "orders"}
+                report["buucuc_scan"]["orders_count"] = scan.get("count")
+            report["policy"] = {
+                "owned_only": True,
+                "no_dump_login": True,
+                "via_nginx": True,
+                "no_demo_pad": True,
+            }
             if report.get("ok"):
                 report["verdict"] = (
-                    f"✅ realtime via nginx · new={(report.get('cycle') or {}).get('new_count')} · "
-                    f"mock={len(ORDERS)}"
+                    f"✅ realtime via nginx · new={(report.get('cycle') or {}).get('new_count')}"
                 )
             self._send(200 if report.get("ok") else 400, report)
             return
@@ -387,8 +408,8 @@ def main() -> int:
             {
                 "ok": True,
                 "listen": f"{host}:{port}",
-                "orders": len(ORDERS),
                 "token_routes": True,
+                "buucuc_scan": True,
             }
         ),
         flush=True,

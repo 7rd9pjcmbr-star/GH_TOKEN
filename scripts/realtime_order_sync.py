@@ -318,6 +318,49 @@ def sync_ghn_probe(env: dict[str, str], state: dict) -> dict[str, Any]:
     return result
 
 
+def sync_buucuc_remote(env: dict[str, str], state: dict, limit: int) -> dict[str, Any]:
+    """Quét đơn bưu cục remote (GHN/VTP/SPX/VNPost/Pancake) — không đọc danh_sach."""
+    result: dict[str, Any] = {
+        "backend": "Buucuc-scan",
+        "status": "error",
+        "new_orders": [],
+        "fetched": 0,
+        "detail": "",
+    }
+    try:
+        from scan_buucuc_orders import build_report
+
+        report = build_report(days=3, limit=limit, pipe=True, write_cache=True, notify=False)
+        orders = report.get("orders") or []
+        new_orders: list[dict] = []
+        for o in orders:
+            fp = order_fingerprint(
+                str(o.get("backend") or "Buucuc"),
+                {"id": o.get("order_id"), "order_id": o.get("order_id"), "shop_id": o.get("shop_id"), "status_name": o.get("status")},
+            )
+            if fp in state.setdefault("seen_orders", {}):
+                continue
+            state["seen_orders"][fp] = {"at": utc_now(), "backend": o.get("backend"), "buucuc": o.get("buucuc")}
+            new_orders.append(o)
+        result["status"] = "ok" if not report.get("blockers") or orders else "missing_cred"
+        if report.get("blockers") and not orders:
+            result["status"] = "missing_cred"
+        result["fetched"] = len(orders)
+        result["new_orders"] = new_orders
+        result["detail"] = report.get("verdict") or f"scanned={len(orders)} new={len(new_orders)}"
+        result["blockers"] = report.get("blockers") or []
+        result["by_buucuc"] = report.get("by_buucuc") or {}
+    except Exception as exc:  # noqa: BLE001
+        result["status"] = "error"
+        result["detail"] = str(exc)[:200]
+    state.setdefault("backends", {})["Buucuc-scan"] = {
+        "status": result["status"],
+        "checked_at": utc_now(),
+        "detail": result["detail"],
+        "fetched": result.get("fetched"),
+    }
+    return result
+
 def sync_tpos_probe(env: dict[str, str], state: dict) -> dict[str, Any]:
     base = (env.get("TPOS_BASE_URL") or "").rstrip("/")
     token = (env.get("TPOS_ACCESS_TOKEN") or "").strip()
@@ -555,6 +598,7 @@ def run_cycle(env: dict[str, str], limit: int, notify: bool, notify_new_only: bo
         sync_vnpost_local(state),
         sync_ghn_probe(env, state),
         sync_tpos_probe(env, state),
+        sync_buucuc_remote(env, state, limit=limit),
     ]
     all_new: list[dict] = []
     for b in backends:
