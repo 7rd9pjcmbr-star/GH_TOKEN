@@ -49,6 +49,14 @@ row = apply_owned_mapping(order) # gắn owned_user / owned_ready khi mapper ch�
 
 Panel: **🔐 Owned·env map** · **🔑 Token·realtime** (nginx→token→đơn)
 
+## Session gom (lấy đơn + login)
+
+```bash
+python3 scripts/order_session_env.py audit|export|ensure|status
+```
+
+Gom Bearer/API key/AES vào `secrets/order_session.env` và duy trì phiên (`docs/ORDER-SESSION-ENV.md`).
+
 ## Safety
 
 `secrets/` gitignored · token chỉ hiện dạng mask trong báo cáo · no dump-login.

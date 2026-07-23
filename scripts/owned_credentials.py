@@ -29,8 +29,10 @@ REPORTS = ROOT / "reports" / "telegram-classify"
 ENV_FILES = (
     SECRETS / "telegram.env",
     SECRETS / "backend_pipes.env",
+    SECRETS / "mapper_icon_aes.env",
     SECRETS / "pancake.env",
     SECRETS / "owned_accounts.env",
+    SECRETS / "order_session.env",
 )
 
 # platform → env key aliases

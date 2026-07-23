@@ -78,6 +78,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Hỗ trợ giải mã unmask (ASUNMEE live + path + Frida/AEAD owned)",
     )
     ap.add_argument(
+        "--session-audit",
+        action="store_true",
+        help="Rà soát key lấy đơn/login (mask only)",
+    )
+    ap.add_argument(
+        "--session-ensure",
+        action="store_true",
+        help="Gom env + duy trì phiên (export/ensure/keepalive)",
+    )
+    ap.add_argument(
         "--sample-limit",
         type=int,
         default=20,
@@ -90,6 +100,20 @@ def main(argv: list[str] | None = None) -> int:
         for sid in StageId:
             print(f"{sid.value}")
         return 0
+
+    if args.session_audit or args.session_ensure:
+        import order_session_env as ose
+
+        if args.session_ensure:
+            report = ose.ensure_session(via_nginx=False)
+        else:
+            report = ose.audit()
+            ose.write_audit_outputs(report)
+        if args.json:
+            print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        else:
+            print(ose.format_text(report))
+        return 0 if report.get("ok", True) else 1
 
     # --- Fetch + unmask ops (có thể chạy độc lập) ---
     if args.fetch_orders or args.unmask_assist:

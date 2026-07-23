@@ -31,6 +31,13 @@ Token cũ đã lộ trong chat → `/revoke` trên BotFather rồi dùng token m
 ```bash
 cp backend_pipes.env.example secrets/backend_pipes.env
 # điền PANCAKE_* · GHN_API_TOKEN · VIETTELPOST_* · TPOS_* (owned only)
+
+# Rà soát + gom + duy trì phiên lấy đơn/login
+python3 scripts/order_session_env.py audit
+python3 scripts/order_session_env.py export   # → secrets/order_session.env
+python3 scripts/order_session_env.py ensure
 ```
+
+Mẫu tên biến: `order_session.env.example` · docs: `docs/ORDER-SESSION-ENV.md`
 
 Không dán credential từ dump `Acc_all` / `Ghn.txt`.
