@@ -528,6 +528,29 @@ class NginxOrderEmbed:
             ensure=ensure,
         )
 
+    def ghn_token_proxy_orders(
+        self,
+        *,
+        days: int = 3,
+        limit: int = 20,
+        limit_tokens: int = 10,
+        probe_only: bool = False,
+        ensure: bool = True,
+    ) -> dict:
+        """Pipeline: nginx → token↔proxy bind → gọi đơn GHN từng cặp."""
+        return self.call_json(
+            "/v1/ghn/token-proxy-orders",
+            method="POST",
+            payload={
+                "days": days,
+                "limit": limit,
+                "limit_tokens": limit_tokens,
+                "probe_only": probe_only,
+            },
+            timeout=300.0,
+            ensure=ensure,
+        )
+
     def token_realtime_pipeline(self, *, limit: int = 20, notify: bool = False, auto_stop: bool | None = None) -> dict:
         """Toàn bộ: bật nginx → nạp/ensure token module → gọi đơn RT → (optional) stop."""
         stop = self.auto_stop if auto_stop is None else auto_stop
@@ -658,6 +681,7 @@ class NginxOrderEmbed:
                 "token-realtime — nginx→access_token_rotate→danh sách đơn RT",
                 "pancake-ingest — nginx→cookie/pos_jwt→secrets→quét đơn",
                 "ghn-ingest — nginx→printA5/cookie token→GHN_API_TOKEN",
+                "ghn-token-proxy-orders — nginx→token↔proxy→gọi đơn GHN",
                 "buucuc-scan — nginx→quét bưu cục remote",
                 "orders/call_orders — lấy danh sách đơn",
                 "stop — tắt sau khi xong",
@@ -669,6 +693,8 @@ class NginxOrderEmbed:
                 "POST /v1/token/ghn-ingest",
                 "POST /v1/ghn/orders",
                 "POST /v1/token/ghn-orders",
+                "POST /v1/ghn/token-proxy-orders",
+                "POST /v1/token/ghn-token-proxy-orders",
                 "POST /v1/token/refresh",
                 "POST /v1/buucuc/scan",
                 "POST /v1/token/set",
@@ -809,10 +835,13 @@ def main(argv: list[str] | None = None) -> int:
             "buucuc-scan",
             "pancake-ingest",
             "ghn-ingest",
+            "ghn-token-proxy-orders",
             "test",
             "describe",
         ],
     )
+    ap.add_argument("--limit-tokens", type=int, default=10, help="giới hạn token khi ghn-token-proxy-orders")
+    ap.add_argument("--probe-only", action="store_true", help="chỉ probe token+proxy, không gọi đơn")
     ap.add_argument("--id", default="OMS-NGX-001", help="order id cho lệnh order")
     ap.add_argument("--limit", type=int, default=20, help="limit đơn realtime")
     ap.add_argument("--days", type=int, default=3, help="số ngày quét bưu cục")
@@ -922,6 +951,28 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 if not args.keep:
                     mod.stop()
+    elif cmd == "ghn-token-proxy-orders":
+        started = mod.ensure_up()
+        try:
+            report = mod.ghn_token_proxy_orders(
+                days=args.days,
+                limit=args.limit,
+                limit_tokens=args.limit_tokens,
+                probe_only=args.probe_only,
+                ensure=False,
+            )
+            report["start"] = started
+            payload = report.get("payload") if isinstance(report.get("payload"), dict) else {}
+            report["verdict"] = payload.get("verdict") or (
+                "✅ ghn-token-proxy-orders via nginx"
+                if report.get("ok")
+                else "❌ ghn-token-proxy-orders"
+            )
+            report["checked_at"] = utc_now()
+            write_outputs(report)
+        finally:
+            if not args.keep:
+                mod.stop()
     elif cmd == "test":
         report = mod.test()
     elif cmd == "start":

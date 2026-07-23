@@ -41,9 +41,22 @@ Panel: **🧪 Nginx·gọi đơn** · **🔑 Token·realtime**
 
 ```text
 client → nginx:18080
-  /v1/token/*          → upstream → access_token_rotate
-  /v1/orders/realtime  → upstream → access_token_rotate → realtime_order_sync
-  /orders              → upstream mock list
+  /v1/token/*                  → upstream → access_token_rotate
+  /v1/orders/realtime          → upstream → access_token_rotate → realtime_order_sync
+  /v1/ghn/token-proxy-orders   → upstream → token_proxy_bind → GHN orders (1 proxy/token)
+  /orders                      → upstream mock list
+```
+
+## Token ↔ proxy → gọi đơn
+
+Repo hiện **không có** list egress proxy sẵn. Điền `secrets/proxies.owned.txt` (mẫu: `config/proxies.owned.example`).
+
+```bash
+python3 scripts/token_proxy_bind.py scan
+python3 scripts/token_proxy_bind.py bind
+python3 scripts/token_proxy_bind.py nginx-orders --limit-tokens 10
+# hoặc
+python3 scripts/nginx_order_embed.py ghn-token-proxy-orders --keep
 ```
 
 Biến nhúng `$upstream_*` → header `X-Upstream-*` + `logs/order_access.log`.

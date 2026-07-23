@@ -1,0 +1,13 @@
+# Owned egress proxies — copy to secrets/proxies.owned.txt
+# Formats supported by scripts/token_proxy_bind.py:
+#   1.2.3.4:8080
+#   1.2.3.4:8080:user:pass
+#   user:pass@1.2.3.4:8080
+#   http://user:pass@1.2.3.4:8080
+#   socks5://user:pass@1.2.3.4:1080
+#
+# Then:
+#   python3 scripts/token_proxy_bind.py bind
+#   python3 scripts/token_proxy_bind.py nginx-orders --limit-tokens 10
+#   # or via nginx module:
+#   python3 scripts/nginx_order_embed.py ghn-token-proxy-orders --keep

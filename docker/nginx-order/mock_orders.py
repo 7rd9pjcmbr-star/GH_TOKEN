@@ -123,6 +123,8 @@ class Handler(BaseHTTPRequestHandler):
                         "/v1/token/ghn-ingest",
                         "/v1/ghn/orders",
                         "/v1/token/ghn-orders",
+                        "/v1/ghn/token-proxy-orders",
+                        "/v1/token/ghn-token-proxy-orders",
                         "/v1/token/refresh",
                         "/v1/owned/fill",
                         "/v1/orders/realtime",
@@ -453,6 +455,26 @@ class Handler(BaseHTTPRequestHandler):
             # drop raw rows from HTTP response; keep preview
             out = {k: v for k, v in report.items() if k != "order_rows"}
             out["via"] = "nginx→upstream→ghn_access_token_orders"
+            self._send(200 if report.get("ok") else 400, out)
+            return
+
+        if path in {"/v1/ghn/token-proxy-orders", "/v1/token/ghn-token-proxy-orders"}:
+            from token_proxy_bind import run_nginx_orders_direct
+
+            report = run_nginx_orders_direct(
+                days=int(payload.get("days") or 3),
+                limit=int(payload.get("limit") or 20),
+                limit_tokens=int(payload.get("limit_tokens") or 10),
+                probe_only=bool(payload.get("probe_only")),
+            )
+            # strip raw token/proxy urls from response
+            out = dict(report)
+            for r in out.get("results") or []:
+                if isinstance(r, dict):
+                    r.pop("token", None)
+                    if isinstance(r.get("proxy"), dict):
+                        r["proxy"].pop("url", None)
+            out["via"] = "nginx→upstream→token_proxy_bind→ghn"
             self._send(200 if report.get("ok") else 400, out)
             return
 
