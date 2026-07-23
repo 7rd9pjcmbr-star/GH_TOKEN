@@ -164,33 +164,59 @@ def deep_walk_envelope(obj: Any, path: str = "", depth: int = 0, max_depth: int 
         for i, v in enumerate(obj):
             hits.extend(deep_walk_envelope(v, f"{path}[{i}]", depth + 1, max_depth))
     elif isinstance(obj, str) and obj.strip() and ("*" in obj or len(obj) >= 8):
-        # bare string that looks mask / encoded
-        assist = detect_and_decode(obj)
-        kind = assist.get("kind") or assist.get("detected") or "unknown"
-        if kind == "mask" or (assist.get("ok") and kind in {"base64", "hex", "url"}):
+        # bare string: chỉ giữ mask thật hoặc encoding rõ (tránh order id / tên SP)
+        if "*" in obj and is_pii_mask(obj):
             hits.append(
                 {
                     "path": path,
                     "path_norm": _norm_path(path),
                     "layer": "L5-string",
                     "display": obj[:120],
-                    "display_kind": "mask" if kind == "mask" else "encoded",
+                    "display_kind": "mask",
                     "b64_result": None,
-                    "path_id": "PATH-MASK-REDACTION"
-                    if kind == "mask"
-                    else "PATH-ENCODING",
-                    "mapper_action": "fetch_unmasked_from_source_api"
-                    if kind == "mask"
-                    else "ma_mo_encode_decode",
+                    "path_id": "PATH-MASK-REDACTION",
+                    "mapper_action": "fetch_unmasked_from_source_api",
                     "crypto_unmask": False,
-                    "assist": {
-                        "ok": assist.get("ok"),
-                        "kind": kind,
-                        "plain_text": assist.get("plain_text"),
-                    },
-                    "assist_note": assist.get("assist") or assist.get("explain"),
+                    "assist_note": "Bare mask string trong envelope",
                 }
             )
+            return hits
+        # Base64 có padding hoặc alphabet rõ — không phải thuần chữ/số unicode dài
+        b64cand = re.sub(r"\s+", "", obj)
+        if (
+            re.fullmatch(r"[A-Za-z0-9+/]+=*", b64cand)
+            and len(b64cand) >= 12
+            and ("=" in b64cand or re.search(r"[A-Za-z]", b64cand) and re.search(r"[0-9+/]", b64cand))
+            and not re.fullmatch(r"\d+", obj)
+        ):
+            assist = detect_and_decode(obj)
+            if assist.get("ok") and (assist.get("kind") or assist.get("detected")) == "base64":
+                plain = assist.get("plain_text") or ""
+                hits.append(
+                    {
+                        "path": path,
+                        "path_norm": _norm_path(path),
+                        "layer": "L5-string",
+                        "display": obj[:120],
+                        "display_kind": "encoded",
+                        "b64_result": "decodes_to_mask"
+                        if is_pii_mask(plain)
+                        else ("decodes_to_clear" if plain else "other"),
+                        "path_id": "PATH-MASK-REDACTION"
+                        if is_pii_mask(plain)
+                        else "PATH-ENCODING",
+                        "mapper_action": "fetch_unmasked_from_source_api"
+                        if is_pii_mask(plain)
+                        else "ma_mo_encode_decode",
+                        "crypto_unmask": False,
+                        "assist": {
+                            "ok": True,
+                            "kind": "base64",
+                            "plain_text": plain[:120],
+                        },
+                        "assist_note": "Bare base64 trong cây — kiểm tra plain có phải mask",
+                    }
+                )
     return hits
 
 
