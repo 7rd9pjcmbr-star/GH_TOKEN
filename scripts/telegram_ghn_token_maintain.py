@@ -254,11 +254,43 @@ def classify_file(path: Path) -> dict[str, Any]:
 
     name_dump = bool(re.search(r"(?i)ghn_tokens|acc_all|stealer|dump", path.name))
     body_dump = bool(DUMP_HINT_RE.search(text[:2000]) or up_n >= 3)
+    owned_claim = False
+    try:
+        claim = ROOT / "secrets" / "OWNED_CLAIM_GHN"
+        if claim.is_file() and claim.read_text(encoding="utf-8", errors="ignore").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "i-own-this",
+            "owned",
+        }:
+            owned_claim = True
+        if (os.environ.get("OWNED_CLAIM_GHN") or "").strip().lower() in {"1", "true", "yes"}:
+            owned_claim = True
+    except Exception:  # noqa: BLE001
+        pass
     if name_dump or body_dump or up_n >= 3:
-        out["kind"] = "DUMP"
+        if owned_claim and up_n >= 1 and not re.search(r"(?i)(acc_all|stealer|results_cookies)", path.name):
+            # Chủ xác nhận sở hữu — không block; hướng sang owned maintain
+            out["kind"] = "OWNED_MULTI"
+            out["owned_candidate"] = True
+            out["blocked_for_login"] = False
+            out["reason"] = (
+                f"owned multi-token ×{up_n} (đã claim) — dùng "
+                "ghn_tokens_owned_maintain.py --i-own-this"
+            )
+            for ln in lines[:3]:
+                if UP_TOKEN_RE.match(ln):
+                    parts = ln.split(":")
+                    out["sample_masked"].append(f"{mask(parts[0], 2)}:***:{mask(parts[-1])}")
+            out["raw_for_ingest"] = None  # multi → owned maintain, không ingest 1 dòng
+            return out
+        out["kind"] = "MULTI_TOKEN_LIST"
         out["blocked_for_login"] = True
-        out["reason"] = f"dump user:pass:token ×{up_n} — không dùng để maintain"
-        # redacted samples
+        out["reason"] = (
+            f"list user:pass:token ×{up_n} — heuristic gắn dump; "
+            "nếu là của bạn: python3 scripts/ghn_tokens_owned_maintain.py --i-own-this"
+        )
         for ln in lines[:3]:
             if UP_TOKEN_RE.match(ln):
                 parts = ln.split(":")
@@ -453,10 +485,9 @@ def run(*, lookback: int = 500, try_apply: bool = True) -> dict[str, Any]:
             f"owned_usable=0 — không duy trì được từ dump"
         )
         report["next"] = [
-            "Gửi file owned đơn: printA5 URL hoặc token=<UUID> (không user:pass:token list)",
-            "hoặc: printf '%s\\n' '<printA5 owned>' > secrets/ghn_session.raw",
+            "Nếu ghn_tokens* là của bạn: python3 scripts/ghn_tokens_owned_maintain.py --i-own-this",
+            "hoặc gửi printA5 / token=<UUID> owned còn hạn → secrets/ghn_session.raw",
             "python3 scripts/ghn_access_token_orders.py run --days 3 --limit 50",
-            "python3 scripts/token_session_maintain.py once",
         ]
 
     if dump_n and not owned:
