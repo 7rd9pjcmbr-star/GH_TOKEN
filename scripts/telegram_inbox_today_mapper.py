@@ -530,10 +530,29 @@ def build_report(*, as_of: str | None = None, pull: bool = True, wait: int = 0) 
         dg_note = {"error": str(e)[:120]}
 
     icons = ["spark", "code", "cube", "compass", "hash"]
+    # Trích tín hiệu lấy đơn từ dump hôm nay (không bỏ qua URL/user/host)
+    signal_blocks = list(pull_result.get("order_signals") or [])
+    dumps_dir = INBOX / "_skipped_dumps"
+    if dumps_dir.is_dir():
+        day = as_of.replace("-", "")
+        try:
+            from order_signal_extract import extract_order_signals
+
+            for p in sorted(dumps_dir.glob(f"{day}_*")):
+                if any((b.get("file") == p.name) for b in signal_blocks):
+                    continue
+                try:
+                    signal_blocks.append(extract_order_signals(p))
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception:  # noqa: BLE001
+            pass
+
     top_fb = feedback_line(
         icons,
         f"inbox→mapper hôm nay {as_of} · downloaded={len(pull_result.get('downloaded') or [])} · "
-        f"orders_today={len(rows)} · files_today={stats.get('inbox_today_files')}",
+        f"orders_today={len(rows)} · files_today={stats.get('inbox_today_files')} · "
+        f"order_signal_files={len(signal_blocks)}",
     )
 
     return {
@@ -541,7 +560,8 @@ def build_report(*, as_of: str | None = None, pull: bool = True, wait: int = 0) 
         "query": "Lấy file mới hộp thoại Telegram → mapper đơn hàng hôm nay",
         "checked_at": utc_now(),
         "as_of": as_of,
-        "pull": pull_result,
+        "pull": {k: v for k, v in pull_result.items() if k != "order_signals"},
+        "order_signals": signal_blocks,
         "db": db,
         "stats": {
             **{k: (dict(v) if isinstance(v, Counter) else v) for k, v in stats.items() if k != "inbox"},
@@ -620,6 +640,13 @@ def format_text(report: dict) -> str:
     L(f"kho={st.get('by_kho')}")
     L(f"status={st.get('by_status')}")
     L(f"with_tracking_url={st.get('with_tracking_url')} · dang_giao_refresh={report.get('dang_giao_refresh')}")
+    L("")
+    L("=== Tín hiệu lấy đơn (giữ URL/user/host — che password) ===")
+    for b in (report.get("order_signals") or [])[:8]:
+        sig = b.get("signals") or {}
+        L(f"· {b.get('file')}: {b.get('verdict')}")
+        L(f"  platforms={sig.get('platforms')} hosts={sig.get('hosts')[:5]}")
+        L(f"  users_kept={sig.get('users_top')[:5]}")
     L("")
     L("=== File inbox (mới nhất) ===")
     for f in (report.get("inbox_files") or [])[:12]:
