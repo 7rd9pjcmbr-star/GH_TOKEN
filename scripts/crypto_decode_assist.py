@@ -200,6 +200,63 @@ def detect_and_decode(text: str) -> dict:
 
 # ----- AEAD decrypt assist (owned key only) -----
 
+SECRETS = ROOT / "secrets"
+UPLOADS = Path("/home/ubuntu/.cursor/projects/workspace/uploads")
+FRIDA_AAD_DEFAULT = "mapper-icon-aes-v1"
+KEY_ENV_NAMES = (
+    "MAPPER_ICON_AES_KEY_B64",
+    "ICON_AES_KEY_B64",
+    "AES_GCM_KEY_B64",
+    "FRIDA_A11Y_AES_KEY_B64",
+)
+
+
+def load_env_secrets() -> dict[str, str]:
+    import os
+
+    env = dict(os.environ)
+    for path in (SECRETS / "telegram.env", SECRETS / "backend_pipes.env", SECRETS / "mapper_icon_aes.env"):
+        if not path.is_file():
+            continue
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            t = line.strip()
+            if not t or t.startswith("#") or "=" not in t:
+                continue
+            k, v = t.split("=", 1)
+            env.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+    return env
+
+
+def resolve_aes_key_b64(explicit: str | None = None, key_file: str | None = None) -> dict[str, Any]:
+    """Tìm key owned: CLI → file → env/secrets (không brute-force)."""
+    if explicit and explicit.strip():
+        return {"ok": True, "key_b64": explicit.strip(), "source": "cli"}
+    if key_file:
+        p = Path(key_file)
+        if p.is_file():
+            raw = p.read_text(encoding="utf-8", errors="ignore").strip().splitlines()[0].strip()
+            if raw:
+                return {"ok": True, "key_b64": raw, "source": str(p)}
+    env = load_env_secrets()
+    for name in KEY_ENV_NAMES:
+        v = (env.get(name) or "").strip()
+        if v:
+            return {"ok": True, "key_b64": v, "source": f"env:{name}"}
+    key_path = SECRETS / "mapper_icon_aes.key"
+    if key_path.is_file():
+        raw = key_path.read_text(encoding="utf-8", errors="ignore").strip().splitlines()[0].strip()
+        if raw:
+            return {"ok": True, "key_b64": raw, "source": str(key_path)}
+    return {
+        "ok": False,
+        "error": "Thiếu key AES owned",
+        "need": [
+            f"Đặt một trong: {', '.join(KEY_ENV_NAMES)} trong secrets/backend_pipes.env",
+            "hoặc secrets/mapper_icon_aes.key (1 dòng key_b64)",
+            "hoặc CLI --key-b64 / --key-file",
+        ],
+    }
+
 
 def decrypt_aes_gcm(
     key_b64: str,
@@ -211,16 +268,185 @@ def decrypt_aes_gcm(
         key = base64.b64decode(key_b64)
         nonce = base64.b64decode(nonce_b64)
         ct = base64.b64decode(ciphertext_b64)
+        if len(key) not in (16, 24, 32):
+            return {
+                "ok": False,
+                "kind": "aes-gcm",
+                "error": f"key length {len(key)} — cần 16/24/32 bytes",
+                "explain": explain("aes-gcm"),
+            }
         pt = AESGCM(key).decrypt(nonce, ct, aad.encode() if aad else None)
         return {
             "ok": True,
             "kind": "aes-gcm",
             "plain_text": pt.decode("utf-8", errors="replace"),
+            "plain_bytes": len(pt),
             "explain": explain("aes-gcm"),
             "library": "pyca/cryptography AESGCM",
         }
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "kind": "aes-gcm", "error": str(e), "explain": explain("aes-gcm")}
+
+
+def _sha256_16(data: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(data).hexdigest()[:16]
+
+
+def find_frida_aes_bundles() -> list[Path]:
+    """Tìm bundle frida-a11y-offline-aes trong uploads + reports."""
+    cands: list[Path] = []
+    for root in (UPLOADS, REPORTS, ROOT / "quarantine" / "telegram"):
+        if not root.is_dir():
+            continue
+        for p in root.glob("**/frida-a11y-offline-aes*.json"):
+            cands.append(p)
+        for p in root.glob("**/*offline-aes*.json"):
+            if p not in cands:
+                cands.append(p)
+    cands.sort(key=lambda p: p.stat().st_mtime if p.is_file() else 0, reverse=True)
+    return cands
+
+
+def decrypt_frida_a11y_bundle(
+    path: Path | str,
+    *,
+    key_b64: str | None = None,
+    key_file: str | None = None,
+) -> dict[str, Any]:
+    """Giải bundle Frida a11y offline AES (mapper-icon-aes-v1).
+
+    Bundle schema:
+      call / encoding / aes{nonce_b64,ciphertext_b64,aad,plaintext_sha256_16} / meta
+    Inner: masked mapper envelope — AES không unmask PII Pancake.
+    """
+    p = Path(path)
+    report: dict[str, Any] = {
+        "ok": False,
+        "module": "frida_a11y_aes_decrypt",
+        "checked_at": utc_now(),
+        "path": str(p),
+        "policy": {"owned_key_only": True, "no_bruteforce": True, "no_unmask_pii": True},
+    }
+    if not p.is_file():
+        report["error"] = f"Không thấy file: {p}"
+        report["verdict"] = "❌ Thiếu bundle Frida AES"
+        return report
+
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        report["error"] = f"JSON lỗi: {e}"
+        report["verdict"] = "❌ Bundle không phải JSON hợp lệ"
+        return report
+
+    aes = data.get("aes") if isinstance(data.get("aes"), dict) else {}
+    meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+    call = data.get("call") if isinstance(data.get("call"), dict) else {}
+    encoding = data.get("encoding") if isinstance(data.get("encoding"), dict) else {}
+    report["call"] = call
+    report["encoding"] = encoding
+    report["meta"] = meta
+    report["aes_meta"] = {
+        "alg": aes.get("alg") or aes.get("encoding"),
+        "v": aes.get("v"),
+        "aad": aes.get("aad") or FRIDA_AAD_DEFAULT,
+        "nonce_b64": aes.get("nonce_b64"),
+        "ciphertext_len": len(aes.get("ciphertext_b64") or ""),
+        "plaintext_sha256_16": aes.get("plaintext_sha256_16"),
+        "encrypted_at": aes.get("encrypted_at"),
+        "has_key_in_bundle": bool(aes.get("key_b64") or data.get("key_b64")),
+    }
+
+    key_info = resolve_aes_key_b64(
+        explicit=key_b64 or aes.get("key_b64") or data.get("key_b64"),
+        key_file=key_file,
+    )
+    report["key"] = {"ok": key_info.get("ok"), "source": key_info.get("source"), "need": key_info.get("need")}
+    if not key_info.get("ok"):
+        report["error"] = key_info.get("error")
+        report["need"] = key_info.get("need")
+        report["verdict"] = (
+            f"❌ Có ciphertext AES ({report['aes_meta']['ciphertext_len']} chars) "
+            f"shop={meta.get('path')} — thiếu key owned để giải"
+        )
+        return report
+
+    aad = str(aes.get("aad") or FRIDA_AAD_DEFAULT)
+    dec = decrypt_aes_gcm(
+        key_info["key_b64"],
+        str(aes.get("nonce_b64") or ""),
+        str(aes.get("ciphertext_b64") or ""),
+        aad,
+    )
+    report["decrypt"] = {k: v for k, v in dec.items() if k != "plain_text"}
+    if not dec.get("ok"):
+        report["error"] = dec.get("error")
+        report["verdict"] = f"❌ AES-GCM decrypt thất bại: {dec.get('error')}"
+        return report
+
+    plain = dec.get("plain_text") or ""
+    plain_bytes = plain.encode("utf-8")
+    expect = str(aes.get("plaintext_sha256_16") or "")
+    got = _sha256_16(plain_bytes)
+    report["integrity"] = {
+        "plaintext_sha256_16_expected": expect or None,
+        "plaintext_sha256_16_got": got,
+        "match": (not expect) or expect == got,
+    }
+
+    inner: Any = None
+    try:
+        inner = json.loads(plain)
+    except json.JSONDecodeError:
+        inner = None
+
+    report["ok"] = True
+    report["plain"] = {
+        "bytes": len(plain_bytes),
+        "is_json": inner is not None,
+        "preview": plain[:400],
+        # Không dump full PII vào report mặc định — ghi file riêng khi ok
+    }
+    report["inner_note"] = encoding.get("note") or (
+        "Inner mask envelope — AES unwrap ≠ unmask Pancake PII"
+    )
+
+    out_plain = REPORTS / "frida_a11y_aes_plaintext.json"
+    out_txt = REPORTS / "frida_a11y_aes_plaintext.txt"
+    REPORTS.mkdir(parents=True, exist_ok=True)
+    if inner is not None:
+        out_plain.write_text(json.dumps(inner, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        report["plain"]["json_keys"] = list(inner.keys())[:30] if isinstance(inner, dict) else None
+        if isinstance(inner, dict):
+            report["plain"]["orders_n"] = len(inner.get("orders") or inner.get("data") or [])
+    else:
+        out_plain.write_text(plain, encoding="utf-8")
+    out_txt.write_text(plain[:20000], encoding="utf-8")
+    report["outputs"] = {"json": str(out_plain), "txt": str(out_txt)}
+
+    shop = meta.get("path") or "?"
+    report["verdict"] = (
+        f"✅ Đã giải AES-GCM · {shop} · plain={len(plain_bytes)}B · "
+        f"sha16={'OK' if report['integrity']['match'] else 'MISMATCH'} · "
+        f"key_src={key_info.get('source')}"
+    )
+    return report
+
+
+def assist_frida_aes_latest(*, key_b64: str | None = None, key_file: str | None = None) -> dict[str, Any]:
+    bundles = find_frida_aes_bundles()
+    if not bundles:
+        return {
+            "ok": False,
+            "checked_at": utc_now(),
+            "verdict": "❌ Không tìm thấy frida-a11y-offline-aes*.json trong uploads/reports",
+            "bundles": [],
+        }
+    result = decrypt_frida_a11y_bundle(bundles[0], key_b64=key_b64, key_file=key_file)
+    result["bundles_found"] = [str(b) for b in bundles[:8]]
+    return result
 
 
 def decrypt_chacha(
@@ -248,7 +474,6 @@ def decrypt_chacha(
             "error": str(e),
             "explain": explain("chacha20-poly1305"),
         }
-
 
 def demo_roundtrip_assist(sample: str = "0979263463") -> dict:
     """Tạo ciphertext demo rồi giải bằng module — chứng minh đường AEAD."""
@@ -341,12 +566,13 @@ def build_report(inputs: list[str] | None = None) -> dict:
 
     aead_demo = demo_roundtrip_assist()
     orders = assist_order_phones()
+    frida = assist_frida_aes_latest()
 
     try:
         from realtime_icon_feedback_mapper import chant, feedback_line
 
         icons = ["text", "lock", "key", "hash", "monitor"]
-        fb = feedback_line(icons, "module hỗ trợ giải mã encode/* + AEAD")
+        fb = feedback_line(icons, "module hỗ trợ giải mã encode/* + AEAD + Frida AES")
     except Exception:  # noqa: BLE001
         icons, fb = ["text", "lock", "key"], "Mapper gọi: text → lock → key"
 
@@ -358,25 +584,41 @@ def build_report(inputs: list[str] | None = None) -> dict:
         "modules": [
             {"id": "MaMoCrypto.encode", "file": "js/crypto/encode.js", "role": "fromBase64/fromMorse/fromBraille"},
             {"id": "crypto_decode_assist", "file": "scripts/crypto_decode_assist.py", "role": "Python parity + AEAD decrypt"},
+            {"id": "frida_a11y_aes", "role": "AES-GCM decrypt bundle mapper-icon-aes-v1 (owned key)"},
             {"id": "pyca/cryptography", "role": "AESGCM / ChaCha20Poly1305.decrypt"},
         ],
         "batch_decode": decoded,
         "aead_demo": aead_demo,
+        "frida_a11y_aes": {
+            "ok": frida.get("ok"),
+            "verdict": frida.get("verdict"),
+            "path": frida.get("path"),
+            "meta": frida.get("meta"),
+            "key": frida.get("key"),
+            "need": frida.get("need"),
+            "integrity": frida.get("integrity"),
+            "outputs": frida.get("outputs"),
+            "bundles_found": frida.get("bundles_found"),
+        },
         "orders_phone_assist": orders,
         "icon_feedback": fb,
         "icon_chant": " → ".join(icons) if isinstance(icons, list) else str(icons),
         "verdict": (
-            f"Module giải mã: encode/* xử lý Base64/Morse/Braille/Hex/URL; "
-            f"AEAD demo roundtrip={aead_demo['decrypt_result'].get('roundtrip_ok')}. "
-            f"Đang giao: {orders.get('by_class')} — MASKED không giải được bằng decode. {fb}"
+            f"Module giải mã: encode/* + AEAD demo roundtrip="
+            f"{aead_demo['decrypt_result'].get('roundtrip_ok')}. "
+            f"Frida AES: {frida.get('verdict')}. "
+            f"Đang giao: {orders.get('by_class')} — MASKED không giải bằng decode. {fb}"
         ),
         "safety": {
             "no_password_cracking": True,
             "no_dump_login": True,
             "aead_requires_owned_key": True,
             "mask_not_decryptable": True,
+            "no_bruteforce": True,
         },
         "next_actions": [
+            "Frida AES: điền MAPPER_ICON_AES_KEY_B64 vào secrets rồi: "
+            "python3 scripts/crypto_decode_assist.py --frida-aes FILE",
             "SĐT **** → refetch API / bản AEAD nội bộ có key — không dùng fromBase64",
             "PII at rest: lưu AES-GCM; giải bằng crypto_decode_assist --aes-gcm khi CS cần",
             "UI: MaMoCrypto.encode.fromBase64 / fromMorse / fromBraille",
@@ -413,6 +655,21 @@ def format_text(report: dict) -> str:
     L(f"· kind={d.get('kind')} roundtrip={d.get('roundtrip_ok')} plain={d.get('plain_text')!r}")
     L(f"· lib={d.get('library')} — {d.get('explain')}")
     L("")
+    fr = report.get("frida_a11y_aes") or {}
+    L("=== Frida a11y AES (mapper-icon-aes-v1) ===")
+    L(f"· {fr.get('verdict')}")
+    if fr.get("path"):
+        L(f"· bundle: {fr.get('path')}")
+    if fr.get("meta"):
+        L(f"· meta: {fr.get('meta')}")
+    if fr.get("key"):
+        L(f"· key: ok={fr['key'].get('ok')} source={fr['key'].get('source')}")
+    if fr.get("need"):
+        for n in fr["need"]:
+            L(f"  need: {n}")
+    if fr.get("outputs"):
+        L(f"· outputs: {fr.get('outputs')}")
+    L("")
     L("=== Đang giao phone assist ===")
     o = report["orders_phone_assist"]
     L(f"· rows={o.get('rows')} by_class={o.get('by_class')}")
@@ -442,12 +699,42 @@ def write_outputs(report: dict) -> dict[str, Path]:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Module hỗ trợ giải mã (encode + AEAD)")
+    ap = argparse.ArgumentParser(description="Module hỗ trợ giải mã (encode + AEAD + Frida AES)")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--text", action="append", help="Chuỗi cần giải (lặp lại được)")
     ap.add_argument("--aes-gcm", nargs=3, metavar=("KEY_B64", "NONCE_B64", "CT_B64"))
     ap.add_argument("--aad", default="")
+    ap.add_argument("--frida-aes", metavar="FILE", help="Giải bundle frida-a11y-offline-aes*.json")
+    ap.add_argument("--key-b64", default="", help="AES-256 key (base64) owned")
+    ap.add_argument("--key-file", default="", help="File chứa key_b64 (1 dòng)")
     args = ap.parse_args()
+
+    if args.frida_aes:
+        res = decrypt_frida_a11y_bundle(
+            args.frida_aes,
+            key_b64=args.key_b64 or None,
+            key_file=args.key_file or None,
+        )
+        out = REPORTS / "frida_a11y_aes_decrypt.json"
+        REPORTS.mkdir(parents=True, exist_ok=True)
+        # strip huge preview duplicates
+        out.write_text(json.dumps(res, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
+        (REPORTS / "frida_a11y_aes_decrypt.txt").write_text(
+            f"FRIDA A11Y AES DECRYPT\nLúc: {res.get('checked_at')}\nVerdict: {res.get('verdict')}\n"
+            f"Path: {res.get('path')}\nKey: {res.get('key')}\nNeed: {res.get('need')}\n"
+            f"Outputs: {res.get('outputs')}\nError: {res.get('error')}\n",
+            encoding="utf-8",
+        )
+        if args.json:
+            print(json.dumps(res, ensure_ascii=False, indent=2, default=str))
+        else:
+            print(res.get("verdict"))
+            if res.get("need"):
+                for n in res["need"]:
+                    print(" need:", n)
+            if res.get("outputs"):
+                print(" outputs:", res["outputs"])
+        return 0 if res.get("ok") else 1
 
     if args.aes_gcm:
         res = decrypt_aes_gcm(args.aes_gcm[0], args.aes_gcm[1], args.aes_gcm[2], args.aad)
