@@ -356,6 +356,179 @@ def reverse_by_kho(conn: sqlite3.Connection, kho: str, limit: int = 30) -> dict:
     )
 
 
+def reverse_by_warehouse_id(conn: sqlite3.Connection, wid: str, limit: int = 30) -> dict:
+    """Truy vấn ngược từ warehouse_id (UUID) → kho → bưu cục → tỉnh nhận."""
+    wid = (wid or "").strip()
+    samples = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT * FROM orders WHERE warehouse_id = ? ORDER BY piped_at DESC LIMIT ?",
+            (wid, limit),
+        )
+    ]
+    kho_name = None
+    if samples:
+        kho_name = samples[0].get("kho") or samples[0].get("warehouse_display")
+    else:
+        row = conn.execute(
+            "SELECT kho, warehouse_display, COUNT(*) AS n FROM orders WHERE warehouse_id = ? GROUP BY kho LIMIT 1",
+            (wid,),
+        ).fetchone()
+        if row:
+            kho_name = row[0] or row[1]
+
+    matrix = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT buucuc, backend, status, COUNT(*) AS orders,
+                   COUNT(DISTINCT van_tay) AS fps,
+                   COUNT(DISTINCT province) AS provinces
+            FROM orders WHERE warehouse_id = ?
+            GROUP BY buucuc, backend, status ORDER BY orders DESC LIMIT 30
+            """,
+            (wid,),
+        )
+    ]
+    dest = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT province, COUNT(*) AS orders,
+                   COUNT(DISTINCT district) AS districts,
+                   COUNT(DISTINCT buucuc) AS buucuc_n,
+                   SUM(CASE WHEN phone_class='MASKED' THEN 1 ELSE 0 END) AS masked,
+                   SUM(CASE WHEN phone_class='OK' THEN 1 ELSE 0 END) AS phone_ok,
+                   SUM(CASE WHEN phone_class='MISSING' THEN 1 ELSE 0 END) AS phone_missing
+            FROM orders WHERE warehouse_id = ? AND province IS NOT NULL AND province != ''
+            GROUP BY province ORDER BY orders DESC LIMIT 25
+            """,
+            (wid,),
+        )
+    ]
+    status = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT status, COUNT(*) AS orders,
+                   SUM(CASE WHEN phone_class='MASKED' THEN 1 ELSE 0 END) AS masked
+            FROM orders WHERE warehouse_id = ?
+            GROUP BY status ORDER BY orders DESC
+            """,
+            (wid,),
+        )
+    ]
+    phone = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT
+              CASE
+                WHEN phone_class IS NOT NULL AND phone_class != '' THEN phone_class
+                WHEN receiver_phone IS NULL OR receiver_phone = '' THEN 'MISSING'
+                WHEN instr(receiver_phone, '*') > 0 THEN 'MASKED'
+                ELSE 'OK'
+              END AS phone_class,
+              COUNT(*) AS orders
+            FROM orders
+            WHERE warehouse_id = ?
+            GROUP BY 1 ORDER BY orders DESC
+            """,
+            (wid,),
+        )
+    ]
+    # Chain ngược: lấy vài van_tay mẫu để panorama
+    chain_fps = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT van_tay, so_noi_bo, tracking_code, status, buucuc, province, district,
+                   phone_class, receiver_name, flow_path
+            FROM orders WHERE warehouse_id = ? AND van_tay IS NOT NULL
+            ORDER BY piped_at DESC LIMIT 8
+            """,
+            (wid,),
+        )
+    ]
+    unmask = {
+        "warehouse_phone": "PATH-CLEAR",
+        "customer_pii": "PATH-MASK-REDACTION",
+        "note": "Kho ASUMEE: SĐT kho clear; PII đơn mask — truy vấn ngược không unmask ****",
+        "assist_cli": [
+            "python3 scripts/crypto_decode_assist.py --unmask",
+            "python3 scripts/inner_unmask_deep_mapper.py --warehouse " + wid,
+        ],
+    }
+    return _attach_flow(
+        {
+            "query_type": "warehouse_id",
+            "query": wid,
+            "hit": bool(samples) or bool(matrix),
+            "kho": kho_name,
+            "orders_n": conn.execute(
+                "SELECT COUNT(*) FROM orders WHERE warehouse_id = ?", (wid,)
+            ).fetchone()[0],
+            "buucuc_matrix": matrix,
+            "destination_provinces": dest,
+            "by_status": status,
+            "phone_class": phone,
+            "chain_fingerprints": chain_fps,
+            "sample_orders": samples,
+            "unmask_map": unmask,
+            "path": (
+                f"warehouse_id:{wid[:8]}… → kho:{kho_name or '?'} → "
+                f"buucuc×{len({m.get('buucuc') for m in matrix})} → tỉnh×{len(dest)}"
+            ),
+        }
+    )
+
+
+def reverse_chain_asumee(conn: sqlite3.Connection) -> list[dict]:
+    """Chuỗi truy vấn ngược đào sâu cho kho ASUMEE / UUID chính."""
+    wid = "55e5f0e1-ed06-4dad-b35a-406bee25cdea"
+    results = [
+        reverse_by_warehouse_id(conn, wid, limit=20),
+        reverse_by_kho(conn, "ASUMEE", limit=15),
+    ]
+    # Top tỉnh nhận từ kho → reverse province
+    top_prov = [
+        r[0]
+        for r in conn.execute(
+            """
+            SELECT province FROM orders
+            WHERE warehouse_id = ? AND province IS NOT NULL AND province != ''
+            GROUP BY province ORDER BY COUNT(*) DESC LIMIT 3
+            """,
+            (wid,),
+        )
+    ]
+    for p in top_prov:
+        results.append(reverse_by_province(conn, p, limit=10))
+    # Sample van_tay reverse
+    vt = conn.execute(
+        """
+        SELECT van_tay FROM orders
+        WHERE warehouse_id = ? AND van_tay IS NOT NULL
+        ORDER BY piped_at DESC LIMIT 3
+        """,
+        (wid,),
+    ).fetchall()
+    for (v,) in vt:
+        results.append(reverse_by_van_tay(conn, v))
+    # Buucuc family trên kho
+    buu = conn.execute(
+        """
+        SELECT buucuc FROM orders WHERE warehouse_id = ?
+        GROUP BY buucuc ORDER BY COUNT(*) DESC LIMIT 2
+        """,
+        (wid,),
+    ).fetchall()
+    for (b,) in buu:
+        if b:
+            results.append(reverse_by_buucuc(conn, b, limit=10))
+    return results
+
+
 def reverse_by_buucuc(conn: sqlite3.Connection, buu: str, limit: int = 30) -> dict:
     nodes = [
         dict(r)
@@ -635,24 +808,36 @@ def build_report(
     address: str | None = None,
     icon: str | None = None,
     q: str | None = None,
+    warehouse_id: str | None = None,
+    continue_asumee: bool = False,
 ) -> dict:
     from realtime_icon_feedback_mapper import chant, feedback_line, receive_fingerprint
 
     conn = ensure_pipe_or_build()
     results: list[dict] = []
 
+    uuid_re = re.compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        re.I,
+    )
+
+    if continue_asumee:
+        results.extend(reverse_chain_asumee(conn))
+
     if q:
         qq = q.strip()
-        if len(qq) == 16 and all(c in "0123456789abcdef" for c in qq.lower()):
+        if uuid_re.match(qq):
+            results.append(reverse_by_warehouse_id(conn, qq))
+        elif len(qq) == 16 and all(c in "0123456789abcdef" for c in qq.lower()):
             results.append(reverse_by_van_tay(conn, qq.lower()))
         elif qq.upper().startswith(("SPX", "GHN", "VTP", "VN")):
             results.append(reverse_by_tracking(conn, qq))
-        elif re.search(r"kho|smart|hcm", qq, re.I):
+        elif re.search(r"kho|smart|hcm|asumee|asunmee", qq, re.I):
             results.append(reverse_by_kho(conn, qq))
         elif qq.upper() in {"SPX", "GHN", "VIETTELPOST", "VNPOST"} or "DANG_GIAO" in qq.upper() or "UNASSIGNED" in qq.upper():
             results.append(reverse_by_buucuc(conn, qq))
         elif re.search(
-            r"tỉnh|thành|nam định|sơn la|nghệ an|hà nội|hải|đắk|dak",
+            r"tỉnh|thành|nam định|sơn la|nghệ an|hà nội|hải|đắk|dak|bắc ninh",
             qq,
             re.I,
         ):
@@ -669,6 +854,8 @@ def build_report(
                     r_tr = reverse_by_tracking(conn, qq)
                     results.append(r_tr if r_tr["hit"] else r_so)
 
+    if warehouse_id:
+        results.append(reverse_by_warehouse_id(conn, warehouse_id.strip()))
     if van_tay:
         results.append(reverse_by_van_tay(conn, van_tay.strip().lower()))
     if so_noi_bo:
@@ -686,7 +873,21 @@ def build_report(
     if icon:
         results.append(reverse_by_icon_chant(conn, icon.strip()))
 
-    demo_mode = not any([van_tay, so_noi_bo, tracking, kho, buucuc, province, address, icon, q])
+    demo_mode = not any(
+        [
+            van_tay,
+            so_noi_bo,
+            tracking,
+            kho,
+            buucuc,
+            province,
+            address,
+            icon,
+            q,
+            warehouse_id,
+            continue_asumee,
+        ]
+    )
     if demo_mode:
         results = auto_detect_queries(conn)
 
@@ -781,11 +982,14 @@ def build_report(
         "index_stats": index_stats,
         "verdict": top_fb,
         "next_actions": [
+            "python3 scripts/order_pipe_reverse_query.py --continue-asumee",
+            "python3 scripts/order_pipe_reverse_query.py --warehouse 55e5f0e1-ed06-4dad-b35a-406bee25cdea",
+            "python3 scripts/order_pipe_reverse_query.py --kho ASUMEE",
             "python3 scripts/order_pipe_reverse_query.py --so SAPO-1990252568_664140",
             "python3 scripts/order_pipe_reverse_query.py --tracking SPXVN067431106264",
             "python3 scripts/order_pipe_reverse_query.py --buucuc SPX",
             "python3 scripts/order_pipe_reverse_query.py --province 'Nam Định'",
-            "python3 scripts/order_pipe_reverse_query.py --address 'Hải Hậu'",
+            "python3 scripts/inner_unmask_deep_mapper.py --warehouse 55e5f0e1-ed06-4dad-b35a-406bee25cdea",
             "python3 scripts/order_pipe_kho_buucuc_db.py   # re-pipe nếu thiếu địa chỉ",
         ],
         "safety": {"secrets_only": True, "no_dump_login": True, "phone_masked_in_report": True},
@@ -890,6 +1094,21 @@ def format_text(report: dict) -> str:
         if r.get("by_kho"):
             for m in r["by_kho"][:5]:
                 L(f"  · kho {m.get('kho')}: n={m.get('orders')} tỉnh={m.get('provinces')}")
+        if r.get("by_status"):
+            for m in r["by_status"][:8]:
+                L(f"  · status {m.get('status')}: n={m.get('orders')} masked={m.get('masked')}")
+        if r.get("phone_class"):
+            for m in r["phone_class"]:
+                L(f"  · phone_class {m.get('phone_class')}: n={m.get('orders')}")
+        if r.get("unmask_map"):
+            L(f"  · unmask_map={r.get('unmask_map')}")
+        if r.get("chain_fingerprints"):
+            for fp in r["chain_fingerprints"][:5]:
+                L(
+                    f"  · chain van_tay={fp.get('van_tay')} so={fp.get('so_noi_bo')} "
+                    f"→ {fp.get('buucuc')} → {fp.get('province')} [{fp.get('status')}] "
+                    f"phone={fp.get('phone_class')}"
+                )
     if report.get("panorama_samples"):
         L("")
         L("=== Panorama mẫu (bưu cục → địa chỉ) ===")
@@ -928,6 +1147,12 @@ def main() -> int:
     ap.add_argument("--so", dest="so_noi_bo", help="Số nội bộ / order_key")
     ap.add_argument("--tracking")
     ap.add_argument("--kho")
+    ap.add_argument("--warehouse", dest="warehouse_id", help="UUID warehouse_id (vd ASUMEE)")
+    ap.add_argument(
+        "--continue-asumee",
+        action="store_true",
+        help="Chuỗi truy vấn ngược đào sâu kho ASUMEE (warehouse→kho→tỉnh→van_tay→buucuc)",
+    )
     ap.add_argument("--buucuc")
     ap.add_argument("--province", help="Tỉnh/thành nhận")
     ap.add_argument("--address", help="Fragment địa chỉ / ward / huyện / tên nhận")
@@ -944,6 +1169,8 @@ def main() -> int:
         address=args.address,
         icon=args.icon,
         q=args.q,
+        warehouse_id=args.warehouse_id,
+        continue_asumee=bool(args.continue_asumee),
     )
     write_outputs(report)
     if args.json:
