@@ -509,6 +509,9 @@ def reverse_chain_asumee(
     hop12_apply: bool = False,
     hop12_limit: int = 40,
     hop12_probe: bool = False,
+    hop13_live: bool = False,
+    hop13_apply: bool = False,
+    hop13_limit: int = 60,
 ) -> list[dict]:
     """Chuỗi truy vấn ngược đào sâu cho kho ASUMEE / UUID chính.
 
@@ -677,6 +680,15 @@ def reverse_chain_asumee(
                 apply=hop12_apply,
                 limit=hop12_limit,
                 probe=hop12_probe,
+            )
+        )
+        results.extend(
+            reverse_chain_asumee_hop13(
+                conn,
+                wid,
+                live=hop13_live,
+                apply=hop13_apply,
+                limit=hop13_limit,
             )
         )
 
@@ -4246,6 +4258,395 @@ def reverse_chain_asumee_hop12(
     return out
 
 
+def reverse_flow_closure(conn: sqlite3.Connection, wid: str) -> dict:
+    """Sổ đóng/mở đường sau hop1–12."""
+    score = reverse_open_path_scorecard(conn, wid)
+    fills = score.get("fills") or {}
+    flow = reverse_flow_completeness(conn, wid)
+    closed = {
+        "returning_real_trk": int(fills.get("returning_real_trk") or 0),
+        "hard_gap_accept_events": conn.execute(
+            "SELECT COUNT(*) FROM pipe_events WHERE event='hard_gap_accept'"
+        ).fetchone()[0],
+        "soft_gap_accept_events": conn.execute(
+            "SELECT COUNT(*) FROM pipe_events WHERE event='soft_gap_accept'"
+        ).fetchone()[0],
+        "commune_geo_accept": conn.execute(
+            "SELECT COUNT(*) FROM pipe_events WHERE event='commune_geo_accept'"
+        ).fetchone()[0],
+        "canceled_pancake_id": int(fills.get("canceled_pancake_id") or 0),
+        "trk_real": (flow.get("fills") or {}).get("trk_real"),
+        "with_3pl": (flow.get("fills") or {}).get("with_3pl"),
+    }
+    open_paths = {
+        "submitted_wait": int(fills.get("submitted_wait") or 0),
+        "new_wait": int(fills.get("new_wait") or 0),
+        "returning_need_trk": int(fills.get("returning_pancake_id") or 0),
+        "hard_del": int(fills.get("hard_del") or 0),
+        "hard_ship": int(fills.get("hard_ship") or 0),
+        "soft_del": int(fills.get("soft_del") or 0),
+        "ward_only": int(fills.get("ward_only") or 0),
+    }
+    return {
+        "query_type": "flow_closure",
+        "query": wid,
+        "hit": True,
+        "count": fills.get("orders"),
+        "closed": closed,
+        "open": open_paths,
+        "scores": flow.get("scores"),
+        "path": (
+            f"flow_closure closed_returning={closed['returning_real_trk']} "
+            f"open_wait={open_paths['submitted_wait']+open_paths['new_wait']} "
+            f"hard={open_paths['hard_del']+open_paths['hard_ship']} "
+            f"soft={open_paths['soft_del']}"
+        ),
+        "unmask_map": {"path_id": "PATH-CLEAR"},
+        "next": [
+            "PATH-WAIT submitted/new → ship rồi hop7",
+            "PATH-MISSING hard SPX giữ nguyên",
+            "PATH-ACCEPT soft/commune/canceled giữ nguyên",
+        ],
+    }
+
+
+def reverse_wait_path_accept(
+    conn: sqlite3.Connection, wid: str, *, apply: bool = False
+) -> dict:
+    """Đánh dấu PATH-WAIT cho submitted/new pancake-id (không ép extend_code)."""
+    by_status = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT status, COUNT(*) AS orders,
+              SUM(CASE WHEN carrier='Pancake' THEN 1 ELSE 0 END) AS still_pancake,
+              SUM(CASE WHEN buucuc='SPX' THEN 1 ELSE 0 END) AS already_spx
+            FROM orders
+            WHERE warehouse_id = ?
+              AND status IN ('submitted', 'new')
+              AND tracking_code = so_noi_bo
+            GROUP BY status ORDER BY orders DESC
+            """,
+            (wid,),
+        )
+    ]
+    n = sum(int(r.get("orders") or 0) for r in by_status)
+    by_prov = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT coalesce(province,'(∅)') AS province, COUNT(*) AS orders
+            FROM orders
+            WHERE warehouse_id = ?
+              AND status IN ('submitted', 'new')
+              AND tracking_code = so_noi_bo
+            GROUP BY 1 ORDER BY orders DESC LIMIT 12
+            """,
+            (wid,),
+        )
+    ]
+    samples = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT van_tay, so_noi_bo, status, province, ward, carrier, buucuc, created_at
+            FROM orders
+            WHERE warehouse_id = ?
+              AND status IN ('submitted', 'new')
+              AND tracking_code = so_noi_bo
+            ORDER BY piped_at DESC LIMIT 12
+            """,
+            (wid,),
+        )
+    ]
+    applied = 0
+    if apply and n:
+        has = conn.execute(
+            """
+            SELECT 1 FROM pipe_events
+            WHERE event = 'wait_path_accept' AND so_noi_bo = ? LIMIT 1
+            """,
+            (wid,),
+        ).fetchone()
+        if not has:
+            conn.execute(
+                "INSERT INTO pipe_events(at, event, van_tay, so_noi_bo, detail) VALUES (?,?,?,?,?)",
+                (
+                    utc_now(),
+                    "wait_path_accept",
+                    None,
+                    wid,
+                    f"PATH-WAIT|submitted+new={n}|by={by_status}",
+                ),
+            )
+            conn.commit()
+            applied = 1
+    return {
+        "query_type": "wait_path_accept",
+        "query": wid,
+        "hit": n > 0,
+        "count": n,
+        "by_status": by_status,
+        "by_province": by_prov,
+        "samples": samples,
+        "apply": apply,
+        "applied": applied,
+        "path": f"wait_path_accept n={n} apply={apply} applied={applied}",
+        "unmask_map": {
+            "path_id": "PATH-WAIT",
+            "action": "accept_submitted_new_without_extend_code",
+            "note": "Pancake submitted thường partner=∅ / extend=∅ đến khi ship",
+        },
+        "next": [
+            "Khi status→shipped: --hop7-apply --hop7-limit 200",
+            "Không bịa SPXVN khi extend_code trống",
+        ],
+    }
+
+
+def reverse_submitted_confirm_scan(
+    conn: sqlite3.Connection,
+    wid: str,
+    *,
+    limit: int = 60,
+    apply: bool = False,
+) -> dict:
+    """Live xác nhận submitted/new Pancake — tìm rare extend/partner; không bịa VĐ."""
+    targets = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT van_tay, so_noi_bo, status, carrier, buucuc, province, district,
+                   picked_at, delivered_at, tracking_code
+            FROM orders
+            WHERE warehouse_id = ?
+              AND status IN ('submitted', 'new')
+              AND tracking_code = so_noi_bo
+              AND (carrier IS NULL OR carrier = '' OR carrier = 'Pancake'
+                   OR buucuc IS NULL OR buucuc = '' OR buucuc = 'Pancake')
+            ORDER BY
+              CASE status WHEN 'new' THEN 0 ELSE 1 END,
+              piped_at DESC
+            LIMIT ?
+            """,
+            (wid, limit),
+        )
+    ]
+    probes: list[dict] = []
+    partners: dict[str, int] = {}
+    applied = {"carrier": 0, "buucuc": 0, "tracking": 0, "url": 0, "events": 0}
+    ok_n = 0
+    got_trk = 0
+    got_partner = 0
+    for t in targets:
+        oid = str(t.get("so_noi_bo") or "").strip()
+        res = fetch_pancake_order_detail(oid)
+        entry: dict[str, Any] = {
+            "van_tay": t.get("van_tay"),
+            "so_noi_bo": oid,
+            "status_pipe": t.get("status"),
+            "ok": res.get("ok"),
+        }
+        if not res.get("ok"):
+            entry["error"] = res.get("error")
+            probes.append(entry)
+            continue
+        ok_n += 1
+        detail = res["data"]
+        partner = detail.get("partner") if isinstance(detail.get("partner"), dict) else {}
+        pn = partner.get("partner_name") or "(none)"
+        partners[str(pn)] = partners.get(str(pn), 0) + 1
+        tr = extract_pancake_tracking(detail)
+        route = map_partner_name_to_routing(
+            partner.get("partner_name"),
+            provider=tr.get("provider"),
+            tracking_code=tr.get("tracking_code") or oid,
+        )
+        has_real = bool(tr.get("tracking_code") and tr["tracking_code"] != oid)
+        if has_real:
+            got_trk += 1
+        if pn != "(none)":
+            got_partner += 1
+        entry.update(
+            {
+                "partner_name": pn,
+                "status_api": detail.get("status"),
+                "extend_code": partner.get("extend_code"),
+                "tracking_api": tr.get("tracking_code"),
+                "has_real_tracking": has_real,
+                "carrier_new": route.get("carrier"),
+                "buucuc_new": route.get("buucuc"),
+                "hist_n": len(detail.get("histories") or [])
+                if isinstance(detail.get("histories"), list)
+                else 0,
+            }
+        )
+        if apply and (has_real or route.get("carrier")):
+            vt = t.get("van_tay")
+            if has_real:
+                try:
+                    from tracking_aship import build_tracking_url
+                except Exception:  # noqa: BLE001
+                    build_tracking_url = None  # type: ignore
+                prov = route.get("provider") or tr.get("provider")
+                url = None
+                if build_tracking_url and prov:
+                    url = build_tracking_url(
+                        str(tr["tracking_code"]),
+                        provider=str(prov),
+                        tracking_code=str(tr["tracking_code"]),
+                    )
+                conn.execute(
+                    """
+                    UPDATE orders
+                    SET tracking_code = ?, tracking_ref = ?,
+                        tracking_provider = COALESCE(?, tracking_provider),
+                        tracking_url = COALESCE(?, tracking_url)
+                    WHERE van_tay = ?
+                    """,
+                    (tr["tracking_code"], tr["tracking_code"], prov, url, vt),
+                )
+                applied["tracking"] += 1
+                if url:
+                    conn.execute(
+                        "UPDATE orders SET tracking_url = ? WHERE van_tay = ?",
+                        (url, vt),
+                    )
+                    applied["url"] += 1
+            if route.get("carrier"):
+                conn.execute(
+                    "UPDATE orders SET carrier = ? WHERE van_tay = ?",
+                    (route["carrier"], vt),
+                )
+                applied["carrier"] += 1
+            if route.get("buucuc"):
+                conn.execute(
+                    "UPDATE orders SET buucuc = ? WHERE van_tay = ?",
+                    (route["buucuc"], vt),
+                )
+                applied["buucuc"] += 1
+            conn.execute(
+                "INSERT INTO pipe_events(at, event, van_tay, so_noi_bo, detail) VALUES (?,?,?,?,?)",
+                (
+                    utc_now(),
+                    "hop13_submitted_confirm",
+                    vt,
+                    oid,
+                    (
+                        f"st={t.get('status')}|partner={pn}|real={int(has_real)}|"
+                        f"trk={tr.get('tracking_code') or '∅'}|"
+                        f"car={route.get('carrier') or '∅'}"
+                    ),
+                ),
+            )
+            applied["events"] += 1
+        probes.append(entry)
+    if apply and applied["events"]:
+        conn.commit()
+    return {
+        "query_type": "submitted_confirm_scan",
+        "query": wid,
+        "hit": ok_n > 0 or bool(targets),
+        "count": len(targets),
+        "ok": ok_n,
+        "got_real_tracking": got_trk,
+        "got_partner": got_partner,
+        "apply": apply,
+        "applied": applied,
+        "partners": [
+            {"partner": k, "n": v} for k, v in sorted(partners.items(), key=lambda x: -x[1])
+        ],
+        "samples": probes[:12],
+        "path": (
+            f"submitted_confirm_scan ok={ok_n}/{len(targets)} "
+            f"real={got_trk} partner={got_partner} apply={apply}"
+        ),
+        "unmask_map": {
+            "path_id": "PATH-WAIT" if got_trk == 0 else "PATH-CLEAR",
+            "action": "confirm_no_extend_or_rare_promote",
+            "note": "Phần lớn submitted Pancake partner=∅ đến khi ship",
+        },
+        "next": [
+            "real_trk=0 → giữ PATH-WAIT",
+            "Nếu sau này có extend → hop7/hop12 lại",
+        ],
+    }
+
+
+def reverse_chain_asumee_hop13(
+    conn: sqlite3.Connection,
+    wid: str,
+    *,
+    live: bool = False,
+    apply: bool = False,
+    limit: int = 60,
+) -> list[dict]:
+    """Hop-13: flow closure, confirm submitted wait, PATH-WAIT accept."""
+    out: list[dict] = []
+
+    out.append(reverse_flow_closure(conn, wid))
+    out.append(reverse_open_path_scorecard(conn, wid))
+    out.append(reverse_submitted_waiting(conn, wid))
+
+    wait = reverse_wait_path_accept(conn, wid, apply=apply)
+    out.append(wait)
+    for s in (wait.get("samples") or [])[:4]:
+        vt = s.get("van_tay")
+        so = s.get("so_noi_bo")
+        if vt:
+            r = reverse_by_van_tay(conn, str(vt))
+            r["gap_cohort"] = "hop13_wait"
+            out.append(r)
+        if so:
+            r = reverse_by_so_noi_bo(conn, str(so))
+            r["gap_cohort"] = "hop13_wait"
+            out.append(r)
+        prov = s.get("province")
+        if prov:
+            out.append(reverse_by_province(conn, str(prov), limit=5))
+
+    if live:
+        scan = reverse_submitted_confirm_scan(conn, wid, limit=limit, apply=apply)
+        out.append(scan)
+        for s in (scan.get("samples") or [])[:6]:
+            if not s.get("ok"):
+                continue
+            vt = s.get("van_tay")
+            tr = s.get("tracking_api")
+            if vt:
+                r = reverse_by_van_tay(conn, str(vt))
+                r["gap_cohort"] = "hop13_confirm"
+                out.append(r)
+            if tr and s.get("has_real_tracking"):
+                r = reverse_by_tracking(conn, str(tr))
+                r["gap_cohort"] = "hop13_confirm"
+                out.append(r)
+        if apply and int(scan.get("got_real_tracking") or 0) > 0:
+            out.append(reverse_aship_url_sync(conn, wid, apply=True, limit=100))
+            out.append(reverse_carrier_buucuc_remap(conn, wid, apply=True))
+    else:
+        out.append(
+            {
+                "query_type": "submitted_confirm_scan",
+                "query": wid,
+                "hit": False,
+                "skipped": True,
+                "path": "submitted_confirm_scan skipped (live=False)",
+                "next": [
+                    "python3 scripts/order_pipe_reverse_query.py --continue-flow --hop13-live --hop13-apply"
+                ],
+            }
+        )
+
+    out.append(reverse_returning_cohort(conn, wid))
+    out.append(reverse_hard_soft_gaps(conn, wid))
+    out.append(reverse_flow_closure(conn, wid))
+    out.append(reverse_flow_completeness(conn, wid))
+    out.append(reverse_3pl_completeness(conn, wid))
+    out.append(reverse_pipe_events_asumee(conn, wid))
+    return out
+
+
 def reverse_chain_asumee_hop5(conn: sqlite3.Connection, wid: str) -> list[dict]:
     """Hop-5 ngược dòng: recover huyện, SPX-like URL, timeline trống, pipe_events."""
     out: list[dict] = []
@@ -5746,6 +6147,9 @@ def build_report(
     hop12_apply: bool = False,
     hop12_limit: int = 40,
     hop12_probe: bool = False,
+    hop13_live: bool = False,
+    hop13_apply: bool = False,
+    hop13_limit: int = 60,
 ) -> dict:
     from realtime_icon_feedback_mapper import chant, feedback_line, receive_fingerprint
 
@@ -5784,6 +6188,9 @@ def build_report(
                 hop12_apply=hop12_apply,
                 hop12_limit=hop12_limit,
                 hop12_probe=hop12_probe,
+                hop13_live=hop13_live,
+                hop13_apply=hop13_apply,
+                hop13_limit=hop13_limit,
             )
         )
 
@@ -5946,10 +6353,10 @@ def build_report(
         "index_stats": index_stats,
         "verdict": top_fb,
         "next_actions": [
-            "python3 scripts/order_pipe_reverse_query.py --continue-flow --hop12-live --hop12-apply --hop12-probe",
+            "python3 scripts/order_pipe_reverse_query.py --continue-flow --hop13-live --hop13-apply",
             "python3 scripts/order_pipe_reverse_query.py --hop7-apply --hop7-limit 200",
+            "python3 scripts/order_pipe_reverse_query.py --continue-flow --hop12-live --hop12-apply --hop12-probe",
             "python3 scripts/order_pipe_reverse_query.py --continue-flow --hop11-live --hop11-apply",
-            "python3 scripts/order_pipe_reverse_query.py --continue-flow --hop10-apply",
             "python3 scripts/order_pipe_reverse_query.py --continue-asumee",
             "python3 scripts/order_pipe_reverse_query.py --kho ASUMEE",
             "python3 scripts/crypto_decode_assist.py --unmask",
@@ -6473,6 +6880,41 @@ def format_text(report: dict) -> str:
                 )
             for n in r.get("next") or []:
                 L(f"    → {n}")
+        if r.get("query_type") == "flow_closure":
+            L(f"  · closed={r.get('closed')}")
+            L(f"  · open={r.get('open')}")
+            L(f"  · scores={r.get('scores')}")
+            for n in r.get("next") or []:
+                L(f"    → {n}")
+        if r.get("query_type") == "wait_path_accept":
+            L(
+                f"  · wait={r.get('count')} apply={r.get('apply')} "
+                f"applied={r.get('applied')} by_status={r.get('by_status')}"
+            )
+            for m in (r.get("by_province") or [])[:8]:
+                L(f"  · tỉnh {m.get('province')}: n={m.get('orders')}")
+            for n in r.get("next") or []:
+                L(f"    → {n}")
+        if r.get("query_type") == "submitted_confirm_scan":
+            if r.get("skipped"):
+                L("  · skipped live submitted confirm scan")
+            else:
+                L(
+                    f"  · ok={r.get('ok')}/{r.get('count')} real={r.get('got_real_tracking')} "
+                    f"partner={r.get('got_partner')} apply={r.get('apply')} "
+                    f"applied={r.get('applied')} partners={r.get('partners')}"
+                )
+                for s in (r.get("samples") or [])[:8]:
+                    if not s.get("ok"):
+                        L(f"  · so={s.get('so_noi_bo')} FAIL err={str(s.get('error'))[:50]}")
+                        continue
+                    L(
+                        f"  · so={s.get('so_noi_bo')} st={s.get('status_pipe')} "
+                        f"partner={s.get('partner_name')} real={s.get('has_real_tracking')} "
+                        f"trk={s.get('tracking_api') or '∅'} ext={s.get('extend_code') or '∅'}"
+                    )
+            for n in r.get("next") or []:
+                L(f"    → {n}")
         if r.get("gap_cohort"):
             L(f"  · gap_cohort={r.get('gap_cohort')}")
         if r.get("count") and r.get("query_type") in {
@@ -6513,6 +6955,9 @@ def format_text(report: dict) -> str:
             "open_path_scorecard",
             "waiting_live_backfill",
             "hard_gap_aship_probe",
+            "flow_closure",
+            "wait_path_accept",
+            "submitted_confirm_scan",
         }:
             L(f"  · count={r.get('count')} status={r.get('status')}")
     if report.get("panorama_samples"):
@@ -6587,7 +7032,7 @@ def main() -> int:
     ap.add_argument(
         "--continue-flow",
         action="store_true",
-        help="Tiếp tục ngược dòng chảy ASUMEE deep+hop2…hop12",
+        help="Tiếp tục ngược dòng chảy ASUMEE deep+hop2…hop13",
     )
     ap.add_argument(
         "--hop6-live",
@@ -6700,6 +7145,22 @@ def main() -> int:
         action="store_true",
         help="Hop12: probe aship URL hard-gap (HTTP audit)",
     )
+    ap.add_argument(
+        "--hop13-live",
+        action="store_true",
+        help="Hop13: live confirm submitted/new chưa có extend_code",
+    )
+    ap.add_argument(
+        "--hop13-apply",
+        action="store_true",
+        help="Hop13: ghi PATH-WAIT accept + rare partner/tracking nếu có",
+    )
+    ap.add_argument(
+        "--hop13-limit",
+        type=int,
+        default=60,
+        help="Hop13: số đơn submitted confirm scan (default 60)",
+    )
     ap.add_argument("--buucuc")
     ap.add_argument("--province", help="Tỉnh/thành nhận")
     ap.add_argument("--address", help="Fragment địa chỉ / ward / huyện / tên nhận")
@@ -6721,6 +7182,8 @@ def main() -> int:
     hop12_live = bool(args.hop12_live)
     hop12_apply = bool(args.hop12_apply)
     hop12_probe = bool(args.hop12_probe)
+    hop13_live = bool(args.hop13_live)
+    hop13_apply = bool(args.hop13_apply)
 
     # Bật continue-flow nếu chỉ truyền cờ hop*
     if (
@@ -6739,6 +7202,8 @@ def main() -> int:
         or args.hop12_live
         or args.hop12_apply
         or args.hop12_probe
+        or args.hop13_live
+        or args.hop13_apply
     ) and not (continue_flow or continue_asumee):
         continue_flow = True
 
@@ -6749,11 +7214,13 @@ def main() -> int:
         hop6_live = False
     if args.hop7_offline:
         hop7_live = False
-    # hop11/hop12: apply alone also implies live
+    # hop11/hop12/hop13: apply alone also implies live
     if hop11_apply and not args.hop11_live:
         hop11_live = True
     if hop12_apply and not args.hop12_live:
         hop12_live = True
+    if hop13_apply and not args.hop13_live:
+        hop13_live = True
 
     report = build_report(
         van_tay=args.van_tay,
@@ -6788,6 +7255,9 @@ def main() -> int:
         hop12_apply=hop12_apply,
         hop12_limit=int(args.hop12_limit or 40),
         hop12_probe=hop12_probe,
+        hop13_live=hop13_live,
+        hop13_apply=hop13_apply,
+        hop13_limit=int(args.hop13_limit or 60),
     )
     write_outputs(report)
     if args.json:
