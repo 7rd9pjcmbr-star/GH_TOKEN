@@ -252,6 +252,10 @@ def scan_orders(
                 "scanned_at": now,
             }
         )
+        # gắn tracking.aship URL
+        from tracking_aship import attach_tracking_urls
+
+        rows[-1] = attach_tracking_urls(rows[-1])
 
     # dedupe by van_tay / order_key
     dedup: dict[str, dict] = {}
@@ -328,7 +332,10 @@ def materialize(rows: list[dict]) -> dict:
           delivered_at TEXT,
           flow_path TEXT,
           icon_chant TEXT,
-          scanned_at TEXT
+          scanned_at TEXT,
+          tracking_ref TEXT,
+          tracking_provider TEXT,
+          tracking_url TEXT
         );
         CREATE INDEX idx_dg_kho ON don_dang_giao(kho);
         CREATE INDEX idx_dg_buu ON don_dang_giao(buucuc);
@@ -338,6 +345,7 @@ def materialize(rows: list[dict]) -> dict:
         CREATE INDEX idx_dg_vt ON don_dang_giao(van_tay);
         CREATE INDEX idx_dg_prov ON don_dang_giao(province);
         CREATE INDEX idx_dg_ngay ON don_dang_giao(ngay_dang_giao);
+        CREATE INDEX idx_dg_track_url ON don_dang_giao(tracking_provider);
         CREATE TABLE kho_buucuc_summary (
           kho TEXT,
           buucuc TEXT,
@@ -401,6 +409,9 @@ def materialize(rows: list[dict]) -> dict:
         "flow_path",
         "icon_chant",
         "scanned_at",
+        "tracking_ref",
+        "tracking_provider",
+        "tracking_url",
     ]
     conn.executemany(
         f"INSERT INTO don_dang_giao ({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})",
@@ -510,6 +521,8 @@ def build_report(
                 "address": r.get("full_address") or r.get("province"),
                 "ngay_dang_giao": r.get("ngay_dang_giao"),
                 "order_created_at_goc": r.get("order_created_at_goc"),
+                "tracking_url": r.get("tracking_url"),
+                "tracking_provider": r.get("tracking_provider"),
                 "flow_path": r.get("flow_path"),
                 "file": r.get("file"),
             }
@@ -626,6 +639,8 @@ def format_text(report: dict) -> str:
         )
         if r.get("order_created_at_goc"):
             L(f"  tạo gốc={r.get('order_created_at_goc')}")
+        if r.get("tracking_url"):
+            L(f"  aship: {r.get('tracking_url')}")
         if r.get("flow_path"):
             L(f"  flow: {r['flow_path']}")
     L("")

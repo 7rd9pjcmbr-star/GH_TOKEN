@@ -56,6 +56,12 @@ def build_flow_panorama(o: dict | None) -> dict | None:
     """Toàn cảnh dòng chảy từ bưu cục/kho đến địa chỉ nhận."""
     if not o:
         return None
+    try:
+        from tracking_aship import attach_tracking_urls
+
+        o = attach_tracking_urls(o)
+    except Exception:  # noqa: BLE001
+        pass
     geo_parts = [o.get("address_detail"), o.get("ward"), o.get("district"), o.get("province")]
     geo_line = ", ".join(str(x) for x in geo_parts if x) or o.get("full_address")
     sender_geo = ", ".join(
@@ -110,6 +116,8 @@ def build_flow_panorama(o: dict | None) -> dict | None:
                 "picked_at": o.get("picked_at"),
                 "delivered_at": o.get("delivered_at"),
                 "cod": o.get("cod_amount"),
+                "tracking_url": o.get("tracking_url"),
+                "tracking_provider": o.get("tracking_provider"),
             },
         },
         {
@@ -800,6 +808,8 @@ def _fmt_flow(flow: dict | None, L) -> None:
     L(f"  🌊 FLOW {flow.get('completeness_score')} · {flow.get('flow_text')}")
     for st in flow.get("stages") or []:
         L(f"    {st['step']}. {st['label']}: {st['value']}")
+        if st.get("id") == "van_don" and (st.get("meta") or {}).get("tracking_url"):
+            L(f"       aship: {st['meta']['tracking_url']}")
     tl = flow.get("timeline") or {}
     if any(tl.get(k) for k in ("created_at", "picked_at", "delivered_at")):
         L(

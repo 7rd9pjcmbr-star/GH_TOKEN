@@ -165,6 +165,9 @@ def panel_keyboard() -> dict:
                 {"text": "🌊 Ngược·dòng chảy", "callback_data": "q:rev_q"},
                 {"text": "📦 Đang giao·bảng", "callback_data": "q:dg_tbl"},
             ],
+            [
+                {"text": "🧭 Tracking aship", "callback_data": "q:aship"},
+            ],
             [{"text": "🔁 Làm mới phân tích", "callback_data": "q:refresh"}],
         ]
     }
@@ -551,6 +554,23 @@ def fmt_dg_tbl(_a: dict | None = None) -> str:
         )
 
 
+def fmt_aship(_a: dict | None = None) -> str:
+    try:
+        from tracking_aship import build_report, format_text, write_outputs
+
+        report = build_report(probe=False)
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "tracking_aship.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Tracking aship lỗi: {e}\n"
+            "Chạy: python3 scripts/tracking_aship.py"
+        )
+
+
 def fmt_urls(_a: dict | None = None) -> str:
     path = ROOT / "reports" / "telegram-classify" / "url_paths_expanded.txt"
     alt = ROOT / "reports" / "telegram-classify" / "url_paths_expanded.json"
@@ -646,6 +666,7 @@ HANDLERS = {
     "q:pipe_fp": fmt_pipe_fp,
     "q:rev_q": fmt_rev_q,
     "q:dg_tbl": fmt_dg_tbl,
+    "q:aship": fmt_aship,
 }
 
 
@@ -715,6 +736,7 @@ def main() -> int:
         "q:pipe_fp",
         "q:rev_q",
         "q:dg_tbl",
+        "q:aship",
     ]:
         send(
             token,
@@ -743,6 +765,7 @@ def main() -> int:
                 "q:pipe_fp",
                 "q:rev_q",
                 "q:dg_tbl",
+                "q:aship",
             }
             else None,
         )
