@@ -28,6 +28,8 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
 ROOT = Path(__file__).resolve().parents[1]
 REPORTS = ROOT / "reports" / "telegram-classify"
 ORDERS_CSV = ROOT / "quarantine" / "telegram" / "orders_detailed_Dang_giao_20260512_120712.csv"
+ASUNMEE_CONFIG = ROOT / "config" / "asunmee_shop_decode.json"
+ASUNMEE_STRUCTURE_RAW = REPORTS / "asunmee_structure_raw.json"
 
 # Morse / Braille mirrors js/crypto/encode.js
 MORSE = {
@@ -136,7 +138,7 @@ def from_url(text: str) -> dict:
 
 
 def is_pii_mask(text: str) -> bool:
-    """Redaction mask (**** / +84…**** / VĐ*****) — not ciphertext."""
+    """Redaction mask (**** / +84…**** / VĐ***** / H** N***) — not ciphertext."""
     t = (text or "").strip()
     if "*" not in t:
         return False
@@ -151,6 +153,11 @@ def is_pii_mask(text: str) -> bool:
     # Vietnamese letter prefixes e.g. VĐ*******
     if re.fullmatch(r"[^\W\d_]*[\d*]+", t, flags=re.UNICODE) and "*" in t:
         return True
+    # Name / address redaction: H** N*** · 61**** Xã********* · P***ngEm
+    if re.search(r"\*{2,}", t) and re.search(r"[0-9A-Za-zÀ-ỹ]", t, flags=re.UNICODE):
+        # avoid treating Morse-like or pure symbols
+        if re.search(r"[A-Za-zÀ-ỹ0-9]", t, flags=re.UNICODE):
+            return True
     return False
 
 
@@ -501,6 +508,379 @@ def demo_roundtrip_assist(sample: str = "0979263463") -> dict:
     }
 
 
+def load_asunmee_config() -> dict[str, Any]:
+    if ASUNMEE_CONFIG.is_file():
+        return json.loads(ASUNMEE_CONFIG.read_text(encoding="utf-8"))
+    return {
+        "shop": {"id": 714934229, "name": "ASUNMEE"},
+        "pii_mask": {"fields": [], "detail_unmasks": False},
+        "decode_assist": {},
+    }
+
+
+def _walk_string_fields(obj: Any, path: str = "") -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            p = f"{path}.{k}" if path else str(k)
+            out.extend(_walk_string_fields(v, p))
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj[:8]):
+            out.extend(_walk_string_fields(v, f"{path}[{i}]"))
+    elif isinstance(obj, str) and obj.strip():
+        out.append((path, obj))
+    return out
+
+
+def _normalize_mask_path(path: str) -> str:
+    """Collapse indexes so field map matches config paths."""
+    return re.sub(r"\[\d+\]", "[]", path or "")
+
+
+def assist_asunmee_structure(*, live: bool = False, sample_limit: int = 12) -> dict[str, Any]:
+    """Phân tích cấu trúc shop ASUNMEE + hỗ trợ người dùng giải mã che (mask).
+
+    Mask = redaction Pancake qua api_key — không phải ciphertext.
+    """
+    cfg = load_asunmee_config()
+    shop = cfg.get("shop") or {}
+    shop_id = shop.get("id") or 714934229
+    mask_cfg = cfg.get("pii_mask") or {}
+    configured_fields = set(mask_cfg.get("fields") or [])
+
+    report: dict[str, Any] = {
+        "ok": True,
+        "module": "asunmee_structure_decode_assist",
+        "checked_at": utc_now(),
+        "shop": {
+            "id": shop_id,
+            "name": shop.get("name") or "ASUNMEE",
+            "warehouse_alias": shop.get("warehouse_alias") or "ASUMEE",
+            "auth": shop.get("auth"),
+            "config_path": str(ASUNMEE_CONFIG.relative_to(ROOT)) if ASUNMEE_CONFIG.is_file() else None,
+        },
+        "policy": {
+            "mask_not_decryptable": True,
+            "detail_unmasks": bool(mask_cfg.get("detail_unmasks")),
+            "customers_unmasks": bool(mask_cfg.get("customers_unmasks")),
+            "owned_key_only": True,
+            "no_bruteforce": True,
+        },
+        "endpoints": cfg.get("endpoints"),
+        "warehouses": cfg.get("warehouses"),
+        "clear_fields_useful": cfg.get("clear_fields_useful"),
+        "user_flow": cfg.get("user_flow"),
+        "field_map": [],
+        "samples": [],
+        "by_kind": {"mask": 0, "clear": 0, "encoded": 0, "missing": 0, "unknown": 0},
+        "live": None,
+    }
+
+    orders: list[dict] = []
+    source = "none"
+
+    if live:
+        live_info = _probe_asunmee_live(shop_id, sample_limit=sample_limit)
+        report["live"] = {k: v for k, v in live_info.items() if k != "orders"}
+        orders = live_info.get("orders") or []
+        source = "live_api"
+        if live_info.get("structure_raw_updated"):
+            report["structure_raw"] = str(ASUNMEE_STRUCTURE_RAW)
+
+    if not orders:
+        for cand in (
+            REPORTS / "asunmee_orders_last3d.json",
+            REPORTS / "asunmee_orders_normalized.json",
+            REPORTS / "scan_buucuc_orders.json",
+        ):
+            if not cand.is_file():
+                continue
+            try:
+                data = json.loads(cand.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                continue
+            rows = data if isinstance(data, list) else data.get("orders") or data.get("data") or []
+            if not isinstance(rows, list):
+                continue
+            # Prefer ASUNMEE shop_id when scan is multi-shop
+            filtered = [
+                r
+                for r in rows
+                if isinstance(r, dict)
+                and str(r.get("shop_id") or r.get("shop") or "") in {"", str(shop_id), "714934229"}
+            ]
+            if not filtered and rows and isinstance(rows[0], dict):
+                # asunmee-specific files
+                if "asunmee" in cand.name:
+                    filtered = [r for r in rows if isinstance(r, dict)]
+            if filtered:
+                orders = filtered[: max(sample_limit, 20)]
+                source = cand.name
+                break
+
+    if ASUNMEE_STRUCTURE_RAW.is_file() and not report.get("live"):
+        try:
+            raw = json.loads(ASUNMEE_STRUCTURE_RAW.read_text(encoding="utf-8"))
+            report["structure_raw_summary"] = {
+                "list_mask_fields": list((raw.get("list_mask") or {}).keys()),
+                "detail_mask_fields": list((raw.get("detail_mask") or {}).keys()),
+                "list_phone": raw.get("list_phone"),
+                "detail_phone": raw.get("detail_phone"),
+                "endpoints_ok": [e.get("path") for e in (raw.get("endpoints") or []) if e.get("ok")],
+            }
+        except Exception:  # noqa: BLE001
+            pass
+
+    seen_paths: set[str] = set()
+    field_stats: dict[str, dict[str, Any]] = {}
+
+    for order in orders[:sample_limit]:
+        if not isinstance(order, dict):
+            continue
+        oid = order.get("id") or order.get("order_id") or order.get("system_id")
+        sample_masks: list[dict] = []
+        for path, value in _walk_string_fields(order):
+            npath = _normalize_mask_path(path)
+            leaf = npath.split(".")[-1].replace("[]", "")
+            pii_leaf = leaf in {
+                "phone",
+                "phone_number",
+                "phone_numbers",
+                "bill_phone_number",
+                "bill_full_name",
+                "full_name",
+                "name",
+                "address",
+                "full_address",
+                "marketplace_address",
+                "email",
+                "bill_email",
+            }
+            # Chỉ classify PII / mask / candidate encode — tránh đếm tracking_link URL là "encoded"
+            if not (pii_leaf or "*" in value or npath in configured_fields):
+                report["by_kind"]["clear"] = report["by_kind"].get("clear", 0) + 1
+                continue
+            # Plain VN phone / clear name without * → CLEAR (không coi hex digits là encode)
+            digits = re.sub(r"\D", "", value)
+            if "*" not in value and (
+                re.fullmatch(r"\+?84\d{8,11}", digits)
+                or re.fullmatch(r"0\d{9,10}", digits)
+                or (pii_leaf and leaf in {"name", "full_name", "address", "full_address"} and len(value) < 120)
+            ):
+                report["by_kind"]["clear"] = report["by_kind"].get("clear", 0) + 1
+                continue
+            assist = detect_and_decode(value)
+            kind = assist.get("kind") or assist.get("detected") or "unknown"
+            if assist.get("ok") and kind in {"base64", "hex", "url", "morse", "braille", "aes-gcm"}:
+                bucket = "encoded"
+            elif kind == "mask" or ("*" in value and pii_leaf):
+                bucket = "mask"
+                if kind != "mask":
+                    assist = {
+                        "ok": False,
+                        "kind": "mask",
+                        "input": value[:80],
+                        "explain": explain("mask"),
+                        "assist": (cfg.get("decode_assist") or {}).get("mask", {}).get("assist")
+                        or explain("mask"),
+                    }
+                    kind = "mask"
+            elif kind == "missing":
+                bucket = "missing"
+            elif kind == "unknown" and "*" not in value:
+                bucket = "clear"
+                kind = "clear"
+            else:
+                bucket = "unknown"
+            report["by_kind"][bucket] = report["by_kind"].get(bucket, 0) + 1
+
+            if npath not in field_stats:
+                field_stats[npath] = {
+                    "path": npath,
+                    "configured_mask_field": npath in configured_fields
+                    or any(
+                        npath == f or npath.endswith(f) or f.endswith(npath)
+                        for f in configured_fields
+                    ),
+                    "kind": kind if bucket == "mask" else bucket,
+                    "count": 0,
+                    "sample": value[:80],
+                    "assist": assist.get("assist") or assist.get("explain"),
+                }
+            field_stats[npath]["count"] += 1
+            if bucket == "mask" and len(sample_masks) < 6:
+                sample_masks.append(
+                    {
+                        "path": path,
+                        "value": value[:80],
+                        "assist": assist,
+                    }
+                )
+            seen_paths.add(npath)
+
+        report["samples"].append(
+            {
+                "order_id": oid,
+                "status": order.get("status_name") or order.get("status"),
+                "warehouse": (order.get("warehouse_info") or {}).get("name")
+                if isinstance(order.get("warehouse_info"), dict)
+                else order.get("warehouse_id"),
+                "masks": sample_masks,
+                "clear_preview": {
+                    k: order.get(k)
+                    for k in ("total_price", "shipping_fee", "tracking_link", "note", "status_name")
+                    if order.get(k) not in (None, "")
+                },
+            }
+        )
+
+    # Ensure configured mask fields appear even if sample missed them
+    for f in configured_fields:
+        if f not in field_stats:
+            field_stats[f] = {
+                "path": f,
+                "configured_mask_field": True,
+                "kind": "mask",
+                "count": 0,
+                "sample": None,
+                "assist": (cfg.get("decode_assist") or {}).get("mask", {}).get("assist")
+                or explain("mask"),
+            }
+
+    report["field_map"] = sorted(
+        field_stats.values(),
+        key=lambda x: (0 if x.get("kind") == "mask" else 1, -(x.get("count") or 0), x.get("path") or ""),
+    )
+    report["orders_source"] = source
+    report["orders_sampled"] = len(report["samples"])
+
+    da = cfg.get("decode_assist") or {}
+    report["decode_guide"] = {
+        "mask": da.get("mask"),
+        "frida_aes": da.get("frida_aes"),
+        "aead_at_rest": da.get("aead_at_rest"),
+        "cli": da.get("cli") or "python3 scripts/crypto_decode_assist.py --asunmee",
+    }
+    mask_n = int(report["by_kind"].get("mask") or 0)
+    enc_n = int(report["by_kind"].get("encoded") or 0)
+    report["verdict"] = (
+        f"ASUNMEE shop={shop_id}: sampled={report['orders_sampled']} source={source}. "
+        f"PII fields MASK={mask_n} (không giải ****), encoded={enc_n}. "
+        f"Detail/customers api_key không unmask. "
+        f"Hỗ trợ: phân loại mask + AEAD/Frida khi có key owned."
+    )
+    report["next_actions"] = [
+        "SĐT/tên **** trên ASUNMEE: không dùng fromBase64 — đây là redaction",
+        "Unmask hợp lệ: export CS owned / JWT full-PII owned (nếu có) / AEAD nội bộ có key",
+        "Frida AES: MAPPER_ICON_AES_KEY_B64 + crypto_decode_assist.py --frida-aes FILE",
+        "Vận hành: dùng clear_fields (warehouse, status, total_price, tracking_link) trong pipe kho/BC",
+        f"Cấu hình: {ASUNMEE_CONFIG}",
+    ]
+    return report
+
+
+def _probe_asunmee_live(shop_id: int | str, *, sample_limit: int = 8) -> dict[str, Any]:
+    """Live probe owned api_key — cập nhật structure raw nhẹ."""
+    import urllib.error
+    import urllib.request
+
+    env = load_env_secrets()
+    key = (env.get("PANCAKE_POS_API_KEY") or env.get("PANCAKE_API_KEY") or "").strip()
+    out: dict[str, Any] = {
+        "ok": False,
+        "auth": "api_key" if key else None,
+        "orders": [],
+        "endpoints": [],
+        "structure_raw_updated": False,
+    }
+    if not key:
+        out["error"] = "Thiếu PANCAKE_POS_API_KEY / PANCAKE_API_KEY owned"
+        return out
+
+    base = f"https://pos.pages.fm/api/v1/shops/{shop_id}"
+
+    def get(path: str) -> tuple[int, Any]:
+        url = f"{base}{path}"
+        sep = "&" if "?" in url else "?"
+        full = f"{url}{sep}api_key={key}"
+        try:
+            with urllib.request.urlopen(full, timeout=45) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            try:
+                body = json.loads(e.read().decode("utf-8"))
+            except Exception:  # noqa: BLE001
+                body = {"error": str(e)}
+            return e.code, body
+        except Exception as e:  # noqa: BLE001
+            return 0, {"error": str(e)}
+
+    for path in ("", "/orders?page_number=1&page_size=5", "/customers?page=1&page_size=2", "/warehouses"):
+        code, body = get(path if path else "")
+        out["endpoints"].append(
+            {
+                "path": f"/shops/{shop_id}{path.split('?')[0]}",
+                "http": code,
+                "ok": 200 <= int(code) < 300,
+                "keys": list(body.keys())[:12] if isinstance(body, dict) else [],
+            }
+        )
+
+    code, body = get(f"/orders?page_number=1&page_size={max(5, sample_limit)}")
+    orders = body.get("data") if isinstance(body, dict) else None
+    if not isinstance(orders, list):
+        out["error"] = f"orders http={code}"
+        return out
+
+    # Enrich first few with detail (confirm no unmask)
+    enriched: list[dict] = []
+    detail_same_mask = True
+    for o in orders[:sample_limit]:
+        if not isinstance(o, dict) or not o.get("id"):
+            continue
+        dcode, dbody = get(f"/orders/{o['id']}")
+        detail = dbody.get("data") if isinstance(dbody, dict) else None
+        if isinstance(detail, dict) and detail.get("id"):
+            list_phone = o.get("bill_phone_number")
+            detail_phone = detail.get("bill_phone_number")
+            if list_phone and detail_phone and "*" not in str(detail_phone) and "*" in str(list_phone):
+                detail_same_mask = False
+            enriched.append(detail)
+        else:
+            enriched.append(o)
+
+    out["ok"] = True
+    out["orders"] = enriched
+    out["total_entries"] = body.get("total_entries") if isinstance(body, dict) else None
+    out["detail_unmasks"] = not detail_same_mask
+    out["user"] = env.get("PANCAKE_API_KEY_USER") or env.get("PANCAKE_USER") or "ASUNMEE"
+
+    # Refresh compact structure raw mask counts from samples
+    list_mask: dict[str, int] = {}
+    for o in enriched:
+        for path, value in _walk_string_fields(o):
+            if is_pii_mask(value):
+                npath = _normalize_mask_path(path)
+                list_mask[npath] = list_mask.get(npath, 0) + 1
+    try:
+        REPORTS.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "shop": {"id": int(shop_id) if str(shop_id).isdigit() else shop_id, "name": "ASUNMEE"},
+            "checked_at": utc_now(),
+            "list_mask": list_mask,
+            "detail_mask": list_mask,
+            "detail_unmasks": out["detail_unmasks"],
+            "endpoints": out["endpoints"],
+            "total_entries": out.get("total_entries"),
+            "source": "crypto_decode_assist --asunmee --live",
+        }
+        ASUNMEE_STRUCTURE_RAW.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        out["structure_raw_updated"] = True
+    except Exception as e:  # noqa: BLE001
+        out["structure_raw_error"] = str(e)
+    return out
+
+
 def assist_order_phones(limit: int = 40) -> dict:
     if not ORDERS_CSV.is_file():
         return {"rows": 0, "samples": []}
@@ -601,14 +981,9 @@ def build_report(inputs: list[str] | None = None) -> dict:
             "bundles_found": frida.get("bundles_found"),
         },
         "orders_phone_assist": orders,
+        "asunmee": None,
         "icon_feedback": fb,
         "icon_chant": " → ".join(icons) if isinstance(icons, list) else str(icons),
-        "verdict": (
-            f"Module giải mã: encode/* + AEAD demo roundtrip="
-            f"{aead_demo['decrypt_result'].get('roundtrip_ok')}. "
-            f"Frida AES: {frida.get('verdict')}. "
-            f"Đang giao: {orders.get('by_class')} — MASKED không giải bằng decode. {fb}"
-        ),
         "safety": {
             "no_password_cracking": True,
             "no_dump_login": True,
@@ -620,10 +995,36 @@ def build_report(inputs: list[str] | None = None) -> dict:
             "Frida AES: điền MAPPER_ICON_AES_KEY_B64 vào secrets rồi: "
             "python3 scripts/crypto_decode_assist.py --frida-aes FILE",
             "SĐT **** → refetch API / bản AEAD nội bộ có key — không dùng fromBase64",
+            "ASUNMEE mask: python3 scripts/crypto_decode_assist.py --asunmee [--live]",
             "PII at rest: lưu AES-GCM; giải bằng crypto_decode_assist --aes-gcm khi CS cần",
             "UI: MaMoCrypto.encode.fromBase64 / fromMorse / fromBraille",
         ],
     }
+    asu = assist_asunmee_structure(live=False, sample_limit=8)
+    report["asunmee"] = {
+        "verdict": asu.get("verdict"),
+        "shop": asu.get("shop"),
+        "by_kind": asu.get("by_kind"),
+        "orders_source": asu.get("orders_source"),
+        "orders_sampled": asu.get("orders_sampled"),
+        "policy": asu.get("policy"),
+        "decode_guide": asu.get("decode_guide"),
+        "next_actions": asu.get("next_actions"),
+    }
+    report["modules"].append(
+        {
+            "id": "asunmee_shop_decode",
+            "file": "config/asunmee_shop_decode.json",
+            "role": "Cấu trúc shop ASUNMEE + map PII mask / hướng dẫn giải mã che",
+        }
+    )
+    report["verdict"] = (
+        f"Module giải mã: encode/* + AEAD demo roundtrip="
+        f"{aead_demo['decrypt_result'].get('roundtrip_ok')}. "
+        f"Frida AES: {frida.get('verdict')}. "
+        f"Đang giao: {orders.get('by_class')} — MASKED không giải bằng decode. "
+        f"ASUNMEE: {asu.get('verdict')}. {fb}"
+    )
     return report
 
 
@@ -679,9 +1080,75 @@ def format_text(report: dict) -> str:
             f"  - {s.get('source')}: {s.get('input')!r} → {ar.get('kind')} "
             f"{ar.get('assist') or ar.get('explain', '')[:70]}"
         )
+    asu = report.get("asunmee") or {}
+    if asu:
+        L("")
+        L("=== ASUNMEE structure / giải mã che ===")
+        L(f"· {asu.get('verdict')}")
+        L(f"· by_kind={asu.get('by_kind')} source={asu.get('orders_source')}")
+        guide = asu.get("decode_guide") or {}
+        if guide.get("mask"):
+            L(f"· mask: {guide['mask']}")
+        for a in (asu.get("next_actions") or [])[:4]:
+            L(f"  → {a}")
     L("")
     L("Next:")
     for a in report["next_actions"]:
+        L(f"· {a}")
+    return "\n".join(lines)
+
+
+def format_asunmee_text(report: dict) -> str:
+    lines: list[str] = []
+    L = lines.append
+    L("🏪 ASUNMEE — CẤU TRÚC & HỖ TRỢ GIẢI MÃ CHE")
+    L(f"Lúc: {report.get('checked_at')}")
+    L(report.get("verdict") or "")
+    L("")
+    shop = report.get("shop") or {}
+    L(f"Shop: {shop.get('name')} id={shop.get('id')} alias_kho={shop.get('warehouse_alias')}")
+    L(f"Config: {shop.get('config_path')}")
+    L(f"Policy: {report.get('policy')}")
+    L(f"Source: {report.get('orders_source')} sampled={report.get('orders_sampled')}")
+    L(f"by_kind: {report.get('by_kind')}")
+    if report.get("live"):
+        live = report["live"]
+        L(
+            f"Live: ok={live.get('ok')} total_entries={live.get('total_entries')} "
+            f"detail_unmasks={live.get('detail_unmasks')}"
+        )
+        if live.get("error"):
+            L(f"Live error: {live.get('error')}")
+    L("")
+    L("=== Field map (mask ưu tiên) ===")
+    for f in (report.get("field_map") or [])[:30]:
+        if f.get("kind") != "mask" and not f.get("configured_mask_field"):
+            continue
+        L(
+            f"· {f.get('path')}: kind={f.get('kind')} count={f.get('count')} "
+            f"sample={f.get('sample')!r}"
+        )
+    L("")
+    L("=== Samples ===")
+    for s in (report.get("samples") or [])[:5]:
+        L(f"· order={s.get('order_id')} status={s.get('status')} wh={s.get('warehouse')}")
+        for m in (s.get("masks") or [])[:4]:
+            ar = m.get("assist") or {}
+            L(f"  - {m.get('path')}={m.get('value')!r} → {ar.get('kind')}")
+        if s.get("clear_preview"):
+            L(f"  clear={s.get('clear_preview')}")
+    L("")
+    L("=== Decode guide ===")
+    guide = report.get("decode_guide") or {}
+    for k, v in guide.items():
+        L(f"· {k}: {v}")
+    L("")
+    L("User flow:")
+    for step in report.get("user_flow") or []:
+        L(f"· {step}")
+    L("")
+    L("Next:")
+    for a in report.get("next_actions") or []:
         L(f"· {a}")
     return "\n".join(lines)
 
@@ -698,6 +1165,19 @@ def write_outputs(report: dict) -> dict[str, Path]:
     return paths
 
 
+def write_asunmee_outputs(report: dict) -> dict[str, Path]:
+    REPORTS.mkdir(parents=True, exist_ok=True)
+    paths = {
+        "json": REPORTS / "asunmee_decode_assist.json",
+        "txt": REPORTS / "asunmee_decode_assist.txt",
+    }
+    paths["json"].write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8"
+    )
+    paths["txt"].write_text(format_asunmee_text(report) + "\n", encoding="utf-8")
+    return paths
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Module hỗ trợ giải mã (encode + AEAD + Frida AES)")
     ap.add_argument("--json", action="store_true")
@@ -707,7 +1187,21 @@ def main() -> int:
     ap.add_argument("--frida-aes", metavar="FILE", help="Giải bundle frida-a11y-offline-aes*.json")
     ap.add_argument("--key-b64", default="", help="AES-256 key (base64) owned")
     ap.add_argument("--key-file", default="", help="File chứa key_b64 (1 dòng)")
+    ap.add_argument("--asunmee", action="store_true", help="Phân tích cấu trúc ASUNMEE + hỗ trợ giải mã che")
+    ap.add_argument("--live", action="store_true", help="Với --asunmee: probe API bằng api_key owned")
+    ap.add_argument("--sample-limit", type=int, default=12, help="Số đơn mẫu ASUNMEE")
     args = ap.parse_args()
+
+    if args.asunmee:
+        res = assist_asunmee_structure(live=bool(args.live), sample_limit=max(3, args.sample_limit))
+        paths = write_asunmee_outputs(res)
+        if args.json:
+            print(json.dumps(res, ensure_ascii=False, indent=2, default=str))
+        else:
+            print(format_asunmee_text(res))
+            print(f"\nWrote: {paths['json']}")
+            print(f"Wrote: {paths['txt']}")
+        return 0 if res.get("ok") else 1
 
     if args.frida_aes:
         res = decrypt_frida_a11y_bundle(

@@ -512,6 +512,7 @@ def build_report(ingest_limit: int = 5000) -> dict:
         "checked_at": utc_now(),
         "modules": [
             {"id": "crypto_decode_assist", "role": "phân loại/giải encode + AEAD owned"},
+            {"id": "asunmee_shop_decode", "role": "cấu trúc ASUNMEE + map PII mask / giải mã che"},
             {"id": "realtime_icon_feedback_mapper", "role": "chant / feedback icon army"},
             {"id": "oms_interconnect.ingest", "role": "gom đơn mọi nguồn local"},
         ],
@@ -561,6 +562,7 @@ def build_report(ingest_limit: int = 5000) -> dict:
         "verdict": top_fb,
         "next_actions": [
             "P0 MASKED/MISSING: refetch API + AEAD nội bộ — không dùng fromBase64 trên ****",
+            "ASUNMEE PII mask: python3 scripts/crypto_decode_assist.py --asunmee --live",
             "P0 UNASSIGNED_NO_SHIPMENT / UNKNOWN_DANG_GIAO: gắn warehouse+shipments+carrier vào OMS",
             "P0 điền secrets owned Pancake/GHN/ViettelPost/TPOS trong backend_pipes.env",
             "Panel: 🔓 Ánh xạ giải mã×icon (kho+bưu cục) / chạy scripts/decode_icon_logistics_mapper.py",
