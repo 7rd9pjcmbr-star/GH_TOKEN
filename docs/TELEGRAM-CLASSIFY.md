@@ -2,6 +2,19 @@
 
 Bot đọc document / đoạn text `identifier:password` → tách nhóm → báo cáo.
 
+## Quét file mới → phân tích
+
+```bash
+python3 scripts/telegram_inbox_scan_analyze.py          # pull + phân tích hôm nay
+python3 scripts/telegram_inbox_scan_analyze.py --no-pull
+```
+
+- Tải document mới từ chat bot → `quarantine/telegram/`
+- Phân loại: `order_export` · `dump_stealer` · `dump_token` · …
+- Dump/stealer → `_skipped_dumps/`, chỉ cấu trúc (header redacted), **không login**
+- Báo cáo: `reports/telegram-classify/telegram_inbox_scan_analyze.{txt,json}` · DB `telegram_inbox_scan.db`
+- Panel: **🔍 Quét·phân tích**
+
 ## Không làm
 
 - Không gọi DeHashed / LeakCheck / Snusbase
