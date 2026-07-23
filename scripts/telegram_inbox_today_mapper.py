@@ -211,6 +211,9 @@ def pull_telegram_inbox(token: str, *, chat_id: str | None = None, wait: int = 0
             continue
         name = doc.get("file_name") or f"{doc.get('file_id')}.bin"
         mime = doc.get("mime_type")
+        if is_dump_document(name):
+            skipped.append({"file": name, "reason": "dump_or_stealer_skipped", "mime": mime})
+            continue
         if not is_order_document(name, mime):
             skipped.append({"file": name, "reason": "not_order_like", "mime": mime})
             continue
@@ -593,6 +596,9 @@ def format_text(report: dict) -> str:
         L(f"  ↓ {d.get('file')} ({d.get('size')} B) from msg={d.get('message_id')}")
     for sk in (pull.get("skipped") or [])[:8]:
         L(f"  skip {sk.get('file')}: {sk.get('reason')}")
+    dump_skips = [s for s in (pull.get("skipped") or []) if "dump" in str(s.get("reason") or "") or "stealer" in str(s.get("reason") or "")]
+    if dump_skips:
+        L(f"⚠ Đã bỏ qua {len(dump_skips)} file dump/stealer (không map, không login).")
     st = report.get("stats") or {}
     L("")
     L(f"DB: {report['db'].get('path')} · orders_today={report['db'].get('orders')}")

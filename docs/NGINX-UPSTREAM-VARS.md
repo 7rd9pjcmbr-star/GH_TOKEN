@@ -1,6 +1,6 @@
 # Biến nhúng & chỉ thị nginx — `ngx_http_upstream_module`
 
-Catalog: `data/nginx-upstream-vars.js` · Module: `js/logic/vars.js`
+Catalog: `data/nginx-upstream-vars.js` · Module: `js/logic/vars.js` · version **1.1.0**
 
 ## Tra cứu
 
@@ -62,8 +62,44 @@ upstream backend {
 
 Dùng DNS nội bộ đáng tin cậy, đã được bảo vệ — giảm rủi ro DNS spoofing.
 
-## Biến nhúng `$upstream_*`
+## Các biến được nhúng
 
-15 biến — `MaMoLogic.vars.all()`. Hai biến commercial: `$upstream_last_addr`, `$upstream_last_server_name`.
+Module `ngx_http_upstream_module` hỗ trợ các biến nhúng sau. Nhiều kết nối: phân tách bằng **dấu phẩy**; chuyển hướng nội bộ giữa nhóm (`X-Accel-Redirect` / `error_page`): nhóm phân tách bằng **dấu hai chấm** (giống mẫu của `$upstream_addr`).
+
+15 biến — `MaMoLogic.vars.all()`. Hai biến **commercial**: `$upstream_last_addr`, `$upstream_last_server_name`.
+
+| Biến | Since | Mô tả |
+|------|-------|--------|
+| `$upstream_addr` | — | IP:port hoặc đường dẫn UNIX socket của upstream. Nhiều server: phẩy. Nhiều nhóm (redirect nội bộ): hai chấm. Không chọn được server → tên nhóm. |
+| `$upstream_bytes_received` | 1.11.4 | Số byte nhận từ upstream. |
+| `$upstream_bytes_sent` | 1.15.8 | Số byte gửi tới upstream. |
+| `$upstream_cache_status` | 0.8.3 | `MISS` · `BYPASS` · `EXPIRED` · `STALE` · `UPDATING` · `REVALIDATED` · `HIT` |
+| `$upstream_connect_time` | 1.9.1 | Thời gian thiết lập kết nối (giây, ms). SSL gồm handshake. |
+| `$upstream_cookie_name` | 1.7.1 | Cookie tên `name` từ `Set-Cookie` của **server cuối**. |
+| `$upstream_header_time` | 1.7.10 | Thời gian nhận header phản hồi (giây, ms). |
+| `$upstream_http_name` | — | Header phản hồi upstream (quy tắc như `$http_*`). Chỉ server cuối. VD: `Server` → `$upstream_http_server`. |
+| `$upstream_last_addr` | 1.29.3 | **Commercial** — IP/UNIX socket của upstream được chọn cuối. |
+| `$upstream_last_server_name` | 1.25.3 | **Commercial** — tên upstream cuối; dùng SNI: `proxy_ssl_server_name on; proxy_ssl_name $upstream_last_server_name;` |
+| `$upstream_queue_time` | 1.13.9 | Thời gian request nằm trong hàng đợi upstream (giây, ms). |
+| `$upstream_response_length` | 0.7.27 | Độ dài phản hồi từ upstream (byte). |
+| `$upstream_response_time` | — | Thời gian nhận toàn bộ phản hồi (giây, ms). |
+| `$upstream_status` | — | Mã trạng thái từ upstream. Không chọn được server → **502**. |
+| `$upstream_trailer_name` | 1.13.10 | Trường trailer cuối phản hồi upstream. |
+
+### Ví dụ `$upstream_addr`
+
+```text
+192.168.1.1:80, 192.168.1.2:80, unix:/tmp/sock
+192.168.1.1:80, 192.168.1.2:80, unix:/tmp/sock : 192.168.10.1:80, 192.168.10.2:80
+```
+
+### Gợi ý `log_format`
+
+```nginx
+log_format upstream_debug '$remote_addr - $request '
+    'upstream=$upstream_addr status=$upstream_status '
+    'rt=$upstream_response_time uct=$upstream_connect_time '
+    'uht=$upstream_header_time cache=$upstream_cache_status';
+```
 
 UI: `/logic-view/` → panel nginx upstream.

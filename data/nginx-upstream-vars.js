@@ -1,15 +1,15 @@
 /**
  * ngx_http_upstream_module — biến nhúng (embedded variables)
- * Tài liệu tham chiếu giáo dục; nguồn: nginx upstream module docs.
+ * Tài liệu tham chiếu giáo dục; nguồn: nginx upstream module docs (VI).
  */
 window.NGINX_UPSTREAM_VARS = {
   meta: {
     module: "ngx_http_upstream_module",
     title: "Các biến được nhúng (upstream)",
-    version: "1.0.0",
+    version: "1.1.0",
     source: "nginx.org — ngx_http_upstream_module embedded variables",
     summary:
-      "Biến nhúng nginx cho upstream: địa chỉ, thời gian, cache, status, cookie/header từ máy chủ thượng nguồn.",
+      "Module ngx_http_upstream_module hỗ trợ các biến nhúng: địa chỉ, byte, cache, thời gian, cookie/header, status, trailer từ máy chủ thượng nguồn.",
     separatorNote:
       "Nhiều kết nối: giá trị phân tách bằng dấu phẩy. Chuyển hướng nội bộ giữa nhóm (X-Accel-Redirect / error_page): nhóm phân tách bằng dấu hai chấm.",
   },
@@ -22,13 +22,13 @@ window.NGINX_UPSTREAM_VARS = {
       commercial: false,
       category: "address",
       summary:
-        "Địa chỉ IP và cổng, hoặc đường dẫn UNIX domain socket của máy chủ thượng nguồn.",
+        "Giữ địa chỉ IP và cổng, hoặc đường dẫn đến ổ cắm miền UNIX của máy chủ thượng nguồn.",
       details: [
-        "Nhiều máy chủ trong một request: địa chỉ phân tách bằng dấu phẩy.",
+        "Nếu một số máy chủ được liên hệ trong quá trình xử lý yêu cầu, địa chỉ của chúng được phân tách bằng dấu phẩy.",
         "Ví dụ: 192.168.1.1:80, 192.168.1.2:80, unix:/tmp/sock",
-        "Chuyển hướng nội bộ giữa nhóm (X-Accel-Redirect / error_page): nhóm phân tách bằng dấu hai chấm.",
+        "Nếu chuyển hướng nội bộ từ nhóm máy chủ này sang nhóm khác (X-Accel-Redirect hoặc error_page), địa chỉ từ các nhóm khác nhau được phân tách bằng dấu hai chấm.",
         "Ví dụ: 192.168.1.1:80, 192.168.1.2:80, unix:/tmp/sock : 192.168.10.1:80, 192.168.10.2:80",
-        "Không chọn được máy chủ → biến giữ tên nhóm máy chủ (upstream group name).",
+        "Nếu không thể chọn máy chủ, biến sẽ giữ tên của nhóm máy chủ.",
       ],
       related: ["upstream_last_addr", "upstream_status", "upstream_connect_time"],
       logUse: "access_log / error_log — debug backend nào đã xử lý",
@@ -39,9 +39,9 @@ window.NGINX_UPSTREAM_VARS = {
       since: "1.11.4",
       commercial: false,
       category: "bytes",
-      summary: "Số byte nhận từ máy chủ thượng nguồn.",
+      summary: "Số byte nhận được từ một máy chủ thượng nguồn (1.11.4).",
       details: [
-        "Nhiều kết nối: phân tách bằng dấu phẩy và dấu hai chấm giống $upstream_addr.",
+        "Các giá trị từ một số kết nối được phân tách bằng dấu phẩy và dấu hai chấm giống như các địa chỉ trong biến $upstream_addr.",
       ],
       related: ["upstream_bytes_sent", "upstream_response_length", "upstream_addr"],
       logUse: "Đo lưu lượng download từ upstream",
@@ -52,9 +52,9 @@ window.NGINX_UPSTREAM_VARS = {
       since: "1.15.8",
       commercial: false,
       category: "bytes",
-      summary: "Số byte gửi tới máy chủ thượng nguồn.",
+      summary: "Số lượng byte được gửi đến một máy chủ ngược dòng (1.15.8).",
       details: [
-        "Nhiều kết nối: phân tách bằng dấu phẩy và dấu hai chấm giống $upstream_addr.",
+        "Các giá trị từ một số kết nối được phân tách bằng dấu phẩy và dấu hai chấm giống như các địa chỉ trong biến $upstream_addr.",
       ],
       related: ["upstream_bytes_received", "upstream_addr"],
       logUse: "Đo lưu lượng upload tới upstream",
@@ -65,9 +65,9 @@ window.NGINX_UPSTREAM_VARS = {
       since: "0.8.3",
       commercial: false,
       category: "cache",
-      summary: "Trạng thái truy cập bộ nhớ đệm phản hồi upstream.",
+      summary: "Giữ trạng thái truy cập bộ nhớ cache phản hồi (0.8.3).",
       details: [
-        "Giá trị: MISS, BYPASS, EXPIRED, STALE, UPDATING, REVALIDATED, HIT.",
+        'Trạng thái có thể là "MISS", "BYPASS", "EXPIRED", "STALE", "UPDATING", "REVALIDATED" hoặc "HIT".',
       ],
       related: ["upstream_response_time", "upstream_status"],
       logUse: "Phân tích hiệu quả proxy_cache",
@@ -80,10 +80,10 @@ window.NGINX_UPSTREAM_VARS = {
       commercial: false,
       category: "timing",
       summary:
-        "Thời gian thiết lập kết nối tới upstream (giây, độ phân giải mili giây).",
+        "Giữ thời gian dành cho việc thiết lập kết nối với máy chủ ngược dòng (1.9.1); giây với độ phân giải mili giây.",
       details: [
-        "Với SSL: bao gồm thời gian handshake.",
-        "Nhiều kết nối: phân tách giống $upstream_addr.",
+        "Trong trường hợp SSL, bao gồm thời gian dành cho việc bắt tay.",
+        "Thời gian của một số kết nối được phân tách bằng dấu phẩy và dấu hai chấm giống như địa chỉ trong biến $upstream_addr.",
       ],
       related: ["upstream_header_time", "upstream_response_time", "upstream_queue_time"],
       logUse: "Phát hiện upstream chậm kết nối / TLS handshake",
@@ -97,9 +97,9 @@ window.NGINX_UPSTREAM_VARS = {
       category: "header",
       dynamic: true,
       summary:
-        "Cookie với tên chỉ định do upstream gửi trong Set-Cookie (thay name bằng tên cookie).",
+        "Cookie với tên chỉ định do upstream gửi trong trường header phản hồi Set-Cookie (1.7.1).",
       details: [
-        "Chỉ lưu cookie từ phản hồi của máy chủ cuối cùng.",
+        "Chỉ các cookie từ phản hồi của máy chủ cuối cùng được lưu.",
         "Ví dụ: $upstream_cookie_sessionid",
       ],
       related: ["upstream_http_", "upstream_status"],
@@ -112,9 +112,9 @@ window.NGINX_UPSTREAM_VARS = {
       commercial: false,
       category: "timing",
       summary:
-        "Thời gian nhận header phản hồi từ upstream (giây, độ phân giải mili giây).",
+        "Giữ thời gian dành cho việc nhận tiêu đề phản hồi từ máy chủ ngược dòng (1.7.10); giây với độ phân giải mili giây.",
       details: [
-        "Nhiều phản hồi: phân tách giống $upstream_addr.",
+        "Thời gian của một số phản hồi được phân tách bằng dấu phẩy và dấu hai chấm như địa chỉ trong biến $upstream_addr.",
       ],
       related: ["upstream_connect_time", "upstream_response_time"],
       logUse: "TTFB phía upstream (tới khi có header)",
@@ -127,11 +127,11 @@ window.NGINX_UPSTREAM_VARS = {
       commercial: false,
       category: "header",
       dynamic: true,
-      summary:
-        "Trường header phản hồi của upstream (quy tắc chuyển tên giống $http_*).",
+      summary: "Giữ các trường tiêu đề phản hồi của máy chủ thượng nguồn.",
       details: [
-        "Ví dụ: header Server → $upstream_http_server",
-        "Chỉ lưu header từ phản hồi máy chủ cuối cùng.",
+        'Ví dụ: trường tiêu đề phản hồi "Server" có sẵn thông qua biến $upstream_http_server.',
+        'Các quy tắc chuyển đổi tên trường tiêu đề thành tên biến giống như đối với các biến bắt đầu bằng tiền tố "$http_".',
+        "Chỉ các trường tiêu đề từ phản hồi của máy chủ cuối cùng được lưu.",
       ],
       related: ["upstream_cookie_", "upstream_trailer_"],
       logUse: "Log header quan trọng từ backend (Server, Content-Type…)",
@@ -143,9 +143,9 @@ window.NGINX_UPSTREAM_VARS = {
       commercial: true,
       category: "address",
       summary:
-        "IP hoặc đường dẫn UNIX socket của máy chủ thượng nguồn được chọn cuối cùng.",
+        "Giữ địa chỉ IP hoặc đường dẫn đến ổ cắm miền UNIX của máy chủ thượng nguồn được chọn cuối cùng (1.29.3).",
       details: [
-        "Chỉ có trong đăng ký thương mại nginx.",
+        "Biến này có sẵn như một phần của đăng ký thương mại nginx.",
       ],
       related: ["upstream_addr", "upstream_last_server_name"],
       logUse: "Địa chỉ peer cuối cùng (bản commercial)",
@@ -156,10 +156,11 @@ window.NGINX_UPSTREAM_VARS = {
       since: "1.25.3",
       commercial: true,
       category: "address",
-      summary: "Tên máy chủ thượng nguồn được chọn cuối cùng — truyền qua SNI.",
+      summary:
+        "Giữ tên của máy chủ thượng nguồn được chọn cuối cùng (1.25.3); cho phép truyền qua SNI.",
       details: [
         "Ví dụ cấu hình: proxy_ssl_server_name on; proxy_ssl_name $upstream_last_server_name;",
-        "Chỉ có trong đăng ký thương mại nginx.",
+        "Biến này có sẵn như một phần của đăng ký thương mại nginx.",
       ],
       related: ["upstream_last_addr", "upstream_addr"],
       logUse: "SNI đúng tên upstream (bản commercial)",
@@ -171,9 +172,9 @@ window.NGINX_UPSTREAM_VARS = {
       commercial: false,
       category: "timing",
       summary:
-        "Thời gian request nằm trong hàng đợi upstream (giây, độ phân giải mili giây).",
+        "Giữ thời gian yêu cầu dành cho hàng đợi thượng nguồn (1.13.9); giây với độ phân giải mili giây.",
       details: [
-        "Nhiều phản hồi: phân tách giống $upstream_addr.",
+        "Thời gian của một số phản hồi được phân tách bằng dấu phẩy và dấu hai chấm như địa chỉ trong biến $upstream_addr.",
       ],
       related: ["upstream_connect_time", "upstream_response_time"],
       logUse: "Phát hiện nghẽn queue / max_conns",
@@ -185,9 +186,10 @@ window.NGINX_UPSTREAM_VARS = {
       since: "0.7.27",
       commercial: false,
       category: "bytes",
-      summary: "Độ dài phản hồi nhận từ upstream (byte).",
+      summary:
+        "Giữ độ dài của phản hồi thu được từ máy chủ ngược dòng (0.7.27); độ dài giữ bằng byte.",
       details: [
-        "Nhiều phản hồi: phân tách giống $upstream_addr.",
+        "Độ dài của một số câu trả lời được phân tách bằng dấu phẩy và dấu hai chấm giống như địa chỉ trong biến $upstream_addr.",
       ],
       related: ["upstream_bytes_received", "upstream_response_time"],
       logUse: "Kích thước body từ backend",
@@ -200,9 +202,9 @@ window.NGINX_UPSTREAM_VARS = {
       commercial: false,
       category: "timing",
       summary:
-        "Thời gian nhận toàn bộ phản hồi từ upstream (giây, độ phân giải mili giây).",
+        "Giữ thời gian dành cho việc nhận phản hồi từ máy chủ ngược dòng; giây với độ phân giải mili giây.",
       details: [
-        "Nhiều phản hồi: phân tách giống $upstream_addr.",
+        "Thời gian của một số phản hồi được phân tách bằng dấu phẩy và dấu hai chấm như địa chỉ trong biến $upstream_addr.",
       ],
       related: ["upstream_connect_time", "upstream_header_time", "upstream_status"],
       logUse: "Latency end-to-end phía upstream",
@@ -214,10 +216,10 @@ window.NGINX_UPSTREAM_VARS = {
       since: null,
       commercial: false,
       category: "status",
-      summary: "Mã trạng thái HTTP nhận từ upstream.",
+      summary: "Giữ mã trạng thái của phản hồi thu được từ máy chủ thượng nguồn.",
       details: [
-        "Nhiều phản hồi: phân tách giống $upstream_addr.",
-        "Không chọn được máy chủ → 502 (Bad Gateway).",
+        "Mã trạng thái của một số phản hồi được phân tách bằng dấu phẩy và dấu hai chấm giống như địa chỉ trong biến $upstream_addr.",
+        "Nếu không thể chọn máy chủ, biến sẽ giữ mã trạng thái 502 (Bad Gateway).",
       ],
       related: ["upstream_addr", "upstream_response_time", "upstream_cache_status"],
       logUse: "Theo dõi 5xx/4xx từ backend",
@@ -229,9 +231,10 @@ window.NGINX_UPSTREAM_VARS = {
       commercial: false,
       category: "header",
       dynamic: true,
-      summary: "Trường trailer ở cuối phản hồi từ upstream (thay name bằng tên trailer).",
+      summary:
+        "Giữ các trường từ cuối phản hồi thu được từ máy chủ thượng nguồn (1.13.10).",
       details: [
-        "Áp dụng khi upstream gửi HTTP trailers.",
+        "Thay name bằng tên trailer. Áp dụng khi upstream gửi HTTP trailers.",
       ],
       related: ["upstream_http_"],
       logUse: "Đọc trailer (checksum, status phụ…)",
