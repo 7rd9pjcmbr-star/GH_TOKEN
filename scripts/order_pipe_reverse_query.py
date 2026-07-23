@@ -16,6 +16,7 @@ import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -1780,11 +1781,36 @@ def format_text(report: dict) -> str:
     return "\n".join(lines)
 
 
+def scrub_phones_in_obj(obj: Any, depth: int = 0) -> Any:
+    """Che SĐT đầy đủ trong report (kể cả PATH-CLEAR) — chỉ giữ mask_phone()."""
+    if depth > 12:
+        return obj
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            lk = str(k).lower()
+            if lk in {
+                "receiver_phone",
+                "customer_phone",
+                "bill_phone_number",
+                "phone",
+            } and isinstance(v, str) and v and "*" not in v and len(re.sub(r"\D", "", v)) >= 9:
+                out[k] = mask_phone(v)
+                out[f"{k}_scrubbed"] = True
+            else:
+                out[k] = scrub_phones_in_obj(v, depth + 1)
+        return out
+    if isinstance(obj, list):
+        return [scrub_phones_in_obj(x, depth + 1) for x in obj]
+    return obj
+
+
 def write_outputs(report: dict) -> dict[str, Path]:
     REPORTS.mkdir(parents=True, exist_ok=True)
     OUT.mkdir(parents=True, exist_ok=True)
-    text = format_text(report)
-    payload = json.dumps(report, ensure_ascii=False, indent=2, default=list)
+    scrubbed = scrub_phones_in_obj(report)
+    text = format_text(scrubbed)
+    payload = json.dumps(scrubbed, ensure_ascii=False, indent=2, default=list)
     paths = {
         "json": REPORTS / "order_pipe_reverse_query.json",
         "txt": REPORTS / "order_pipe_reverse_query.txt",
