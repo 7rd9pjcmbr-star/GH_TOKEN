@@ -25,10 +25,33 @@
     "missing": ["/shops/{shop_id}/settings"]
   },
   "warehouses": [
-    {"name": "Kho Hà Nội", "role": "kho"},
-    {"name": "Kho Ân Thi", "role": "kho"},
-    {"name": "ASUMEE", "role": "kho_chinh_alias"}
+    {
+      "id": "28780308-d28d-42e8-99c6-32ddf555a649",
+      "name": "Kho Hà Nội",
+      "role": "kho",
+      "phone_clear": true
+    },
+    {
+      "id": "6e179a8b-cd5c-43f0-bc6b-41176711f9ad",
+      "name": "Kho Ân Thi",
+      "role": "kho",
+      "phone_clear": true
+    },
+    {
+      "id": "55e5f0e1-ed06-4dad-b35a-406bee25cdea",
+      "name": "ASUMEE",
+      "role": "kho_chinh_alias",
+      "phone_number": "+84862370135",
+      "phone_clear": true,
+      "address": "Thôn Thành Tây, Xã Văn Phú, Huyện Nho Quan, Ninh Bình",
+      "shop_id": 714934229,
+      "unmask_map": {
+        "warehouse_phone": "PATH-CLEAR",
+        "customer_pii": "PATH-MASK-REDACTION"
+      }
+    }
   ],
+  "primary_warehouse_id": "55e5f0e1-ed06-4dad-b35a-406bee25cdea",
   "pii_mask": {
     "policy": "api_key returns Pancake redaction — NOT ciphertext; cannot decrypt ****",
     "detail_unmasks": false,

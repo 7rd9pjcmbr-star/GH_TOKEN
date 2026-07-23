@@ -291,6 +291,9 @@ def asunmee_layer_bridge() -> dict[str, Any]:
     if ASUNMEE_CFG.is_file():
         cfg = json.loads(ASUNMEE_CFG.read_text(encoding="utf-8"))
     mask = cfg.get("pii_mask") or {}
+    primary_wh = cfg.get("primary_warehouse_id")
+    wh_list = cfg.get("warehouses") or []
+    primary = next((w for w in wh_list if str(w.get("id")) == str(primary_wh)), None)
     return {
         "shop": cfg.get("shop"),
         "mask_fields": mask.get("fields") or [],
@@ -298,10 +301,86 @@ def asunmee_layer_bridge() -> dict[str, Any]:
         "policy": mask.get("policy"),
         "maps_to_path": "PATH-MASK-REDACTION",
         "decode_assist": cfg.get("decode_assist"),
+        "primary_warehouse": primary,
         "alignment": (
             "Frida L4 mask fields ↔ ASUNMEE bill_*/shipping_*/customer.* — cùng redaction, "
-            "không unmask bằng AES hay fromBase64"
+            "không unmask bằng AES hay fromBase64. "
+            f"Kho chính ASUMEE id={primary_wh}: SĐT kho CLEAR / PII đơn MASK."
         ),
+    }
+
+
+def lookup_warehouse(warehouse_id: str) -> dict[str, Any]:
+    """Tra cứu kho theo UUID + thống kê đơn cache + ánh xạ unmask."""
+    wid = (warehouse_id or "").strip()
+    cfg: dict[str, Any] = {}
+    if ASUNMEE_CFG.is_file():
+        cfg = json.loads(ASUNMEE_CFG.read_text(encoding="utf-8"))
+    wh_meta = next(
+        (w for w in (cfg.get("warehouses") or []) if str(w.get("id")) == wid),
+        {"id": wid},
+    )
+
+    cache_paths = [
+        ROOT / "docker" / "nginx-order" / "orders_buucuc_scan_cache.json",
+        REPORTS / "scan_buucuc_orders.json",
+        REPORTS / "asunmee_orders_last3d.json",
+    ]
+    matched: list[dict] = []
+    source = None
+    for cand in cache_paths:
+        if not cand.is_file():
+            continue
+        try:
+            data = json.loads(cand.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+        rows = data if isinstance(data, list) else data.get("orders") or data.get("data") or []
+        if not isinstance(rows, list):
+            continue
+        hit = [o for o in rows if isinstance(o, dict) and str(o.get("warehouse_id")) == wid]
+        if hit:
+            matched = hit
+            source = str(cand)
+            break
+
+    st: Counter = Counter()
+    ph: Counter = Counter()
+    for o in matched:
+        st[str(o.get("status_name") or o.get("status") or "?")] += 1
+        phone = o.get("customer_phone") or o.get("bill_phone_number")
+        if not phone:
+            ph["MISSING"] += 1
+        elif "*" in str(phone):
+            ph["MASKED"] += 1
+        else:
+            ph["OK"] += 1
+
+    unmask = (wh_meta.get("unmask_map") if isinstance(wh_meta, dict) else None) or {
+        "warehouse_phone": "PATH-CLEAR",
+        "customer_pii": "PATH-MASK-REDACTION",
+    }
+    return {
+        "ok": True,
+        "checked_at": utc_now(),
+        "warehouse_id": wid,
+        "warehouse": wh_meta,
+        "shop": cfg.get("shop"),
+        "orders_source": source,
+        "orders_n": len(matched),
+        "status": dict(st),
+        "phone_class": dict(ph),
+        "unmask_map": unmask,
+        "verdict": (
+            f"Kho {wh_meta.get('name') or wid}: id={wid} · đơn={len(matched)} · "
+            f"phone={dict(ph)} · unmask warehouse_phone={unmask.get('warehouse_phone')} "
+            f"customer_pii={unmask.get('customer_pii')}"
+        ),
+        "next_actions": [
+            "PII đơn MASK → fetch_unmasked / --asunmee --live",
+            "SĐT kho CLEAR — dùng trực tiếp cho liên hệ kho",
+            "python3 scripts/inner_unmask_deep_mapper.py --warehouse " + wid,
+        ],
     }
 
 
@@ -413,7 +492,50 @@ def build_report(
     bundle_path: str | None = None,
     key_b64: str | None = None,
     key_file: str | None = None,
+    warehouse_id: str | None = None,
 ) -> dict[str, Any]:
+    if warehouse_id and not plaintext_path and not bundle_path:
+        # Warehouse-focused lookup (+ optional deep if plaintext exists)
+        wh = lookup_warehouse(warehouse_id)
+        # Still attach deep summary from existing plaintext if available
+        deep = None
+        try:
+            plain = REPORTS / "frida_a11y_aes_plaintext.json"
+            if plain.is_file():
+                deep = build_report(plaintext_path=str(plain))
+        except Exception:  # noqa: BLE001
+            deep = None
+        try:
+            from realtime_icon_feedback_mapper import feedback_line
+
+            icons = ["cube", "lock", "key", "monitor"]
+            fb = feedback_line(icons, f"kho {warehouse_id[:8]}… × unmask map")
+        except Exception:  # noqa: BLE001
+            icons, fb = ["cube", "lock"], "kho → unmask"
+        return {
+            "ok": True,
+            "query": f"Tra cứu warehouse_id {warehouse_id}",
+            "checked_at": utc_now(),
+            "mode": "warehouse_lookup",
+            "warehouse_lookup": wh,
+            "deep_inner_summary": {
+                "ok": (deep or {}).get("ok"),
+                "stats": (deep or {}).get("stats"),
+                "verdict": (deep or {}).get("verdict"),
+            }
+            if deep
+            else None,
+            "icon_feedback": fb,
+            "icon_chant": " → ".join(icons),
+            "verdict": f"{wh.get('verdict')} | {fb}",
+            "next_actions": wh.get("next_actions") or [],
+            "policy": {
+                "mask_not_decryptable": True,
+                "warehouse_phone_clear": True,
+                "aes_unwrap_ne_pii_unmask": True,
+            },
+        }
+
     inner, l0 = load_or_decrypt_inner(
         plaintext_path=plaintext_path,
         bundle_path=bundle_path,
@@ -539,6 +661,15 @@ def build_report(
             "clear_n": clear_n,
         },
         "asunmee_bridge": asunmee,
+        "warehouse_lookup": (
+            lookup_warehouse(warehouse_id)
+            if warehouse_id
+            else (
+                lookup_warehouse(str((asunmee.get("primary_warehouse") or {}).get("id")))
+                if (asunmee.get("primary_warehouse") or {}).get("id")
+                else None
+            )
+        ),
         "mermaid": mermaid,
         "icon_feedback": fb,
         "icon_chant": " → ".join(icons),
@@ -628,6 +759,16 @@ def format_text(report: dict) -> str:
     L("=== ASUNMEE bridge ===")
     L(f"· shop={asu.get('shop')} → {asu.get('maps_to_path')}")
     L(f"· {asu.get('alignment')}")
+    whl = report.get("warehouse_lookup") or report.get("mode") and report.get("warehouse_lookup")
+    if report.get("mode") == "warehouse_lookup":
+        whl = report.get("warehouse_lookup")
+    if whl:
+        L("")
+        L("=== Warehouse lookup ===")
+        L(f"· {whl.get('verdict')}")
+        L(f"· warehouse={whl.get('warehouse')}")
+        L(f"· orders_n={whl.get('orders_n')} status={whl.get('status')} phone={whl.get('phone_class')}")
+        L(f"· unmask_map={whl.get('unmask_map')}")
     if report.get("mermaid"):
         L("")
         L(report["mermaid"])
@@ -656,6 +797,7 @@ def main() -> int:
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--plaintext", default="", help="Frida plaintext JSON (đã giải)")
     ap.add_argument("--bundle", default="", help="Frida AES bundle để decrypt")
+    ap.add_argument("--warehouse", default="", help="Tra cứu warehouse_id (UUID kho ASUMEE)")
     ap.add_argument("--key-b64", default="")
     ap.add_argument("--key-file", default="")
     args = ap.parse_args()
@@ -665,6 +807,7 @@ def main() -> int:
         bundle_path=args.bundle or None,
         key_b64=args.key_b64 or None,
         key_file=args.key_file or None,
+        warehouse_id=args.warehouse or None,
     )
     paths = write_outputs(report)
     if args.json:
