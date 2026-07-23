@@ -55,6 +55,28 @@ PYTHONPATH=scripts python3 -m order_pipe --fetch-orders --limit 80
 - Không lấy cookie/token từ Acc_all / stealer  
 - `api_key` Pancake: PII vẫn MASK — Bearer session cũng không tự unmask `****`
 
+## Duy trì token (chống hết hạn)
+
+Module: `scripts/token_session_maintain.py`
+
+- Đọc JWT `exp` primary/secondary · cảnh báo `warn-days` / `critical-days`
+- Heartbeat `/shops` (api_key + bearer) · bắt `pos_jwt` mới từ Set-Cookie nếu server gia hạn
+- Auto-refresh ViettelPost khi có USER+PASSWORD owned
+- `api_key` Pancake ưu tiên lấy đơn (không phụ thuộc JWT exp)
+
+```bash
+# Một vòng
+python3 scripts/token_session_maintain.py once
+
+# Loop 30 phút + Telegram khi rủi ro
+python3 scripts/token_session_maintain.py --loop --interval 1800 --warn-days 7 --notify-on-risk
+
+# Gắn trong ensure phiên
+python3 scripts/order_session_env.py ensure
+```
+
+Trước khi JWT hết hạn: gửi lại `pos_jwt` còn hạn → `pancake_cookie_ingest`.
+
 ## GHN session / cookie
 
 Module: `scripts/ghn_cookie_ingest.py` — lấy **API Token** từ:

@@ -85,7 +85,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--session-ensure",
         action="store_true",
-        help="Gom env + duy trì phiên (export/ensure/keepalive)",
+        help="Gom env + duy trì phiên (export/ensure/keepalive/ttl)",
+    )
+    ap.add_argument(
+        "--session-maintain",
+        action="store_true",
+        help="Duy trì token TTL + heartbeat (chống hết hạn)",
     )
     ap.add_argument(
         "--sample-limit",
@@ -101,7 +106,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{sid.value}")
         return 0
 
-    if args.session_audit or args.session_ensure:
+    if args.session_audit or args.session_ensure or args.session_maintain:
+        if args.session_maintain:
+            from token_session_maintain import format_text as fmt_m
+            from token_session_maintain import maintain_once
+
+            report = maintain_once(notify_on_risk=False)
+            if args.json:
+                print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+            else:
+                print(fmt_m(report))
+            return 0 if report.get("ok", True) else 1
+
         import order_session_env as ose
 
         if args.session_ensure:

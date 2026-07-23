@@ -421,6 +421,14 @@ def ensure_session(*, via_nginx: bool = False) -> dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         keepalive = {"ok": False, "error": str(e)}
 
+    maintain: dict[str, Any] = {"skipped": True}
+    try:
+        from token_session_maintain import maintain_once
+
+        maintain = maintain_once(notify_on_risk=False)
+    except Exception as e:  # noqa: BLE001
+        maintain = {"ok": False, "error": str(e)}
+
     audit_rep = audit()
     state = {
         "updated_at": utc_now(),
@@ -431,6 +439,8 @@ def ensure_session(*, via_nginx: bool = False) -> dict[str, Any]:
         "applied": applied.get("applied"),
         "ensure_ok": bool(ensure_report.get("ok", True)) and "error" not in ensure_report,
         "keepalive_ok": bool(keepalive.get("ok", True)) and "error" not in keepalive,
+        "maintain_ok": bool(maintain.get("ok", True)) and "error" not in maintain,
+        "ttl": (maintain.get("ttl") if isinstance(maintain, dict) else None),
         "session_ready": (audit_rep.get("summary") or {}).get("session_ready"),
         "verdict": audit_rep.get("verdict"),
     }
@@ -458,17 +468,25 @@ def ensure_session(*, via_nginx: bool = False) -> dict[str, Any]:
             or keepalive.get("risks")
             or keepalive.get("summary"),
         },
+        "maintain": {
+            "ok": state["maintain_ok"],
+            "verdict": maintain.get("verdict") or maintain.get("error"),
+            "ttl": maintain.get("ttl"),
+            "order_ready": maintain.get("order_ready"),
+            "risks_n": len(maintain.get("risks") or []) if isinstance(maintain, dict) else None,
+        },
         "session_ready": state["session_ready"],
         "verdict": (
             f"Session maintain: export={exported.get('keys_written')} "
             f"ensure={'OK' if state['ensure_ok'] else 'FAIL'} "
-            f"keepalive={'OK' if state['keepalive_ok'] else 'FAIL'} · "
+            f"keepalive={'OK' if state['keepalive_ok'] else 'FAIL'} "
+            f"ttl={'OK' if state['maintain_ok'] else 'RISK'} · "
             f"{audit_rep.get('verdict')}"
         ),
         "policy": audit_rep.get("policy"),
         "next_actions": [
+            "python3 scripts/token_session_maintain.py --loop --interval 1800 --notify-on-risk",
             "PYTHONPATH=scripts python3 -m order_pipe --fetch-orders --limit 80",
-            "PYTHONPATH=scripts python3 -m order_pipe --unmask-assist",
             "python3 scripts/order_session_env.py status",
         ],
     }
