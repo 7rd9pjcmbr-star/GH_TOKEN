@@ -428,6 +428,7 @@ def build_report(*, lookback: int = 200, run_secrets_audit: bool = False) -> dic
         },
         "next_actions": [
             "python3 scripts/telegram_ghn_audit.py",
+            "python3 scripts/telegram_ghn_token_maintain.py",
             "printf '%s\\n' '<printA5 owned>' > secrets/ghn_session.raw && python3 scripts/ghn_cookie_ingest.py ensure",
             "python3 scripts/token_session_maintain.py once",
         ],
