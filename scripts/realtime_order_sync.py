@@ -60,6 +60,13 @@ def load_env() -> dict[str, str]:
                 continue
             k, v = t.split("=", 1)
             env.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+    # Overlay owned user/token mapping → canonical keys cho sync
+    try:
+        from owned_credentials import env_overlay_from_owned
+
+        env = env_overlay_from_owned(env)
+    except Exception:  # noqa: BLE001
+        pass
     return env
 
 
@@ -483,6 +490,11 @@ def format_cycle(cycle: dict) -> str:
         f"Lúc: {cycle.get('checked_at')}",
         "",
     ]
+    owned = cycle.get("owned") or {}
+    if owned:
+        lines.append(f"Owned env: {owned.get('verdict')}")
+        lines.append(f"ready_platforms={owned.get('ready_platforms')} accounts={owned.get('total_accounts')}")
+        lines.append("")
     for b in cycle.get("backends") or []:
         lines.append(
             f"· {b['backend']}: {b.get('status')} · new={len(b.get('new_orders') or [])} · {b.get('detail','')[:100]}"
@@ -491,7 +503,8 @@ def format_cycle(cycle: dict) -> str:
     lines.append("")
     lines.append(f"Đơn mới phát hiện: {len(news)}")
     for o in news[:12]:
-        lines.append(f"  - {summarize_order(o.get('_backend') or '?', o)}")
+        own = f" · owned={o.get('owned_user')}" if o.get("owned_user") else ""
+        lines.append(f"  - {summarize_order(o.get('_backend') or '?', o)}{own}")
     if len(news) > 12:
         lines.append(f"  … +{len(news)-12} đơn nữa")
     if cycle.get("blocked"):
@@ -503,6 +516,14 @@ def format_cycle(cycle: dict) -> str:
 
 
 def run_cycle(env: dict[str, str], limit: int, notify: bool, notify_new_only: bool) -> dict:
+    try:
+        from owned_credentials import apply_owned_mapping, mapping_summary
+
+        owned = mapping_summary(env)
+    except Exception as e:  # noqa: BLE001
+        owned = {"ok": False, "error": str(e)[:120], "ready_platforms": []}
+        apply_owned_mapping = None  # type: ignore
+
     state = load_state()
     # prune seen_orders if huge
     seen = state.setdefault("seen_orders", {})
@@ -521,7 +542,18 @@ def run_cycle(env: dict[str, str], limit: int, notify: bool, notify_new_only: bo
     ]
     all_new: list[dict] = []
     for b in backends:
-        all_new.extend(b.get("new_orders") or [])
+        for o in b.get("new_orders") or []:
+            if apply_owned_mapping:
+                try:
+                    o = apply_owned_mapping(o, env)
+                except Exception:  # noqa: BLE001
+                    pass
+            all_new.append(o)
+        if apply_owned_mapping:
+            b["new_orders"] = [
+                apply_owned_mapping(o, env) if isinstance(o, dict) else o
+                for o in (b.get("new_orders") or [])
+            ]
 
     blocked = []
     for b in backends:
@@ -531,6 +563,11 @@ def run_cycle(env: dict[str, str], limit: int, notify: bool, notify_new_only: bo
     cycle = {
         "ok": True,
         "checked_at": utc_now(),
+        "owned": {
+            "ready_platforms": owned.get("ready_platforms") or [],
+            "total_accounts": owned.get("total_accounts"),
+            "verdict": owned.get("verdict"),
+        },
         "backends": [
             {
                 "backend": b["backend"],
@@ -545,6 +582,8 @@ def run_cycle(env: dict[str, str], limit: int, notify: bool, notify_new_only: bo
                         "_backend": o.get("_backend"),
                         "_file": o.get("_file"),
                         "status": o.get("status_name") or o.get("status_normalized"),
+                        "owned_user": o.get("owned_user"),
+                        "owned_ready": o.get("owned_ready"),
                         "customer_phone_status": (
                             "masked"
                             if "*" in str(o.get("customer_phone") or o.get("bill_phone_number") or "")
@@ -563,7 +602,7 @@ def run_cycle(env: dict[str, str], limit: int, notify: bool, notify_new_only: bo
         "all_new_orders": all_new[:100],
         "new_count": len(all_new),
         "blocked": blocked,
-        "policy": "secrets-only realtime; no credential dumps",
+        "policy": "secrets-only realtime; owned user/token env mapping; no credential dumps",
     }
     save_state(state)
     write_snapshot(cycle)

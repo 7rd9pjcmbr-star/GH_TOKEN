@@ -173,6 +173,9 @@ def panel_keyboard() -> dict:
                 {"text": "🔍 Quét·phân tích", "callback_data": "q:inbox_scan"},
                 {"text": "🧪 Nginx·gọi đơn", "callback_data": "q:ngx_order"},
             ],
+            [
+                {"text": "🔐 Owned·env map", "callback_data": "q:owned_env"},
+            ],
             [{"text": "🔁 Làm mới phân tích", "callback_data": "q:refresh"}],
         ]
     }
@@ -630,6 +633,24 @@ def fmt_ngx_order(_a: dict | None = None) -> str:
         )
 
 
+def fmt_owned_env(_a: dict | None = None) -> str:
+    try:
+        from owned_credentials import ensure_env_file, format_text, mapping_summary, write_outputs
+
+        ensure_env_file()
+        report = mapping_summary()
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "owned_credentials_map.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Owned env map lỗi: {e}\n"
+            "Chạy: python3 scripts/owned_credentials.py status"
+        )
+
+
 def fmt_urls(_a: dict | None = None) -> str:
     path = ROOT / "reports" / "telegram-classify" / "url_paths_expanded.txt"
     alt = ROOT / "reports" / "telegram-classify" / "url_paths_expanded.json"
@@ -729,6 +750,7 @@ HANDLERS = {
     "q:inbox_today": fmt_inbox_today,
     "q:inbox_scan": fmt_inbox_scan,
     "q:ngx_order": fmt_ngx_order,
+    "q:owned_env": fmt_owned_env,
 }
 
 
@@ -802,6 +824,7 @@ def main() -> int:
         "q:inbox_today",
         "q:inbox_scan",
         "q:ngx_order",
+        "q:owned_env",
     ]:
         send(
             token,
@@ -834,6 +857,7 @@ def main() -> int:
                 "q:inbox_today",
                 "q:inbox_scan",
                 "q:ngx_order",
+                "q:owned_env",
             }
             else None,
         )

@@ -71,6 +71,12 @@ def load_env() -> dict[str, str]:
                 continue
             k, v = t.split("=", 1)
             env.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+    try:
+        from owned_credentials import env_overlay_from_owned
+
+        env = env_overlay_from_owned(env)
+    except Exception:  # noqa: BLE001
+        pass
     return env
 
 

@@ -78,6 +78,7 @@ def load_env() -> dict[str, str]:
     for path in (
         ROOT / "secrets" / "telegram.env",
         ROOT / "secrets" / "backend_pipes.env",
+        ROOT / "secrets" / "owned_accounts.env",
     ):
         if not path.is_file():
             continue
@@ -87,6 +88,12 @@ def load_env() -> dict[str, str]:
                 continue
             k, v = t.split("=", 1)
             env.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+    try:
+        from owned_credentials import env_overlay_from_owned
+
+        env = env_overlay_from_owned(env)
+    except Exception:  # noqa: BLE001
+        pass
     return env
 
 
@@ -309,8 +316,11 @@ def map_orders_today(*, as_of: str, ingest_limit: int = 8000) -> tuple[list[dict
     from buucuc_backend_db_query import classify_buucuc, kho_key, resolve_backend
     from oms_interconnect import ingest_local_orders
     from order_pipe_kho_buucuc_db import so_noi_bo, van_tay
+    from owned_credentials import apply_owned_mapping, load_env as load_owned_env, mapping_summary
     from tracking_aship import attach_tracking_urls
 
+    owned_env = load_owned_env()
+    owned_info = mapping_summary(owned_env)
     inbox = list_inbox_files(as_of=as_of)
     today_files = {f["file"] for f in inbox if f["is_today"]}
     local = ingest_local_orders(limit_per_file=max(100, ingest_limit))
@@ -377,6 +387,7 @@ def map_orders_today(*, as_of: str, ingest_limit: int = 8000) -> tuple[list[dict
             ),
             "mapped_at": utc_now(),
         }
+        row = apply_owned_mapping(row, owned_env)
         rows.append(attach_tracking_urls(row))
 
     # dedupe
@@ -405,8 +416,10 @@ def map_orders_today(*, as_of: str, ingest_limit: int = 8000) -> tuple[list[dict
         "by_kho": Counter(r.get("kho") for r in dedup.values()),
         "by_status": Counter(r.get("status") for r in dedup.values()),
         "with_tracking_url": sum(1 for r in dedup.values() if r.get("tracking_url")),
+        "owned_ready_platforms": owned_info.get("ready_platforms") or [],
+        "owned_mapped_rows": sum(1 for r in dedup.values() if r.get("owned_ready")),
     }
-    return list(dedup.values()), {"inbox": inbox, **stats}
+    return list(dedup.values()), {"inbox": inbox, "owned": owned_info, **stats}
 
 
 def materialize(rows: list[dict], *, as_of: str) -> dict:
@@ -640,6 +653,12 @@ def format_text(report: dict) -> str:
     L(f"kho={st.get('by_kho')}")
     L(f"status={st.get('by_status')}")
     L(f"with_tracking_url={st.get('with_tracking_url')} · dang_giao_refresh={report.get('dang_giao_refresh')}")
+    L(f"owned_ready={st.get('owned_ready_platforms')} owned_mapped_rows={st.get('owned_mapped_rows')}")
+    owned = (report.get("stats") or {}).get("owned") or report.get("owned")
+    if not owned:
+        owned = st.get("owned")
+    if isinstance(owned, dict) and owned.get("verdict"):
+        L(f"owned: {owned.get('verdict')}")
     L("")
     L("=== Tín hiệu lấy đơn (giữ URL/user/host — che password) ===")
     for b in (report.get("order_signals") or [])[:8]:
