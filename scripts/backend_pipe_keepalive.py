@@ -265,6 +265,78 @@ def probe_direct_api_local(_: dict[str, str]) -> PipeResult:
     )
 
 
+def probe_viettelpost(env: dict[str, str]) -> PipeResult:
+    token = (env.get("VIETTELPOST_TOKEN") or "").strip()
+    user = (env.get("VIETTELPOST_USER") or "").strip()
+    password = (env.get("VIETTELPOST_PASSWORD") or "").strip()
+    if not token and not (user and password):
+        return PipeResult(
+            "ViettelPost",
+            "partner-api",
+            "missing_cred",
+            None,
+            "Thiếu VIETTELPOST_TOKEN hoặc USER/PASSWORD owned — không dùng dump OTP",
+            True,
+            utc_now(),
+        )
+    if token:
+        code, _ = http_json(
+            "https://partner.viettelpost.vn/v2/order/trackingOrder",
+            method="POST",
+            headers={"Token": token, "Content-Type": "application/json"},
+            body=json.dumps({"orderNumber": "OMS-PING"}).encode(),
+        )
+        if code in (401, 403):
+            return PipeResult("ViettelPost", "partner-api", "auth_fail", code, "Token VTP fail", True, utc_now())
+        if code == 0:
+            return PipeResult("ViettelPost", "partner-api", "error", 0, "VTP unreachable", True, utc_now())
+        return PipeResult(
+            "ViettelPost",
+            "partner-api",
+            "alive",
+            code,
+            f"trackingOrder probe http={code}",
+            False,
+            utc_now(),
+        )
+    code, _ = http_json(
+        "https://partner.viettelpost.vn/v2/user/Login",
+        method="POST",
+        headers={"Content-Type": "application/json"},
+        body=json.dumps({"USERNAME": user, "PASSWORD": password}).encode(),
+    )
+    if code in (401, 403):
+        return PipeResult("ViettelPost", "partner-api", "auth_fail", code, "Login VTP fail", True, utc_now())
+    return PipeResult(
+        "ViettelPost",
+        "partner-api",
+        "alive" if code == 200 else "error",
+        code,
+        f"Login probe http={code}",
+        code != 200,
+        utc_now(),
+    )
+
+
+def probe_tracking(_: dict[str, str]) -> PipeResult:
+    code, _ = http_json("https://tracking.aship.app/", method="GET")
+    if code == 0:
+        code, _ = http_json(
+            "https://tracking.aship.app/order?provider_code=OMS-PING&provider=ghn",
+            method="GET",
+        )
+    ok = bool(code) and code < 500
+    return PipeResult(
+        "Tracking",
+        "aship-public",
+        "alive" if ok else "error",
+        code,
+        f"tracking.aship.app http={code}",
+        not ok,
+        utc_now(),
+    )
+
+
 def probe_oms_pipe_registry(env: dict[str, str], results: list[PipeResult]) -> PipeResult:
     """Ống dẫn trung tâm: sống khi Telegram alive (kênh báo cáo) và registry ghi được."""
     tg = next((r for r in results if r.backend == "Telegram"), None)
@@ -286,6 +358,8 @@ PROBES: list[tuple[str, Callable[[dict[str, str]], PipeResult]]] = [
     ("Telegram", probe_telegram),
     ("Pancake", probe_pancake),
     ("GHN", probe_ghn),
+    ("ViettelPost", probe_viettelpost),
+    ("Tracking", probe_tracking),
     ("TPOS", probe_tpos),
     ("direct_api", probe_direct_api_local),
 ]

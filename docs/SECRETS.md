@@ -25,3 +25,12 @@ curl -sS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe"
 ```
 
 Token cũ đã lộ trong chat → `/revoke` trên BotFather rồi dùng token mới.
+
+## Backend pipes / OMS
+
+```bash
+cp backend_pipes.env.example secrets/backend_pipes.env
+# điền PANCAKE_* · GHN_API_TOKEN · VIETTELPOST_* · TPOS_* (owned only)
+```
+
+Không dán credential từ dump `Acc_all` / `Ghn.txt`.

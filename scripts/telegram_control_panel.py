@@ -136,6 +136,7 @@ def panel_keyboard() -> dict:
             ],
             [
                 {"text": "🧭 Mapper toàn diện", "callback_data": "q:mapper_full"},
+                {"text": "🔗 Đấu nối OMS", "callback_data": "q:oms"},
             ],
             [{"text": "🔁 Làm mới phân tích", "callback_data": "q:refresh"}],
         ]
@@ -362,6 +363,19 @@ def fmt_mapper_full(_a: dict | None = None) -> str:
         return f"Mapper toàn diện lỗi: {e}\nChạy: python3 scripts/comprehensive_order_mapper.py"
 
 
+def fmt_oms(_a: dict | None = None) -> str:
+    try:
+        from oms_interconnect import format_report, interconnect, load_env
+
+        report = interconnect(load_env(), ingest=True)
+        return format_report(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "oms_interconnect.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return f"Đấu nối OMS lỗi: {e}\nChạy: python3 scripts/oms_interconnect.py --once"
+
+
 HANDLERS = {
     "q:overview": fmt_overview,
     "q:source": fmt_source,
@@ -374,6 +388,7 @@ HANDLERS = {
     "q:urls": fmt_urls,
     "q:endpoints": fmt_endpoints,
     "q:mapper_full": fmt_mapper_full,
+    "q:oms": fmt_oms,
 }
 
 
@@ -429,6 +444,7 @@ def main() -> int:
         "q:urls",
         "q:endpoints",
         "q:mapper_full",
+        "q:oms",
     ]:
         send(
             token,
@@ -443,6 +459,7 @@ def main() -> int:
                 "q:urls",
                 "q:endpoints",
                 "q:mapper_full",
+                "q:oms",
             }
             else None,
         )

@@ -70,6 +70,21 @@ python3 scripts/realtime_order_sync.py --loop --interval 60 --notify --notify-ne
 Snapshot: `reports/telegram-classify/realtime/realtime_latest.json`  
 Panel: nút **Realtime đơn**.
 
+## Đấu nối OMS toàn diện
+
+Bus trung tâm probe + ingest mọi ống: Telegram · Pancake · GHN · ViettelPost · Tracking · TPOS · direct_api · SPX local · VNPost · OMS bus.
+
+```bash
+# một vòng (probe + ingest local) + Telegram
+python3 scripts/oms_interconnect.py --once --notify
+
+# chỉ probe channel
+python3 scripts/oms_interconnect.py --once --no-ingest
+```
+
+Mẫu secrets: `cp backend_pipes.env.example secrets/backend_pipes.env`  
+Báo cáo: `reports/telegram-classify/oms_interconnect.txt` · Panel: **Đấu nối OMS**.
+
 ```bash
 python3 scripts/fix_order_phones.py quarantine/telegram/orders_detailed_*.csv \
   --out reports/telegram-classify/phone-fix
