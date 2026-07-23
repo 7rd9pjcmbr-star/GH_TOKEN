@@ -27,6 +27,8 @@ from urllib.parse import parse_qs, urlparse
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
+CACHE_PATH = Path(__file__).resolve().parent / "orders_local_cache.json"
+
 ORDERS = [
     {
         "order_id": "OMS-NGX-001",
@@ -56,6 +58,17 @@ ORDERS = [
         "created_at": "2026-07-23T10:00:00Z",
     },
 ]
+
+
+def load_local_orders() -> list[dict]:
+    if not CACHE_PATH.is_file():
+        return []
+    try:
+        data = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    orders = data.get("orders") if isinstance(data, dict) else None
+    return orders if isinstance(orders, list) else []
 
 
 def utc_now() -> str:
@@ -108,38 +121,96 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         if path in {"/health", "/"}:
+            local = load_local_orders()
             self._send(
                 200,
                 {
                     "ok": True,
                     "service": "mock-order-upstream",
                     "role": "token+orders after nginx",
-                    "orders": len(ORDERS),
+                    "orders_mock": len(ORDERS),
+                    "orders_local": len(local),
                     "routes": [
                         "/orders",
+                        "/orders/local",
+                        "/v1/orders/local",
                         "/v1/token/status",
                         "/v1/token/set",
                         "/v1/token/ensure",
+                        "/v1/owned/fill",
                         "/v1/orders/realtime",
                     ],
                 },
             )
             return
         if path == "/orders":
+            local = load_local_orders()
+            # Prefer owned local exports when available; keep mock as fallback samples.
+            merged = (local[:200] if local else []) + ORDERS
             self._send(
                 200,
                 {
                     "ok": True,
-                    "source": "mock-order-upstream",
+                    "source": "owned_local_exports+mock" if local else "mock-order-upstream",
                     "checked_at": utc_now(),
-                    "count": len(ORDERS),
-                    "orders": ORDERS,
+                    "count": len(merged),
+                    "local_total": len(local),
+                    "mock_total": len(ORDERS),
+                    "orders": merged,
+                },
+            )
+            return
+        if path in {"/orders/local", "/v1/orders/local"}:
+            local = load_local_orders()
+            qs = parse_qs(parsed.query)
+            limit = int((qs.get("limit") or ["200"])[0] or 200)
+            limit = max(1, min(limit, 5000))
+            shop = (qs.get("shop_id") or [None])[0]
+            status = (qs.get("status") or [None])[0]
+            platform = (qs.get("platform") or [None])[0]
+            filtered = local
+            if shop:
+                filtered = [o for o in filtered if str(o.get("shop_id")) == str(shop)]
+            if status:
+                filtered = [
+                    o
+                    for o in filtered
+                    if status.lower() in str(o.get("status") or "").lower()
+                ]
+            if platform:
+                filtered = [
+                    o
+                    for o in filtered
+                    if platform.lower() in str(o.get("platform") or "").lower()
+                ]
+            self._send(
+                200,
+                {
+                    "ok": True,
+                    "source": "owned_local_exports",
+                    "checked_at": utc_now(),
+                    "total": len(local),
+                    "count": min(limit, len(filtered)),
+                    "filtered": len(filtered),
+                    "shop_id": shop,
+                    "status": status,
+                    "orders": filtered[:limit],
                 },
             )
             return
         if path.startswith("/order/"):
             oid = path.rsplit("/", 1)[-1]
-            hit = next((o for o in ORDERS if o["order_id"] == oid or o["tracking_code"] == oid), None)
+            local = load_local_orders()
+            hit = next(
+                (
+                    o
+                    for o in (local + ORDERS)
+                    if str(o.get("order_id")) == oid
+                    or str(o.get("tracking_code") or "") == oid
+                    or str(o.get("order_key") or "") == oid
+                ),
+                None,
+            )
             if not hit:
                 self._send(404, {"ok": False, "error": "not_found", "id": oid})
                 return
