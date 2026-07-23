@@ -282,7 +282,8 @@ def scan_inbox_files() -> tuple[list[dict], list[dict]]:
                     if "Login" not in u
                     and u.count(":") <= 1
                     and "|" not in u
-                ][:10],
+                    and not re.search(r"https?://[^/\s]+/[^:\s]*:", u)
+                ][:5],
                 "sample_uuids_masked": [mask(u) for u in uuids[:8]],
                 "ghn_lines": lines,
                 "looks_dump": looks_dump,
