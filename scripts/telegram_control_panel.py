@@ -159,6 +159,7 @@ def panel_keyboard() -> dict:
             ],
             [
                 {"text": "🔎 Rà soát DB BC", "callback_data": "q:bc_audit"},
+                {"text": "🧬 Pipe kho·BC·FP", "callback_data": "q:pipe_fp"},
             ],
             [{"text": "🔁 Làm mới phân tích", "callback_data": "q:refresh"}],
         ]
@@ -495,6 +496,23 @@ def fmt_bc_audit(_a: dict | None = None) -> str:
         )
 
 
+def fmt_pipe_fp(_a: dict | None = None) -> str:
+    try:
+        from order_pipe_kho_buucuc_db import build_report, format_text, write_outputs
+
+        report = build_report()
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "order_pipe_kho_buucuc.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Pipe kho·BC·FP lỗi: {e}\n"
+            "Chạy: python3 scripts/order_pipe_kho_buucuc_db.py"
+        )
+
+
 def fmt_urls(_a: dict | None = None) -> str:
     path = ROOT / "reports" / "telegram-classify" / "url_paths_expanded.txt"
     alt = ROOT / "reports" / "telegram-classify" / "url_paths_expanded.json"
@@ -587,6 +605,7 @@ HANDLERS = {
     "q:kho_shop": fmt_kho_shop,
     "q:bc_db": fmt_bc_db,
     "q:bc_audit": fmt_bc_audit,
+    "q:pipe_fp": fmt_pipe_fp,
 }
 
 
@@ -653,6 +672,7 @@ def main() -> int:
         "q:kho_shop",
         "q:bc_db",
         "q:bc_audit",
+        "q:pipe_fp",
     ]:
         send(
             token,
@@ -678,6 +698,7 @@ def main() -> int:
                 "q:kho_shop",
                 "q:bc_db",
                 "q:bc_audit",
+                "q:pipe_fp",
             }
             else None,
         )

@@ -150,6 +150,100 @@ def map_realtime_backend(b: dict) -> dict:
     }
 
 
+def receive_fingerprint(
+    *,
+    van_tay: str,
+    so_noi_bo: str | None = None,
+    backend: str | None = None,
+    kho: str | None = None,
+    buucuc: str | None = None,
+    status: str | None = None,
+    tracking: str | None = None,
+    realtime_new: bool = False,
+) -> dict:
+    """Mapper icon nhận vân tay số nội bộ — phản hồi theo kho × bưu cục.
+
+    van_tay  = fingerprint SHA1 nội bộ
+    so_noi_bo = số nội bộ (order_key / Customer Ref / tracking)
+    """
+    lead = CHANNEL_ICON.get(backend or "", "network")
+    icons = ["hash", "cube", lead]
+    if realtime_new:
+        icons = ["spark", "hash", "cube", lead]
+    if (status or "").lower() in {"error", "auth_fail", "missing_cred"}:
+        icons.append("wrench")
+    detail = (
+        f"nhận vân tay={van_tay} · so_noi_bo={so_noi_bo or '∅'} · "
+        f"{backend or '?'}/{kho or '?'}/{buucuc or '?'} · "
+        f"status={status or '?'} track={tracking or '∅'}"
+    )
+    return {
+        "kind": "fingerprint_receive",
+        "van_tay": van_tay,
+        "so_noi_bo": so_noi_bo,
+        "backend": backend,
+        "kho": kho,
+        "buucuc": buucuc,
+        "status": status,
+        "tracking": tracking,
+        "realtime_new": realtime_new,
+        "icons": icons,
+        "icon_chant": chant(icons),
+        "called": [describe(i) for i in icons],
+        "feedback": feedback_line(icons, detail),
+        "received_at": utc_now(),
+    }
+
+
+def load_received_fingerprints(limit: int = 40) -> list[dict]:
+    """Đọc vân tay đã pipe vào DB / state để icon mapper phản hồi."""
+    out: list[dict] = []
+    db = REPORTS / "kho_buucuc_pipe.db"
+    if db.is_file():
+        try:
+            import sqlite3
+
+            conn = sqlite3.connect(str(db))
+            for r in conn.execute(
+                """
+                SELECT van_tay, so_noi_bo, backend, kho, buucuc, status,
+                       tracking_code, icon_chant, icon_feedback, received_at
+                FROM fingerprints
+                ORDER BY received_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ):
+                out.append(
+                    {
+                        "van_tay": r[0],
+                        "so_noi_bo": r[1],
+                        "backend": r[2],
+                        "kho": r[3],
+                        "buucuc": r[4],
+                        "status": r[5],
+                        "tracking": r[6],
+                        "icon_chant": r[7],
+                        "feedback": r[8],
+                        "received_at": r[9],
+                    }
+                )
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+    if out:
+        return out
+    state = ROOT / "secrets" / "order_fingerprints.state.json"
+    if state.is_file():
+        try:
+            data = json.loads(state.read_text(encoding="utf-8"))
+            for f in (data.get("fingerprints") or [])[:limit]:
+                out.append(dict(f))
+        except Exception:  # noqa: BLE001
+            pass
+    return out
+
+
 def build_from_live() -> dict:
     from oms_interconnect import interconnect, load_env
     from realtime_order_sync import run_cycle
@@ -187,10 +281,32 @@ def build_from_live() -> dict:
     live_links = sum(1 for x in link_maps if x["live"])
     new_orders = int(rt.get("new_count") or 0)
 
+    # Nhận vân tay số nội bộ đã pipe vào DB kho+bưu cục
+    fp_rows = load_received_fingerprints(limit=40)
+    fp_maps = [
+        receive_fingerprint(
+            van_tay=str(f.get("van_tay") or ""),
+            so_noi_bo=f.get("so_noi_bo"),
+            backend=f.get("backend"),
+            kho=f.get("kho"),
+            buucuc=f.get("buucuc"),
+            status=f.get("status"),
+            tracking=f.get("tracking") or f.get("tracking_code"),
+            realtime_new=False,
+        )
+        for f in fp_rows
+        if f.get("van_tay")
+    ]
+    if fp_maps and "hash" not in uniq:
+        uniq.append("hash")
+    if fp_maps and "cube" not in uniq:
+        uniq.append("cube")
+
     top_feedback = feedback_line(
         uniq,
         f"OMS {len(connected)}/{len(channel_maps)} connected · links live {live_links}/{len(link_maps)} · "
-        f"realtime new={new_orders} · blocked={len(blocked)}",
+        f"realtime new={new_orders} · blocked={len(blocked)} · "
+        f"van_tay_nhận={len(fp_maps)}",
     )
 
     paths = []
@@ -214,10 +330,21 @@ def build_from_live() -> dict:
                 "feedback": b["feedback"],
             }
         )
+    for f in fp_maps[:12]:
+        paths.append(
+            {
+                "kind": "fingerprint",
+                "path": f"pipe→DB · van_tay={f['van_tay']} · so={f.get('so_noi_bo')} · "
+                f"{f.get('kho')}×{f.get('buucuc')}",
+                "count": 1,
+                "icon_chant": f["icon_chant"],
+                "feedback": f["feedback"],
+            }
+        )
 
     report = {
         "ok": True,
-        "query": "Mapper icon nhận phản hồi truy vấn thời gian thực",
+        "query": "Mapper icon nhận phản hồi truy vấn thời gian thực + vân tay số nội bộ",
         "checked_at": utc_now(),
         "icon_army_size": len(ICON_ARMY),
         "global": {
@@ -229,6 +356,8 @@ def build_from_live() -> dict:
         "channels": channel_maps,
         "links": link_maps,
         "realtime_backends": rt_maps,
+        "fingerprints_received": fp_maps[:40],
+        "fingerprints_count": len(fp_maps),
         "icon_paths": paths,
         "oms_verdict": oms.get("verdict"),
         "realtime": {
@@ -269,6 +398,13 @@ def format_text(report: dict) -> str:
             L(f"✅ {x['icon_chant']} — {x['from']}→{x['to']}")
     pending = [x for x in report["links"] if not x["live"]]
     L(f"… pending links: {len(pending)}")
+    L("")
+    L("=== Vân tay số nội bộ (icon nhận) ===")
+    fps = report.get("fingerprints_received") or []
+    L(f"Nhận: {report.get('fingerprints_count') or len(fps)} vân tay")
+    for f in fps[:12]:
+        L(f"· [{f.get('van_tay')}] so={f.get('so_noi_bo')} · {f.get('icon_chant')}")
+        L(f"  {f.get('kho')} × {f.get('buucuc')} · {f.get('backend')}")
     L("")
     L("=== Icon paths (feedback) ===")
     for p in report["icon_paths"][:16]:

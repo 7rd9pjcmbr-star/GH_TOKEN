@@ -172,6 +172,10 @@ def is_readonly_sql(sql: str) -> bool:
 
 
 def materialize_db(records: list[dict], path: Path) -> dict:
+    import hashlib
+
+    from realtime_icon_feedback_mapper import receive_fingerprint
+
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         path.unlink()
@@ -205,12 +209,19 @@ def materialize_db(records: list[dict], path: Path) -> dict:
           source TEXT,
           channel TEXT,
           platform TEXT,
-          file TEXT
+          file TEXT,
+          van_tay TEXT,
+          so_noi_bo TEXT,
+          icon_chant TEXT,
+          icon_feedback TEXT,
+          piped_at TEXT
         );
         CREATE INDEX idx_orders_backend ON orders(backend);
         CREATE INDEX idx_orders_buucuc ON orders(buucuc);
         CREATE INDEX idx_orders_kho ON orders(kho);
         CREATE INDEX idx_orders_shop ON orders(shop_id);
+        CREATE INDEX idx_orders_van_tay ON orders(van_tay);
+        CREATE INDEX idx_orders_so_noi_bo ON orders(so_noi_bo);
         CREATE TABLE backends (
           id TEXT PRIMARY KEY,
           role TEXT,
@@ -230,17 +241,38 @@ def materialize_db(records: list[dict], path: Path) -> dict:
             (b["id"], b["role"], b["oms"], b["secret"], b["query_hint"]),
         )
 
+    now = utc_now()
     rows = []
     for rec in records:
         buu = classify_buucuc(rec)
         backend = resolve_backend(rec, buu)
+        kho = kho_key(rec)
+        so = str(
+            rec.get("order_key")
+            or rec.get("tracking_code")
+            or rec.get("oms_id")
+            or ""
+        ).strip()
+        status = str(rec.get("status") or "")
+        vt = hashlib.sha1(
+            f"{backend}|{kho}|{buu}|{so or '(empty)'}|{status}".encode()
+        ).hexdigest()[:16]
+        icon = receive_fingerprint(
+            van_tay=vt,
+            so_noi_bo=so or None,
+            backend=backend,
+            kho=kho,
+            buucuc=buu,
+            status=status or None,
+            tracking=rec.get("tracking_code"),
+        )
         rows.append(
             (
                 rec.get("oms_id"),
                 rec.get("order_key"),
                 backend,
                 buu,
-                kho_key(rec),
+                kho,
                 str(rec.get("warehouse_id") or "") or None,
                 rec.get("warehouse_display_name"),
                 str(rec.get("shop_id") or "") or None,
@@ -262,20 +294,23 @@ def materialize_db(records: list[dict], path: Path) -> dict:
                 rec.get("channel"),
                 rec.get("platform"),
                 rec.get("file"),
+                vt,
+                so or None,
+                icon.get("icon_chant"),
+                icon.get("feedback"),
+                now,
             )
         )
     conn.executemany(
         """
         INSERT INTO orders VALUES (
-          ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+          ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
         )
         """,
         rows,
     )
-    conn.execute(
-        "INSERT INTO meta(key,value) VALUES ('materialized_at', ?), ('records', ?)",
-        (utc_now(), str(len(rows))),
-    )
+    conn.execute("INSERT INTO meta(key,value) VALUES ('materialized_at', ?)", (now,))
+    conn.execute("INSERT INTO meta(key,value) VALUES ('records', ?)", (str(len(rows)),))
     conn.commit()
     info = {
         "path": str(path),
