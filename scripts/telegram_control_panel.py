@@ -642,8 +642,8 @@ def fmt_rev_q(_a: dict | None = None) -> str:
     try:
         from order_pipe_reverse_query import build_report, format_text, write_outputs
 
-        # Tiếp tục truy vấn ngược từ kho ASUMEE (warehouse UUID đã map)
-        report = build_report(continue_asumee=True)
+        # Tiếp tục ngược dòng chảy từ kho ASUMEE (deep: gaps/status/ward/so/tracking)
+        report = build_report(continue_flow=True)
         write_outputs(report)
         return format_text(report)[:3800]
     except Exception as e:  # noqa: BLE001
@@ -652,7 +652,7 @@ def fmt_rev_q(_a: dict | None = None) -> str:
             return path.read_text(encoding="utf-8")[:3800]
         return (
             f"Truy vấn ngược lỗi: {e}\n"
-            "Chạy: python3 scripts/order_pipe_reverse_query.py --continue-asumee"
+            "Chạy: python3 scripts/order_pipe_reverse_query.py --continue-flow"
         )
 
 

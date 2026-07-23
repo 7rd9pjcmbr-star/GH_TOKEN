@@ -483,8 +483,11 @@ def reverse_by_warehouse_id(conn: sqlite3.Connection, wid: str, limit: int = 30)
     )
 
 
-def reverse_chain_asumee(conn: sqlite3.Connection) -> list[dict]:
-    """Chuỗi truy vấn ngược đào sâu cho kho ASUMEE / UUID chính."""
+def reverse_chain_asumee(conn: sqlite3.Connection, *, deep: bool = False) -> list[dict]:
+    """Chuỗi truy vấn ngược đào sâu cho kho ASUMEE / UUID chính.
+
+    deep=True: tiếp tục ngược dòng chảy — status → ward → so → tracking → address.
+    """
     wid = "55e5f0e1-ed06-4dad-b35a-406bee25cdea"
     results = [
         reverse_by_warehouse_id(conn, wid, limit=20),
@@ -526,7 +529,212 @@ def reverse_chain_asumee(conn: sqlite3.Connection) -> list[dict]:
     for (b,) in buu:
         if b:
             results.append(reverse_by_buucuc(conn, b, limit=10))
+
+    if not deep:
+        return results
+
+    # --- Tiếp tục ngược dòng chảy (deep) ---
+    results.append(reverse_flow_gaps(conn, wid))
+    for st in ("delivered", "shipped", "submitted", "canceled"):
+        results.append(reverse_by_status_warehouse(conn, wid, st, limit=12))
+
+    # Top ward trong top tỉnh → address reverse
+    wards = [
+        r[0]
+        for r in conn.execute(
+            """
+            SELECT ward FROM orders
+            WHERE warehouse_id = ? AND ward IS NOT NULL AND ward != ''
+            GROUP BY ward ORDER BY COUNT(*) DESC LIMIT 4
+            """,
+            (wid,),
+        )
+    ]
+    for w in wards:
+        results.append(reverse_by_address(conn, w, limit=8))
+        results.append(reverse_by_ward_warehouse(conn, wid, w, limit=8))
+
+    # Delivered samples: so_noi_bo + tracking + van_tay
+    delivered = conn.execute(
+        """
+        SELECT van_tay, so_noi_bo, tracking_code, province, ward
+        FROM orders
+        WHERE warehouse_id = ? AND status = 'delivered' AND van_tay IS NOT NULL
+        ORDER BY piped_at DESC LIMIT 4
+        """,
+        (wid,),
+    ).fetchall()
+    for row in delivered:
+        vt, so, tr, prov, ward = row
+        if so:
+            results.append(reverse_by_so_noi_bo(conn, str(so)))
+        if tr and str(tr) != str(so):
+            results.append(reverse_by_tracking(conn, str(tr)))
+        if vt:
+            results.append(reverse_by_van_tay(conn, str(vt)))
+
+    # Shipped chưa deliver — ngược từ tracking
+    shipped = conn.execute(
+        """
+        SELECT van_tay, so_noi_bo, tracking_code
+        FROM orders
+        WHERE warehouse_id = ? AND status = 'shipped' AND tracking_code IS NOT NULL
+        ORDER BY piped_at DESC LIMIT 3
+        """,
+        (wid,),
+    ).fetchall()
+    for vt, so, tr in shipped:
+        if tr:
+            results.append(reverse_by_tracking(conn, str(tr)))
+        if vt:
+            results.append(reverse_by_van_tay(conn, str(vt)))
+
     return results
+
+
+def reverse_flow_gaps(conn: sqlite3.Connection, wid: str) -> dict:
+    """Phân tích lỗ hổng dòng chảy ngược (thiếu tỉnh/huyện/SĐT/pick)."""
+    row = dict(
+        conn.execute(
+            """
+            SELECT
+              COUNT(*) AS orders,
+              SUM(CASE WHEN province IS NULL OR province='' THEN 1 ELSE 0 END) AS no_province,
+              SUM(CASE WHEN district IS NULL OR district='' THEN 1 ELSE 0 END) AS no_district,
+              SUM(CASE WHEN ward IS NULL OR ward='' THEN 1 ELSE 0 END) AS no_ward,
+              SUM(CASE WHEN full_address IS NULL OR full_address='' THEN 1 ELSE 0 END) AS no_address,
+              SUM(CASE WHEN receiver_phone IS NULL OR receiver_phone='' THEN 1 ELSE 0 END) AS no_phone,
+              SUM(CASE WHEN receiver_phone LIKE '%*%' THEN 1 ELSE 0 END) AS mask_phone,
+              SUM(CASE WHEN picked_at IS NULL THEN 1 ELSE 0 END) AS no_picked,
+              SUM(CASE WHEN delivered_at IS NULL THEN 1 ELSE 0 END) AS no_delivered_at,
+              SUM(CASE WHEN status='delivered' THEN 1 ELSE 0 END) AS status_delivered,
+              SUM(CASE WHEN status='shipped' THEN 1 ELSE 0 END) AS status_shipped
+            FROM orders WHERE warehouse_id = ?
+            """,
+            (wid,),
+        ).fetchone()
+    )
+    return {
+        "query_type": "flow_gaps",
+        "query": wid,
+        "hit": True,
+        "gaps": row,
+        "unmask_map": {
+            "mask_phone": row.get("mask_phone"),
+            "path_id": "PATH-MASK-REDACTION",
+            "action": "fetch_unmasked_from_source_api",
+        },
+        "path": (
+            f"gaps ASUMEE: no_prov={row.get('no_province')} no_dist={row.get('no_district')} "
+            f"mask_phone={row.get('mask_phone')} shipped={row.get('status_shipped')} "
+            f"delivered_status={row.get('status_delivered')} (picked_at/delivered_at trống)"
+        ),
+        "next": [
+            "Bổ sung district khi pipe (ward có, district thiếu)",
+            "Picked/delivered_at chưa map từ Pancake status history",
+            "SĐT MASK → --unmask / --asunmee --live",
+        ],
+    }
+
+
+def reverse_by_status_warehouse(
+    conn: sqlite3.Connection, wid: str, status: str, limit: int = 15
+) -> dict:
+    samples = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT * FROM orders
+            WHERE warehouse_id = ? AND status = ?
+            ORDER BY piped_at DESC LIMIT ?
+            """,
+            (wid, status, limit),
+        )
+    ]
+    dest = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT province, ward, COUNT(*) AS orders
+            FROM orders WHERE warehouse_id = ? AND status = ?
+              AND province IS NOT NULL AND province != ''
+            GROUP BY province, ward ORDER BY orders DESC LIMIT 20
+            """,
+            (wid, status),
+        )
+    ]
+    phone = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT
+              CASE
+                WHEN receiver_phone IS NULL OR receiver_phone = '' THEN 'MISSING'
+                WHEN instr(receiver_phone, '*') > 0 THEN 'MASKED'
+                ELSE 'OK'
+              END AS phone_class,
+              COUNT(*) AS orders
+            FROM orders WHERE warehouse_id = ? AND status = ?
+            GROUP BY 1
+            """,
+            (wid, status),
+        )
+    ]
+    return _attach_flow(
+        {
+            "query_type": "status_warehouse",
+            "query": f"{status}@{wid[:8]}",
+            "hit": bool(samples),
+            "status": status,
+            "warehouse_id": wid,
+            "count": conn.execute(
+                "SELECT COUNT(*) FROM orders WHERE warehouse_id=? AND status=?",
+                (wid, status),
+            ).fetchone()[0],
+            "destination_wards": dest,
+            "phone_class": phone,
+            "sample_orders": samples,
+            "path": f"status:{status} ← kho:ASUMEE ← tỉnh/ward×{len(dest)} ← đơn×{len(samples)}",
+        }
+    )
+
+
+def reverse_by_ward_warehouse(
+    conn: sqlite3.Connection, wid: str, ward: str, limit: int = 12
+) -> dict:
+    samples = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT * FROM orders
+            WHERE warehouse_id = ? AND ward LIKE ?
+            ORDER BY piped_at DESC LIMIT ?
+            """,
+            (wid, f"%{ward}%", limit),
+        )
+    ]
+    by_status = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT status, COUNT(*) AS orders FROM orders
+            WHERE warehouse_id = ? AND ward LIKE ?
+            GROUP BY status ORDER BY orders DESC
+            """,
+            (wid, f"%{ward}%"),
+        )
+    ]
+    return _attach_flow(
+        {
+            "query_type": "ward_warehouse",
+            "query": ward,
+            "hit": bool(samples),
+            "warehouse_id": wid,
+            "by_status": by_status,
+            "sample_orders": samples,
+            "path": f"ward:{ward} ← ASUMEE ← status×{len(by_status)}",
+        }
+    )
 
 
 def reverse_by_buucuc(conn: sqlite3.Connection, buu: str, limit: int = 30) -> dict:
@@ -810,6 +1018,7 @@ def build_report(
     q: str | None = None,
     warehouse_id: str | None = None,
     continue_asumee: bool = False,
+    continue_flow: bool = False,
 ) -> dict:
     from realtime_icon_feedback_mapper import chant, feedback_line, receive_fingerprint
 
@@ -821,8 +1030,9 @@ def build_report(
         re.I,
     )
 
-    if continue_asumee:
-        results.extend(reverse_chain_asumee(conn))
+    # «Tiếp tục ngược dòng chảy» → deep chain (gaps/status/ward/so/tracking)
+    if continue_flow or continue_asumee:
+        results.extend(reverse_chain_asumee(conn, deep=True))
 
     if q:
         qq = q.strip()
@@ -886,6 +1096,7 @@ def build_report(
             q,
             warehouse_id,
             continue_asumee,
+            continue_flow,
         ]
     )
     if demo_mode:
@@ -982,6 +1193,7 @@ def build_report(
         "index_stats": index_stats,
         "verdict": top_fb,
         "next_actions": [
+            "python3 scripts/order_pipe_reverse_query.py --continue-flow",
             "python3 scripts/order_pipe_reverse_query.py --continue-asumee",
             "python3 scripts/order_pipe_reverse_query.py --warehouse 55e5f0e1-ed06-4dad-b35a-406bee25cdea",
             "python3 scripts/order_pipe_reverse_query.py --kho ASUMEE",
@@ -1109,6 +1321,21 @@ def format_text(report: dict) -> str:
                     f"→ {fp.get('buucuc')} → {fp.get('province')} [{fp.get('status')}] "
                     f"phone={fp.get('phone_class')}"
                 )
+        if r.get("gaps"):
+            L(f"  · gaps={r.get('gaps')}")
+            for n in r.get("next") or []:
+                L(f"    → {n}")
+        if r.get("destination_wards"):
+            for m in r["destination_wards"][:8]:
+                L(
+                    f"  · ward {m.get('province')}/{m.get('ward')}: n={m.get('orders')}"
+                )
+        if r.get("count") and r.get("query_type") in {
+            "status_warehouse",
+            "ward_warehouse",
+            "flow_gaps",
+        }:
+            L(f"  · count={r.get('count')} status={r.get('status')}")
     if report.get("panorama_samples"):
         L("")
         L("=== Panorama mẫu (bưu cục → địa chỉ) ===")
@@ -1153,6 +1380,11 @@ def main() -> int:
         action="store_true",
         help="Chuỗi truy vấn ngược đào sâu kho ASUMEE (warehouse→kho→tỉnh→van_tay→buucuc)",
     )
+    ap.add_argument(
+        "--continue-flow",
+        action="store_true",
+        help="Tiếp tục ngược dòng chảy ASUMEE: gaps→status→ward→so→tracking→address",
+    )
     ap.add_argument("--buucuc")
     ap.add_argument("--province", help="Tỉnh/thành nhận")
     ap.add_argument("--address", help="Fragment địa chỉ / ward / huyện / tên nhận")
@@ -1171,6 +1403,7 @@ def main() -> int:
         q=args.q,
         warehouse_id=args.warehouse_id,
         continue_asumee=bool(args.continue_asumee),
+        continue_flow=bool(args.continue_flow),
     )
     write_outputs(report)
     if args.json:
