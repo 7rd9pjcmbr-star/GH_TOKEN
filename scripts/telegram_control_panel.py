@@ -154,6 +154,9 @@ def panel_keyboard() -> dict:
                 {"text": "🏬 Kho·NS·Shop", "callback_data": "q:kho_shop"},
                 {"text": "🗄 Backend BC·DB", "callback_data": "q:bc_db"},
             ],
+            [
+                {"text": "🔎 Rà soát DB BC", "callback_data": "q:bc_audit"},
+            ],
             [{"text": "🔁 Làm mới phân tích", "callback_data": "q:refresh"}],
         ]
     }
@@ -455,6 +458,23 @@ def fmt_bc_db(_a: dict | None = None) -> str:
         )
 
 
+def fmt_bc_audit(_a: dict | None = None) -> str:
+    try:
+        from buucuc_db_panorama_audit import build_report, format_text, write_outputs
+
+        report = build_report(refresh_db=True)
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "buucuc_db_panorama_audit.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Rà soát DB BC lỗi: {e}\n"
+            "Chạy: python3 scripts/buucuc_db_panorama_audit.py --refresh-db"
+        )
+
+
 def fmt_urls(_a: dict | None = None) -> str:
     path = ROOT / "reports" / "telegram-classify" / "url_paths_expanded.txt"
     alt = ROOT / "reports" / "telegram-classify" / "url_paths_expanded.json"
@@ -545,6 +565,7 @@ HANDLERS = {
     "q:decode_map": fmt_decode_map,
     "q:kho_shop": fmt_kho_shop,
     "q:bc_db": fmt_bc_db,
+    "q:bc_audit": fmt_bc_audit,
 }
 
 
@@ -609,6 +630,7 @@ def main() -> int:
         "q:decode_map",
         "q:kho_shop",
         "q:bc_db",
+        "q:bc_audit",
     ]:
         send(
             token,
@@ -632,6 +654,7 @@ def main() -> int:
                 "q:decode_map",
                 "q:kho_shop",
                 "q:bc_db",
+                "q:bc_audit",
             }
             else None,
         )
