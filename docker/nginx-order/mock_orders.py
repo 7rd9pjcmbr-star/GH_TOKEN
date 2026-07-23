@@ -119,6 +119,8 @@ class Handler(BaseHTTPRequestHandler):
                         "/v1/token/set",
                         "/v1/token/ensure",
                         "/v1/token/pancake-ingest",
+                        "/v1/ghn/ingest",
+                        "/v1/token/ghn-ingest",
                         "/v1/owned/fill",
                         "/v1/orders/realtime",
                         "/v1/buucuc/scan",
@@ -280,6 +282,23 @@ class Handler(BaseHTTPRequestHandler):
                 force=bool(payload.get("force")),
             )
             report["via"] = "nginx→upstream→pancake_cookie_ingest→scan"
+            self._send(200 if report.get("ok") else 400, report)
+            return
+
+        if path in {"/v1/ghn/ingest", "/v1/token/ghn-ingest"}:
+            from ghn_cookie_ingest import ingest as ghn_ingest
+
+            raw = str(payload.get("raw") or payload.get("cookies") or payload.get("text") or "")
+            if not raw and payload.get("token"):
+                raw = f"token={payload.get('token')}"
+            if not raw and payload.get("url"):
+                raw = str(payload.get("url"))
+            report = ghn_ingest(
+                raw,
+                shop_id=(str(payload["shop_id"]) if payload.get("shop_id") else None),
+                force=bool(payload.get("force")),
+            )
+            report["via"] = "nginx→upstream→ghn_cookie_ingest"
             self._send(200 if report.get("ok") else 400, report)
             return
 

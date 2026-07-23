@@ -54,3 +54,21 @@ PYTHONPATH=scripts python3 -m order_pipe --fetch-orders --limit 80
 - Không in raw JWT/API key trong report  
 - Không lấy cookie/token từ Acc_all / stealer  
 - `api_key` Pancake: PII vẫn MASK — Bearer session cũng không tự unmask `****`
+
+## GHN session / cookie
+
+Module: `scripts/ghn_cookie_ingest.py` — lấy **API Token** từ:
+
+- URL `printA5?token=<uuid>`
+- Cookie Netscape `*.ghn.vn` tên `token` / `access_token` / …
+- `GHN_API_TOKEN=<uuid>`
+
+Từ chối `hjSession*`, `_ga*`, analytics (không phải Token API).
+
+```bash
+python3 scripts/ghn_cookie_ingest.py --raw 'https://online-gateway.ghn.vn/a5/public-api/printA5?token=<uuid>'
+python3 scripts/nginx_order_embed.py ghn-ingest --raw-file FILE --keep
+python3 scripts/order_session_env.py ensure
+```
+
+Chỉ ghi `GHN_API_TOKEN` khi probe `master-data/province` = 200.

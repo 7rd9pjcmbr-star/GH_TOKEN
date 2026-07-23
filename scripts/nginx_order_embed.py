@@ -492,6 +492,26 @@ class NginxOrderEmbed:
             ensure=ensure,
         )
 
+    def ghn_ingest(
+        self,
+        raw: str,
+        *,
+        shop_id: str | None = None,
+        force: bool = False,
+        ensure: bool = True,
+    ) -> dict:
+        """Pipeline: nginx → ghn_cookie_ingest (printA5/cookie → GHN_API_TOKEN)."""
+        payload: dict = {"raw": raw, "force": force}
+        if shop_id:
+            payload["shop_id"] = shop_id
+        return self.call_json(
+            "/v1/ghn/ingest",
+            method="POST",
+            payload=payload,
+            timeout=90.0,
+            ensure=ensure,
+        )
+
     def token_realtime_pipeline(self, *, limit: int = 20, notify: bool = False, auto_stop: bool | None = None) -> dict:
         """Toàn bộ: bật nginx → nạp/ensure token module → gọi đơn RT → (optional) stop."""
         stop = self.auto_stop if auto_stop is None else auto_stop
@@ -621,6 +641,7 @@ class NginxOrderEmbed:
                 "start/ensure_up — bật khi cần nhiều lần",
                 "token-realtime — nginx→access_token_rotate→danh sách đơn RT",
                 "pancake-ingest — nginx→cookie/pos_jwt→secrets→quét đơn",
+                "ghn-ingest — nginx→printA5/cookie token→GHN_API_TOKEN",
                 "buucuc-scan — nginx→quét bưu cục remote",
                 "orders/call_orders — lấy danh sách đơn",
                 "stop — tắt sau khi xong",
@@ -628,6 +649,8 @@ class NginxOrderEmbed:
             "routes": [
                 "POST /v1/pancake/ingest",
                 "POST /v1/token/pancake-ingest",
+                "POST /v1/ghn/ingest",
+                "POST /v1/token/ghn-ingest",
                 "POST /v1/buucuc/scan",
                 "POST /v1/token/set",
                 "POST /v1/orders/realtime",
@@ -766,6 +789,7 @@ def main(argv: list[str] | None = None) -> int:
             "token-realtime",
             "buucuc-scan",
             "pancake-ingest",
+            "ghn-ingest",
             "test",
             "describe",
         ],
@@ -774,8 +798,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--limit", type=int, default=20, help="limit đơn realtime")
     ap.add_argument("--days", type=int, default=3, help="số ngày quét bưu cục")
     ap.add_argument("--buucuc-limit", type=int, default=10000, help="limit quét bưu cục")
-    ap.add_argument("--raw-file", default="", help="file cookie/JWT cho pancake-ingest")
-    ap.add_argument("--raw", default="", help="chuỗi cookie/JWT cho pancake-ingest")
+    ap.add_argument("--raw-file", default="", help="file cookie/JWT/URL cho pancake|ghn-ingest")
+    ap.add_argument("--raw", default="", help="chuỗi cookie/JWT/URL cho pancake|ghn-ingest")
+    ap.add_argument("--shop-id", default="", help="GHN_SHOP_ID (ghn-ingest)")
     ap.add_argument("--notify", action="store_true", help="gửi Telegram sau quét")
     ap.add_argument("--no-scan", action="store_true", help="pancake-ingest chỉ nạp token, không scan")
     ap.add_argument("--force", action="store_true", help="ép nạp cả token hết hạn (không khuyến nghị)")
@@ -842,6 +867,36 @@ def main(argv: list[str] | None = None) -> int:
                 payload = report.get("payload") if isinstance(report.get("payload"), dict) else {}
                 report["verdict"] = payload.get("verdict") or (
                     "✅ pancake-ingest via nginx" if report.get("ok") else "❌ pancake-ingest"
+                )
+                report["checked_at"] = utc_now()
+                write_outputs(report)
+            finally:
+                if not args.keep:
+                    mod.stop()
+    elif cmd == "ghn-ingest":
+        raw = args.raw
+        if args.raw_file:
+            raw = Path(args.raw_file).read_text(encoding="utf-8", errors="ignore")
+        if not raw.strip():
+            report = {
+                "ok": False,
+                "error": "cần --raw hoặc --raw-file",
+                "verdict": "❌ ghn-ingest thiếu URL printA5 / cookie token",
+                "checked_at": utc_now(),
+            }
+        else:
+            started = mod.ensure_up()
+            try:
+                report = mod.ghn_ingest(
+                    raw,
+                    shop_id=(args.shop_id or None),
+                    force=args.force,
+                    ensure=False,
+                )
+                report["start"] = started
+                payload = report.get("payload") if isinstance(report.get("payload"), dict) else {}
+                report["verdict"] = payload.get("verdict") or (
+                    "✅ ghn-ingest via nginx" if report.get("ok") else "❌ ghn-ingest"
                 )
                 report["checked_at"] = utc_now()
                 write_outputs(report)

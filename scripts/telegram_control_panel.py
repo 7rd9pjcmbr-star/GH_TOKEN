@@ -170,15 +170,18 @@ def panel_keyboard() -> dict:
                 {"text": "🍪 Nhúng POS cookie", "callback_data": "q:pancake_ingest"},
             ],
             [
+                {"text": "📦 Nhúng GHN token", "callback_data": "q:ghn_ingest"},
                 {"text": "🌊 Ngược·dòng chảy", "callback_data": "q:rev_q"},
+            ],
+            [
                 {"text": "📦 Đang giao·bảng", "callback_data": "q:dg_tbl"},
-            ],
-            [
                 {"text": "🧭 Tracking aship", "callback_data": "q:aship"},
-                {"text": "📥 Inbox·hôm nay", "callback_data": "q:inbox_today"},
             ],
             [
+                {"text": "📥 Inbox·hôm nay", "callback_data": "q:inbox_today"},
                 {"text": "🔍 Quét·phân tích", "callback_data": "q:inbox_scan"},
+            ],
+            [
                 {"text": "🧪 Nginx·gọi đơn", "callback_data": "q:ngx_order"},
             ],
             [
@@ -621,6 +624,23 @@ def fmt_pancake_ingest(_a: dict | None = None) -> str:
     )[:3800]
 
 
+def fmt_ghn_ingest(_a: dict | None = None) -> str:
+    """Hướng dẫn nhúng GHN API token từ printA5 / cookie token."""
+    path = ROOT / "reports" / "telegram-classify" / "ghn_cookie_ingest.txt"
+    last = path.read_text(encoding="utf-8")[:1500] if path.is_file() else "(chưa có lần nhúng nào)"
+    return (
+        "📦 NHÚNG GHN TOKEN / SESSION\n\n"
+        "Gửi một trong các dạng (owned, còn hạn):\n"
+        "• URL printA5?token=<uuid>\n"
+        "• Cookie Netscape *.ghn.vn name=token\n"
+        "• GHN_API_TOKEN=<uuid>\n\n"
+        "Không nhận hjSession* / _ga (analytics).\n"
+        "CLI: python3 scripts/ghn_cookie_ingest.py --raw-file FILE\n"
+        "hoặc: python3 scripts/nginx_order_embed.py ghn-ingest --raw-file FILE --keep\n\n"
+        f"Lần nhúng gần nhất:\n{last}"
+    )[:3800]
+
+
 def fmt_pipe_fp(_a: dict | None = None) -> str:
     try:
         from order_pipe_kho_buucuc_db import build_report, format_text, write_outputs
@@ -910,6 +930,7 @@ HANDLERS = {
     "q:bc_audit": fmt_bc_audit,
     "q:bc_scan": fmt_bc_scan,
     "q:pancake_ingest": fmt_pancake_ingest,
+    "q:ghn_ingest": fmt_ghn_ingest,
     "q:pipe_fp": fmt_pipe_fp,
     "q:rev_q": fmt_rev_q,
     "q:dg_tbl": fmt_dg_tbl,
@@ -1104,6 +1125,38 @@ def main() -> int:
                         )
                 text = (msg.get("text") or "").strip()
                 text_l = text.lower()
+                # Nhúng GHN printA5 / cookie token
+                if text and (
+                    "printa5" in text_l
+                    or "online-gateway.ghn.vn" in text_l
+                    or "ghn_api_token=" in text_l
+                    or (
+                        "ghn.vn" in text_l
+                        and ("\ttoken\t" in text or "token=" in text_l)
+                        and "pos.pancake" not in text_l
+                    )
+                ):
+                    try:
+                        from ghn_cookie_ingest import format_text as fmt_ghn
+                        from ghn_cookie_ingest import ingest as ghn_ingest
+
+                        payload = ghn_ingest(text)
+                        body = fmt_ghn(payload)
+                        send(
+                            token,
+                            str(msg["chat"]["id"]),
+                            "📦 GHN ingest\n\n" + body,
+                            panel_keyboard(),
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        send(
+                            token,
+                            str(msg.get("chat", {}).get("id") or chat),
+                            f"❌ Nhúng GHN token lỗi: `{e}`\n"
+                            "Chạy: python3 scripts/ghn_cookie_ingest.py --raw-file …",
+                            panel_keyboard(),
+                        )
+                    continue
                 # Nhúng cookie/token Pancake qua nginx khi user paste vào chat
                 if text and (
                     "pos.pancake.vn" in text_l
