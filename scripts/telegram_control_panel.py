@@ -144,6 +144,7 @@ def panel_keyboard() -> dict:
             ],
             [
                 {"text": "⏱ Mapper RT đơn", "callback_data": "q:rt_orders"},
+                {"text": "🔐 So sánh mã hoá", "callback_data": "q:crypto_cmp"},
             ],
             [{"text": "🔁 Làm mới phân tích", "callback_data": "q:refresh"}],
         ]

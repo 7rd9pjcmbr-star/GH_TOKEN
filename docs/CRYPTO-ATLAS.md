@@ -51,3 +51,13 @@ liboqs · age/rage · GnuPG / Sequoia · JOSE stacks
 - Không nhầm **encoding** (Base64, Morse) với **encryption**.
 - Không tự viết cipher cho hệ thống thật.
 - Không reuse nonce với AES-GCM / ChaCha20.
+
+## So sánh vấn đề mã hoá (OMS / PII)
+
+Dùng `pyca/cryptography` đối chiếu mask · Base64 · SHA-256 · AES-GCM · ChaCha20-Poly1305 với dữ liệu Đang giao:
+
+```bash
+python3 scripts/crypto_encryption_issue_compare.py
+```
+
+Panel Telegram: **So sánh mã hoá**. Báo cáo: `reports/telegram-classify/crypto_encryption_compare.txt`.
