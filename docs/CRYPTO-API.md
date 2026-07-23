@@ -47,3 +47,16 @@ MaMoCrypto.describe()
 
 - Tài liệu **giáo dục** — không kèm exploit.
 - `encode.*` chỉ biểu diễn (Morse/Braille/Base64), không phải encryption bảo mật.
+
+## Module hỗ trợ giải mã (ops)
+
+Python parity + AEAD decrypt (owned key):
+
+```bash
+python3 scripts/crypto_decode_assist.py
+python3 scripts/crypto_decode_assist.py --text 'MDk3OTI2MzQ2Mw=='
+# AES-GCM khi có key owned:
+# python3 scripts/crypto_decode_assist.py --aes-gcm KEY_B64 NONCE_B64 CT_B64 --aad oms:customer_phone
+```
+
+Panel: **Hỗ trợ giải mã**. Báo cáo: `reports/telegram-classify/crypto_decode_assist.txt`.

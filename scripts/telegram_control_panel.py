@@ -146,6 +146,9 @@ def panel_keyboard() -> dict:
                 {"text": "⏱ Mapper RT đơn", "callback_data": "q:rt_orders"},
                 {"text": "🔐 So sánh mã hoá", "callback_data": "q:crypto_cmp"},
             ],
+            [
+                {"text": "🔓 Hỗ trợ giải mã", "callback_data": "q:decode"},
+            ],
             [{"text": "🔁 Làm mới phân tích", "callback_data": "q:refresh"}],
         ]
     }
@@ -362,6 +365,23 @@ def fmt_rt_orders(_a: dict | None = None) -> str:
         )
 
 
+def fmt_crypto_cmp(_a: dict | None = None) -> str:
+    try:
+        from crypto_encryption_issue_compare import build_report, format_text, write_outputs
+
+        report = build_report()
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "crypto_encryption_compare.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"So sánh mã hoá lỗi: {e}\n"
+            "Chạy: python3 scripts/crypto_encryption_issue_compare.py"
+        )
+
+
 def fmt_urls(_a: dict | None = None) -> str:
     path = ROOT / "reports" / "telegram-classify" / "url_paths_expanded.txt"
     alt = ROOT / "reports" / "telegram-classify" / "url_paths_expanded.json"
@@ -447,6 +467,7 @@ HANDLERS = {
     "q:icon_rt": fmt_icon_rt,
     "q:kho_be": fmt_kho_be,
     "q:rt_orders": fmt_rt_orders,
+    "q:crypto_cmp": fmt_crypto_cmp,
 }
 
 
@@ -506,6 +527,7 @@ def main() -> int:
         "q:icon_rt",
         "q:kho_be",
         "q:rt_orders",
+        "q:crypto_cmp",
     ]:
         send(
             token,
@@ -524,6 +546,7 @@ def main() -> int:
                 "q:icon_rt",
                 "q:kho_be",
                 "q:rt_orders",
+                "q:crypto_cmp",
             }
             else None,
         )
