@@ -31,8 +31,8 @@ OFFSET_PATH = SECRETS / "telegram_ghn_scan.offset"
 
 GHN_RE = re.compile(
     r"(?i)(ghn\.vn|api\.ghn|shiip|printA5|GHN_API_TOKEN|GHN_TOKEN|GHN_SHOP|"
-    r"online-gateway\.ghn|dev-online-gateway\.ghn|giao\s*hang\s*nhanh|"
-    r"giaohangnhanh|\bghn\b)"
+    r"online-gateway\.ghn|dev-online-gateway\.ghn|ghn\.gateway\.online\.vn|"
+    r"giao\s*hang\s*nhanh|giaohangnhanh|\bghn\b)"
 )
 UUID_RE = re.compile(
     r"(?i)\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b"

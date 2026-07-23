@@ -31,7 +31,9 @@ UUID_RE = re.compile(
     r"(?i)\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b"
 )
 PRINT_A5_RE = re.compile(
-    r"(?i)https?://(?:online-gateway|dev-online-gateway)\.ghn\.vn/[^\s\"']*token=([0-9a-f-]{36})"
+    r"https?://(?:online-gateway\.ghn\.vn|dev-online-gateway\.ghn\.vn|"
+    r"ghn\.gateway\.online\.vn|api\.ghn\.vn)/[^\s\"']*token=([0-9a-f-]{36})",
+    re.I,
 )
 TOKEN_KV_RE = re.compile(r"(?i)\b(?:token|ghn_api_token|ghn_token)\s*[:=]\s*([0-9a-f-]{36})")
 
@@ -69,7 +71,10 @@ ACCEPT_COOKIE_NAMES = {
     "shop_token",
 }
 
-GHN_HOST_HINT = re.compile(r"(?i)(?:^|\.)ghn\.vn$|online-gateway\.ghn\.vn|dev-online-gateway\.ghn\.vn")
+GHN_HOST_HINT = re.compile(
+    r"(?i)(?:^|\.)ghn\.vn$|online-gateway\.ghn\.vn|dev-online-gateway\.ghn\.vn|"
+    r"ghn\.gateway\.online\.vn|api\.ghn\.vn"
+)
 
 
 def utc_now() -> str:

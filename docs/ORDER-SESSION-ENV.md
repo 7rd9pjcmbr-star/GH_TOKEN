@@ -98,4 +98,10 @@ python3 scripts/order_session_env.py ensure
 
 `token_session_maintain` gọi `ghn ensure` mỗi vòng (probe + re-ingest pending).
 
+Alias host: `ghn.gateway.online.vn` → `online-gateway.ghn.vn` (icon **Mạch Mạng**):
+
+```bash
+python3 scripts/ghn_gateway_icon_mapper.py --host ghn.gateway.online.vn --register-hosts
+```
+
 Chỉ ghi `GHN_API_TOKEN` khi probe `master-data/province` = 200.

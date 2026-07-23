@@ -67,7 +67,7 @@ USER_PASS_RE = re.compile(r"^([^:\s]{2,80}):([^:\s]{2,200})$")
 USER_PASS_TOKEN_RE = re.compile(r"^([^:\s]{2,80}):([^:\s]{0,200}):([A-Za-z0-9_\-\.]{16,})$")
 
 PLATFORM_RULES: list[tuple[str, tuple[str, ...]]] = [
-    ("GHN", ("ghn.vn", "ghn.com", "api.ghn", "shiip")),
+    ("GHN", ("ghn.vn", "ghn.com", "api.ghn", "shiip", "ghn.gateway.online.vn", "online-gateway.ghn")),
     ("Nhanh", ("nhanh.vn",)),
     ("Sapo", ("sapo.vn", "sapo.com")),
     ("Shopee", ("shopee.vn", "shopee.com", "spx")),
