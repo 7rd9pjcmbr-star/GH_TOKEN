@@ -75,3 +75,15 @@ python3 scripts/decode_icon_logistics_mapper.py
 ```
 
 Panel: **🗺 Giải mã×icon**. Báo cáo: `reports/telegram-classify/decode_icon_logistics_mapper.txt`.
+
+### Tra cứu unmask × redaction × CRYPTO_ATLAS
+
+Mapper ánh xạ MASK/encoding/AEAD → action + thư viện mật mã học:
+
+```bash
+python3 scripts/unmask_redaction_crypto_mapper.py
+python3 scripts/unmask_redaction_crypto_mapper.py --sample '+84335****64' --lookup 'unmask pii'
+```
+
+UI: `MaMoCrypto.recommend("unmask redaction")` · `MaMoCrypto.lookup("encryption-vs-encoding")`.
+Báo cáo: `reports/telegram-classify/unmask_redaction_crypto_mapper.txt`.

@@ -148,6 +148,7 @@ def panel_keyboard() -> dict:
             ],
             [
                 {"text": "🔐 So sánh mã hoá", "callback_data": "q:crypto_cmp"},
+                {"text": "🔎 Unmask×atlas", "callback_data": "q:unmask_map"},
             ],
             [
                 {"text": "🔓 Hỗ trợ giải mã", "callback_data": "q:decode"},
@@ -466,6 +467,23 @@ def fmt_decode_map(_a: dict | None = None) -> str:
         return (
             f"Mapper giải mã×icon lỗi: {e}\n"
             "Chạy: python3 scripts/decode_icon_logistics_mapper.py"
+        )
+
+
+def fmt_unmask_map(_a: dict | None = None) -> str:
+    try:
+        from unmask_redaction_crypto_mapper import build_report, format_text, write_outputs
+
+        report = build_report()
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "unmask_redaction_crypto_mapper.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Unmask×atlas lỗi: {e}\n"
+            "Chạy: python3 scripts/unmask_redaction_crypto_mapper.py"
         )
 
 
@@ -858,6 +876,7 @@ HANDLERS = {
     "q:rt_orders": fmt_rt_orders,
     "q:rt_expand": fmt_rt_expand,
     "q:crypto_cmp": fmt_crypto_cmp,
+    "q:unmask_map": fmt_unmask_map,
     "q:decode": fmt_decode,
     "q:decode_map": fmt_decode_map,
     "q:kho_shop": fmt_kho_shop,
@@ -937,6 +956,7 @@ def main() -> int:
         "q:rt_orders",
         "q:rt_expand",
         "q:crypto_cmp",
+        "q:unmask_map",
         "q:decode",
         "q:decode_map",
         "q:kho_shop",
@@ -973,6 +993,7 @@ def main() -> int:
                 "q:rt_orders",
                 "q:rt_expand",
                 "q:crypto_cmp",
+                "q:unmask_map",
                 "q:decode",
                 "q:decode_map",
                 "q:kho_shop",

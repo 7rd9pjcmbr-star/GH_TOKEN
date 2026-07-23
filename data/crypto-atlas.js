@@ -710,6 +710,10 @@ window.CRYPTO_ATLAS = {
       need: "Học Morse/Braille (không bảo mật)",
       pick: "Mã Mở assistive tools — encoding, không phải encryption",
     },
+    {
+      need: "Unmask / redaction PII (****)",
+      pick: "Không decrypt **** — refetch API hoặc AEAD (pyca/cryptography, Tink) khi lưu nội bộ",
+    },
   ],
 
   cheatSheet: {

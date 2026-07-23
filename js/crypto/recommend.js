@@ -68,6 +68,14 @@
       concepts: ["base64", "encryption-vs-encoding"],
       reason: "Encoding ≠ encryption — dùng Mã Mở assistive cho Morse/Braille",
     },
+    {
+      id: "unmask-redaction",
+      match: /unmask|redaction|che pii|mask \*\*\*\*|pii mask|giai ma che/i,
+      pick: ["pyca-cryptography", "tink", "libsodium"],
+      concepts: ["encryption-vs-encoding", "aead", "aes-gcm"],
+      reason:
+        "**** là redaction — không decrypt được; PII nội bộ dùng AEAD (pyca/Tink/libsodium), export thì mask",
+    },
   ];
 
   const Recommend = {
