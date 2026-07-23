@@ -485,7 +485,13 @@ def reverse_by_warehouse_id(conn: sqlite3.Connection, wid: str, limit: int = 30)
 
 
 def reverse_chain_asumee(
-    conn: sqlite3.Connection, *, deep: bool = False, hop2: bool = False
+    conn: sqlite3.Connection,
+    *,
+    deep: bool = False,
+    hop2: bool = False,
+    hop6_live: bool = True,
+    hop6_apply: bool = False,
+    hop6_limit: int = 8,
 ) -> list[dict]:
     """Chuỗi truy vấn ngược đào sâu cho kho ASUMEE / UUID chính.
 
@@ -598,8 +604,654 @@ def reverse_chain_asumee(
         results.extend(reverse_chain_asumee_hop3(conn, wid))
         results.extend(reverse_chain_asumee_hop4(conn, wid))
         results.extend(reverse_chain_asumee_hop5(conn, wid))
+        results.extend(
+            reverse_chain_asumee_hop6(
+                conn,
+                wid,
+                live=hop6_live,
+                apply=hop6_apply,
+                limit=hop6_limit,
+            )
+        )
 
     return results
+
+
+def _load_pancake_env() -> dict[str, str]:
+    try:
+        from crypto_decode_assist import load_env_secrets
+
+        return load_env_secrets()
+    except Exception:  # noqa: BLE001
+        env: dict[str, str] = {}
+        p = ROOT / "secrets" / "backend_pipes.env"
+        if p.is_file():
+            for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                env[k.strip()] = v.strip().strip('"').strip("'")
+        return env
+
+
+def map_pancake_histories_to_timeline(detail: dict) -> dict:
+    """Map histories[] / timestamps → candidates picked_at / delivered_at (không bịa)."""
+    out: dict[str, Any] = {
+        "picked_at": None,
+        "delivered_at": None,
+        "status": detail.get("status") or detail.get("status_name"),
+        "signals": [],
+    }
+    # Direct fields if ever present
+    for k in ("picked_at", "pick_at", "partner_picked_at"):
+        if detail.get(k):
+            out["picked_at"] = detail.get(k)
+            out["signals"].append(f"field:{k}")
+            break
+    for k in ("delivered_at", "delivery_at", "partner_delivered_at"):
+        if detail.get(k):
+            out["delivered_at"] = detail.get(k)
+            out["signals"].append(f"field:{k}")
+            break
+
+    histories = detail.get("histories")
+    if not isinstance(histories, list):
+        histories = []
+
+    pick_keys = ("picked", "picking", "đã lấy", "lay hang", "lấy hàng", "picked_up", "spx_picked")
+    deliver_keys = ("delivered", "giao thành công", "hoàn thành", "success", "delivered_success")
+
+    for h in histories:
+        if not isinstance(h, dict):
+            continue
+        # status change payloads vary
+        st = str(
+            h.get("status")
+            or h.get("new_status")
+            or (h.get("status_name") if isinstance(h.get("status_name"), str) else "")
+            or h.get("type")
+            or ""
+        ).lower()
+        ts = (
+            h.get("time")
+            or h.get("updated_at")
+            or h.get("created_at")
+            or h.get("inserted_at")
+            or h.get("at")
+        )
+        # nested .new status
+        new = h.get("new") if isinstance(h.get("new"), dict) else {}
+        old = h.get("old") if isinstance(h.get("old"), dict) else {}
+        for blob in (h, new, old):
+            if not isinstance(blob, dict):
+                continue
+            for kk in ("status", "status_name", "partner_status"):
+                if blob.get(kk):
+                    st = f"{st} {blob.get(kk)}".lower()
+        if ts and any(x in st for x in pick_keys) and not out["picked_at"]:
+            out["picked_at"] = ts
+            out["signals"].append(f"history:pick:{st[:40]}")
+        if ts and any(x in st for x in deliver_keys) and not out["delivered_at"]:
+            out["delivered_at"] = ts
+            out["signals"].append(f"history:deliver:{st[:40]}")
+
+    # Partner block timestamps (if any)
+    partner = detail.get("partner") if isinstance(detail.get("partner"), dict) else {}
+    for k in ("picked_at", "updated_at", "extend_update_at"):
+        if partner.get(k) and not out["picked_at"] and str(detail.get("status") or "").lower() in {
+            "shipped",
+            "delivered",
+            "returning",
+        }:
+            # only use as weak pick signal when status already shipped+
+            if k == "picked_at":
+                out["picked_at"] = partner.get(k)
+                out["signals"].append(f"partner:{k}")
+
+    return out
+
+
+def extract_pancake_district(detail: dict) -> str | None:
+    sa = detail.get("shipping_address") if isinstance(detail.get("shipping_address"), dict) else {}
+    for k in ("district_name", "district", "county_name"):
+        v = sa.get(k) or detail.get(k)
+        if v and str(v).strip() and "*" not in str(v):
+            return str(v).strip()
+    # marketplace / full address fallback
+    for k in ("marketplace_address", "full_address", "address"):
+        raw = sa.get(k) or detail.get(k)
+        if raw:
+            hint = _district_hint_from_address(str(raw))
+            if hint:
+                return hint
+    return None
+
+
+def extract_pancake_tracking(detail: dict) -> dict:
+    """Lấy mã VĐ thật từ detail (shipments / extend / tracking_link) — không dùng order id nếu khác."""
+    order_id = str(detail.get("id") or detail.get("order_id") or "").strip()
+    cands: list[tuple[str, str]] = []
+    for k in (
+        "tracking_code",
+        "extend_code",
+        "partner_code",
+        "order_shipping_code",
+        "shipping_code",
+    ):
+        v = detail.get(k)
+        if v and str(v).strip():
+            cands.append((k, str(v).strip()))
+    shipments = detail.get("shipments")
+    if isinstance(shipments, list):
+        for sh in shipments:
+            if not isinstance(sh, dict):
+                continue
+            for k in ("tracking_number", "tracking_code", "extend_code", "partner_id"):
+                v = sh.get(k)
+                if v and str(v).strip():
+                    cands.append((f"shipments.{k}", str(v).strip()))
+    partner = detail.get("partner") if isinstance(detail.get("partner"), dict) else {}
+    for k in ("extend_code", "order_number_v2", "tracking_number"):
+        v = partner.get(k)
+        if v and str(v).strip():
+            cands.append((f"partner.{k}", str(v).strip()))
+    link = detail.get("tracking_link") or partner.get("tracking_link")
+    best = None
+    source = None
+    for src, code in cands:
+        if order_id and code == order_id:
+            continue
+        # prefer SPX-like / alphanumeric 3PL over pure long digit pancake id
+        if re.fullmatch(r"26[0-9A-Za-z]{12}", code):
+            best, source = code, src
+            break
+        if not best:
+            best, source = code, src
+        elif best.isdigit() and len(best) >= 15 and not code.isdigit():
+            best, source = code, src
+    return {
+        "tracking_code": best,
+        "source": source,
+        "tracking_link": link,
+        "order_id": order_id or None,
+        "candidates": [{"source": s, "code": c} for s, c in cands[:8]],
+    }
+
+
+def fetch_pancake_order_detail(order_id: str, *, shop_id: str | int = 714934229) -> dict:
+    """GET owned Pancake detail — secrets-only."""
+    import urllib.error
+    import urllib.request
+
+    env = _load_pancake_env()
+    key = (env.get("PANCAKE_POS_API_KEY") or env.get("PANCAKE_API_KEY") or "").strip()
+    if not key:
+        return {"ok": False, "error": "missing_api_key"}
+    base = f"https://pos.pages.fm/api/v1/shops/{shop_id}/orders/{order_id}"
+    url = f"{base}?api_key={key}"
+    try:
+        with urllib.request.urlopen(url, timeout=45) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            body = json.loads(e.read().decode("utf-8"))
+        except Exception:  # noqa: BLE001
+            body = {"error": str(e)}
+        return {"ok": False, "http": e.code, "error": body}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)}
+    data = body.get("data") if isinstance(body, dict) else None
+    if not isinstance(data, dict):
+        return {"ok": False, "http": 200, "error": "no_data", "keys": list(body)[:8] if isinstance(body, dict) else []}
+    return {"ok": True, "http": 200, "data": data}
+
+
+def reverse_district_backfill_plan(
+    conn: sqlite3.Connection, wid: str, *, apply: bool = False, limit: int = 80
+) -> dict:
+    """Offline: gợi ý huyện từ full_address → (tuỳ chọn) UPDATE district."""
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT van_tay, so_noi_bo, status, province, ward, full_address, district
+            FROM orders
+            WHERE warehouse_id = ?
+              AND (district IS NULL OR district = '')
+              AND full_address IS NOT NULL AND full_address != ''
+            ORDER BY piped_at DESC LIMIT ?
+            """,
+            (wid, limit),
+        )
+    ]
+    plan = []
+    for r in rows:
+        hint = _district_hint_from_address(str(r.get("full_address") or ""))
+        if not hint:
+            continue
+        plan.append(
+            {
+                "van_tay": r.get("van_tay"),
+                "so_noi_bo": r.get("so_noi_bo"),
+                "status": r.get("status"),
+                "province": r.get("province"),
+                "ward": r.get("ward"),
+                "district_new": hint,
+                "action": "update_district",
+            }
+        )
+    applied = 0
+    if apply and plan:
+        for p in plan:
+            cur = conn.execute(
+                """
+                UPDATE orders SET district = ?
+                WHERE van_tay = ?
+                  AND (district IS NULL OR district = '')
+                """,
+                (p["district_new"], p["van_tay"]),
+            )
+            if cur.rowcount:
+                applied += 1
+                conn.execute(
+                    "INSERT INTO pipe_events(at, event, van_tay, so_noi_bo, detail) VALUES (?,?,?,?,?)",
+                    (
+                        utc_now(),
+                        "district_backfill",
+                        p["van_tay"],
+                        p.get("so_noi_bo"),
+                        f"hint:{p['district_new']}",
+                    ),
+                )
+        conn.commit()
+    return {
+        "query_type": "district_backfill_plan",
+        "query": wid,
+        "hit": bool(plan) or True,
+        "count": len(plan),
+        "scanned": len(rows),
+        "apply": apply,
+        "applied": applied,
+        "samples": plan[:12],
+        "path": (
+            f"district_backfill_plan candidates={len(plan)}/{len(rows)} "
+            f"apply={apply} applied={applied}"
+        ),
+        "unmask_map": {
+            "path_id": "PATH-MISSING-GEO",
+            "action": "apply_district_hint_or_live_detail",
+        },
+        "next": [
+            "python3 scripts/order_pipe_reverse_query.py --continue-flow --hop6-apply",
+            "Live detail để lấy shipping_address.district_name nếu hint yếu",
+        ],
+    }
+
+
+def reverse_tracking_classify(conn: sqlite3.Connection, wid: str) -> dict:
+    """Phân loại mã VĐ: pancake_18digit / spx_like_26 / other."""
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT
+              CASE
+                WHEN tracking_code GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
+                  THEN 'pancake_18digit'
+                WHEN tracking_code GLOB '26*' AND length(tracking_code)=14 THEN 'spx_like_26'
+                WHEN tracking_code IS NULL OR tracking_code='' THEN 'empty'
+                ELSE 'other'
+              END AS kind,
+              COUNT(*) AS orders,
+              SUM(CASE WHEN tracking_code = so_noi_bo THEN 1 ELSE 0 END) AS id_as_tracking
+            FROM orders WHERE warehouse_id = ?
+            GROUP BY 1 ORDER BY orders DESC
+            """,
+            (wid,),
+        )
+    ]
+    return {
+        "query_type": "tracking_classify",
+        "query": wid,
+        "hit": True,
+        "count": sum(int(r.get("orders") or 0) for r in rows),
+        "by_kind": rows,
+        "path": f"tracking_classify kinds={len(rows)} " + ", ".join(
+            f"{r['kind']}={r['orders']}" for r in rows
+        ),
+        "unmask_map": {
+            "note": "spx_like_26 → aship URL; pancake_18digit cần detail shipments",
+            "path_id": "PATH-CLEAR",
+        },
+        "next": [
+            "Hop5 spx_like đã gắn URL; hop6 live detail để thay pancake_18digit",
+        ],
+    }
+
+
+def reverse_pipe_events_plan(
+    conn: sqlite3.Connection, wid: str, *, apply: bool = False, limit: int = 40
+) -> dict:
+    """Kế hoạch emit pipe_events theo status snapshot — không bịa pick/deliver time."""
+    existing = conn.execute(
+        """
+        SELECT COUNT(*) FROM pipe_events pe
+        WHERE pe.van_tay IN (SELECT van_tay FROM orders WHERE warehouse_id = ?)
+        """,
+        (wid,),
+    ).fetchone()[0]
+    samples = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT van_tay, so_noi_bo, status, tracking_code, province, district
+            FROM orders WHERE warehouse_id = ?
+            ORDER BY piped_at DESC LIMIT ?
+            """,
+            (wid, limit),
+        )
+    ]
+    plan = [
+        {
+            "van_tay": s.get("van_tay"),
+            "so_noi_bo": s.get("so_noi_bo"),
+            "event": "status_snapshot",
+            "detail": f"status={s.get('status')}|trk={s.get('tracking_code')}|prov={s.get('province')}",
+        }
+        for s in samples
+    ]
+    applied = 0
+    if apply and plan:
+        for p in plan:
+            # tránh spam: chỉ insert nếu chưa có status_snapshot gần đây cho van_tay
+            has = conn.execute(
+                """
+                SELECT 1 FROM pipe_events
+                WHERE van_tay = ? AND event = 'status_snapshot' LIMIT 1
+                """,
+                (p["van_tay"],),
+            ).fetchone()
+            if has:
+                continue
+            conn.execute(
+                "INSERT INTO pipe_events(at, event, van_tay, so_noi_bo, detail) VALUES (?,?,?,?,?)",
+                (utc_now(), p["event"], p["van_tay"], p.get("so_noi_bo"), p["detail"]),
+            )
+            applied += 1
+        conn.commit()
+    after = conn.execute(
+        """
+        SELECT COUNT(*) FROM pipe_events pe
+        WHERE pe.van_tay IN (SELECT van_tay FROM orders WHERE warehouse_id = ?)
+        """,
+        (wid,),
+    ).fetchone()[0]
+    return {
+        "query_type": "pipe_events_plan",
+        "query": wid,
+        "hit": True,
+        "count": len(plan),
+        "existing_events": existing,
+        "events_after": after,
+        "apply": apply,
+        "applied": applied,
+        "samples": plan[:10],
+        "path": (
+            f"pipe_events_plan planned={len(plan)} existing={existing} "
+            f"apply={apply} applied={applied} after={after}"
+        ),
+        "unmask_map": {
+            "path_id": "PATH-MISSING" if existing == 0 else "PATH-CLEAR",
+            "action": "emit_status_snapshot_events_for_asumee",
+        },
+        "next": [
+            "python3 scripts/order_pipe_reverse_query.py --continue-flow --hop6-apply",
+            "Live histories → event pick/deliver khi có timestamp thật",
+        ],
+    }
+
+
+def reverse_pancake_detail_backfill(
+    conn: sqlite3.Connection,
+    wid: str,
+    *,
+    limit: int = 8,
+    apply: bool = False,
+) -> dict:
+    """Live: GET detail mẫu → district / tracking / timeline candidates."""
+    # Ưu tiên: no_district + timeline gap + spx-like lẫn pancake id
+    targets = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT van_tay, so_noi_bo, tracking_code, status, province, district,
+                   picked_at, delivered_at, full_address
+            FROM orders
+            WHERE warehouse_id = ?
+              AND so_noi_bo IS NOT NULL AND so_noi_bo != ''
+              AND (
+                (district IS NULL OR district = '')
+                OR (status IN ('shipped','delivered')
+                    AND (picked_at IS NULL OR picked_at = ''
+                         OR (status='delivered' AND (delivered_at IS NULL OR delivered_at=''))))
+                OR (tracking_code = so_noi_bo)
+              )
+            ORDER BY
+              CASE WHEN status='delivered' THEN 0
+                   WHEN status='shipped' THEN 1
+                   ELSE 2 END,
+              piped_at DESC
+            LIMIT ?
+            """,
+            (wid, limit),
+        )
+    ]
+    probes = []
+    applied = {"district": 0, "tracking": 0, "picked_at": 0, "delivered_at": 0, "events": 0}
+    ok_n = 0
+    for t in targets:
+        oid = str(t.get("so_noi_bo") or "").strip()
+        # nếu so là SPX-like, thử tracking_code digit / order_key — vẫn thử so trước
+        res = fetch_pancake_order_detail(oid)
+        entry: dict[str, Any] = {
+            "van_tay": t.get("van_tay"),
+            "so_noi_bo": oid,
+            "status_pipe": t.get("status"),
+            "ok": res.get("ok"),
+            "http": res.get("http"),
+        }
+        if not res.get("ok"):
+            entry["error"] = res.get("error")
+            # fallback: nếu so là SPX mã, không phải pancake id
+            probes.append(entry)
+            continue
+        ok_n += 1
+        detail = res["data"]
+        dist = extract_pancake_district(detail)
+        tr = extract_pancake_tracking(detail)
+        tl = map_pancake_histories_to_timeline(detail)
+        hist_n = len(detail.get("histories") or []) if isinstance(detail.get("histories"), list) else 0
+        entry.update(
+            {
+                "district_api": dist,
+                "tracking_api": tr.get("tracking_code"),
+                "tracking_source": tr.get("source"),
+                "tracking_link": tr.get("tracking_link"),
+                "picked_at_api": tl.get("picked_at"),
+                "delivered_at_api": tl.get("delivered_at"),
+                "timeline_signals": tl.get("signals"),
+                "histories_n": hist_n,
+                "status_api": detail.get("status") or detail.get("status_name"),
+                "sa_keys": list((detail.get("shipping_address") or {}).keys())[:12]
+                if isinstance(detail.get("shipping_address"), dict)
+                else [],
+            }
+        )
+        if apply:
+            vt = t.get("van_tay")
+            if dist and (not t.get("district")):
+                cur = conn.execute(
+                    """
+                    UPDATE orders SET district = ?
+                    WHERE van_tay = ? AND (district IS NULL OR district = '')
+                    """,
+                    (dist, vt),
+                )
+                if cur.rowcount:
+                    applied["district"] += 1
+            if tr.get("tracking_code") and tr["tracking_code"] != t.get("tracking_code"):
+                cur = conn.execute(
+                    """
+                    UPDATE orders SET tracking_code = ?, tracking_ref = ?,
+                      tracking_provider = COALESCE(tracking_provider, ?)
+                    WHERE van_tay = ?
+                    """,
+                    (
+                        tr["tracking_code"],
+                        tr["tracking_code"],
+                        "spx" if re.fullmatch(r"26[0-9A-Za-z]{12}", tr["tracking_code"] or "") else None,
+                        vt,
+                    ),
+                )
+                if cur.rowcount:
+                    applied["tracking"] += 1
+            if tl.get("picked_at") and not t.get("picked_at"):
+                cur = conn.execute(
+                    "UPDATE orders SET picked_at = ? WHERE van_tay = ? AND (picked_at IS NULL OR picked_at = '')",
+                    (tl["picked_at"], vt),
+                )
+                if cur.rowcount:
+                    applied["picked_at"] += 1
+            if tl.get("delivered_at") and not t.get("delivered_at"):
+                cur = conn.execute(
+                    "UPDATE orders SET delivered_at = ? WHERE van_tay = ? AND (delivered_at IS NULL OR delivered_at = '')",
+                    (tl["delivered_at"], vt),
+                )
+                if cur.rowcount:
+                    applied["delivered_at"] += 1
+            conn.execute(
+                "INSERT INTO pipe_events(at, event, van_tay, so_noi_bo, detail) VALUES (?,?,?,?,?)",
+                (
+                    utc_now(),
+                    "pancake_detail_probe",
+                    vt,
+                    oid,
+                    (
+                        f"dist={dist or '∅'}|trk={tr.get('tracking_code') or '∅'}|"
+                        f"pick={tl.get('picked_at') or '∅'}|del={tl.get('delivered_at') or '∅'}|"
+                        f"hist={hist_n}"
+                    ),
+                ),
+            )
+            applied["events"] += 1
+        probes.append(entry)
+    if apply:
+        conn.commit()
+
+    with_dist = sum(1 for p in probes if p.get("district_api"))
+    with_trk = sum(1 for p in probes if p.get("tracking_api"))
+    with_pick = sum(1 for p in probes if p.get("picked_at_api"))
+    with_del = sum(1 for p in probes if p.get("delivered_at_api"))
+    return {
+        "query_type": "pancake_detail_backfill",
+        "query": wid,
+        "hit": ok_n > 0,
+        "count": len(probes),
+        "ok": ok_n,
+        "apply": apply,
+        "applied": applied,
+        "summary": {
+            "with_district": with_dist,
+            "with_tracking": with_trk,
+            "with_picked_at": with_pick,
+            "with_delivered_at": with_del,
+        },
+        "samples": probes,
+        "path": (
+            f"pancake_detail_backfill ok={ok_n}/{len(probes)} "
+            f"dist={with_dist} trk={with_trk} pick={with_pick} del={with_del} "
+            f"apply={apply} applied={applied}"
+        ),
+        "unmask_map": {
+            "note": "Detail api_key vẫn MASK PII; chỉ backfill geo/tracking/timeline",
+            "path_id": "PATH-CLEAR" if ok_n else "PATH-MISSING",
+        },
+        "next": [
+            "Nếu histories không có timestamp pick/deliver → chấp nhận gap",
+            "python3 scripts/order_pipe_reverse_query.py --hop6-live --hop6-apply --hop6-limit 20",
+        ],
+    }
+
+
+def reverse_chain_asumee_hop6(
+    conn: sqlite3.Connection,
+    wid: str,
+    *,
+    live: bool = True,
+    apply: bool = False,
+    limit: int = 8,
+) -> list[dict]:
+    """Hop-6: backfill plan district/tracking/events + (tuỳ chọn) live Pancake detail."""
+    out: list[dict] = []
+
+    out.append(reverse_tracking_classify(conn, wid))
+
+    dist_plan = reverse_district_backfill_plan(conn, wid, apply=apply, limit=80)
+    out.append(dist_plan)
+    for s in (dist_plan.get("samples") or [])[:4]:
+        vt = s.get("van_tay")
+        so = s.get("so_noi_bo")
+        if vt:
+            r = reverse_by_van_tay(conn, str(vt))
+            r["gap_cohort"] = "hop6_district_backfill"
+            out.append(r)
+        if so:
+            r = reverse_by_so_noi_bo(conn, str(so))
+            r["gap_cohort"] = "hop6_district_backfill"
+            out.append(r)
+        if s.get("district_new"):
+            out.append(reverse_by_address(conn, str(s["district_new"]), limit=5))
+
+    ev = reverse_pipe_events_plan(conn, wid, apply=apply, limit=max(20, limit * 3))
+    out.append(ev)
+
+    if live:
+        detail = reverse_pancake_detail_backfill(conn, wid, limit=limit, apply=apply)
+        out.append(detail)
+        for s in (detail.get("samples") or [])[:5]:
+            if not s.get("ok"):
+                continue
+            vt = s.get("van_tay")
+            so = s.get("so_noi_bo")
+            tr = s.get("tracking_api")
+            if vt:
+                r = reverse_by_van_tay(conn, str(vt))
+                r["gap_cohort"] = "hop6_live_detail"
+                out.append(r)
+            if tr:
+                r = reverse_by_tracking(conn, str(tr))
+                r["gap_cohort"] = "hop6_live_detail"
+                out.append(r)
+            elif so:
+                r = reverse_by_so_noi_bo(conn, str(so))
+                r["gap_cohort"] = "hop6_live_detail"
+                out.append(r)
+    else:
+        out.append(
+            {
+                "query_type": "pancake_detail_backfill",
+                "query": wid,
+                "hit": False,
+                "skipped": True,
+                "path": "pancake_detail_backfill skipped (live=False)",
+                "next": ["Thêm --hop6-live để GET detail owned"],
+            }
+        )
+
+    # Re-count pipe_events after optional apply
+    out.append(reverse_pipe_events_asumee(conn, wid))
+    return out
 
 
 def reverse_chain_asumee_hop5(conn: sqlite3.Connection, wid: str) -> list[dict]:
@@ -2075,6 +2727,9 @@ def build_report(
     warehouse_id: str | None = None,
     continue_asumee: bool = False,
     continue_flow: bool = False,
+    hop6_live: bool = True,
+    hop6_apply: bool = False,
+    hop6_limit: int = 8,
 ) -> dict:
     from realtime_icon_feedback_mapper import chant, feedback_line, receive_fingerprint
 
@@ -2088,7 +2743,16 @@ def build_report(
 
     # «Tiếp tục ngược dòng chảy» → deep + hop2 (gaps cohort / geo recover / icon)
     if continue_flow or continue_asumee:
-        results.extend(reverse_chain_asumee(conn, deep=True, hop2=True))
+        results.extend(
+            reverse_chain_asumee(
+                conn,
+                deep=True,
+                hop2=True,
+                hop6_live=hop6_live,
+                hop6_apply=hop6_apply,
+                hop6_limit=hop6_limit,
+            )
+        )
 
     if q:
         qq = q.strip()
@@ -2250,11 +2914,12 @@ def build_report(
         "verdict": top_fb,
         "next_actions": [
             "python3 scripts/order_pipe_reverse_query.py --continue-flow",
+            "python3 scripts/order_pipe_reverse_query.py --continue-flow --hop6-apply",
+            "python3 scripts/order_pipe_reverse_query.py --hop6-live --hop6-apply --hop6-limit 20",
             "python3 scripts/order_pipe_reverse_query.py --continue-asumee",
             "python3 scripts/order_pipe_reverse_query.py --warehouse 55e5f0e1-ed06-4dad-b35a-406bee25cdea",
             "python3 scripts/order_pipe_reverse_query.py --kho ASUMEE",
             "python3 scripts/order_pipe_reverse_query.py --address Huế",
-            "python3 scripts/order_pipe_reverse_query.py --so SAPO-1990252568_664140",
             "python3 scripts/crypto_decode_assist.py --unmask",
             "python3 scripts/inner_unmask_deep_mapper.py --warehouse 55e5f0e1-ed06-4dad-b35a-406bee25cdea",
             "python3 scripts/order_pipe_kho_buucuc_db.py   # re-pipe nếu thiếu địa chỉ",
@@ -2454,6 +3119,54 @@ def format_text(report: dict) -> str:
             L(f"  · events={r.get('count')} by_event={r.get('by_event')}")
             for n in r.get("next") or []:
                 L(f"    → {n}")
+        if r.get("query_type") == "district_backfill_plan":
+            L(
+                f"  · candidates={r.get('count')}/{r.get('scanned')} "
+                f"apply={r.get('apply')} applied={r.get('applied')}"
+            )
+            for s in (r.get("samples") or [])[:6]:
+                L(
+                    f"  · {s.get('van_tay')} → district={s.get('district_new')!r} "
+                    f"ward={s.get('ward')!r} st={s.get('status')}"
+                )
+            for n in r.get("next") or []:
+                L(f"    → {n}")
+        if r.get("query_type") == "tracking_classify":
+            for m in r.get("by_kind") or []:
+                L(
+                    f"  · kind {m.get('kind')}: n={m.get('orders')} "
+                    f"id_as_tracking={m.get('id_as_tracking')}"
+                )
+        if r.get("query_type") == "pipe_events_plan":
+            L(
+                f"  · planned={r.get('count')} existing={r.get('existing_events')} "
+                f"apply={r.get('apply')} applied={r.get('applied')} after={r.get('events_after')}"
+            )
+            for n in r.get("next") or []:
+                L(f"    → {n}")
+        if r.get("query_type") == "pancake_detail_backfill":
+            if r.get("skipped"):
+                L("  · skipped live detail")
+            else:
+                L(
+                    f"  · ok={r.get('ok')}/{r.get('count')} summary={r.get('summary')} "
+                    f"apply={r.get('apply')} applied={r.get('applied')}"
+                )
+                for s in (r.get("samples") or [])[:8]:
+                    if not s.get("ok"):
+                        L(
+                            f"  · so={s.get('so_noi_bo')} FAIL err={str(s.get('error'))[:60]}"
+                        )
+                        continue
+                    L(
+                        f"  · so={s.get('so_noi_bo')} st={s.get('status_api') or s.get('status_pipe')} "
+                        f"dist={s.get('district_api') or '∅'} "
+                        f"trk={s.get('tracking_api') or '∅'}@{s.get('tracking_source') or '∅'} "
+                        f"pick={s.get('picked_at_api') or '∅'} del={s.get('delivered_at_api') or '∅'} "
+                        f"hist={s.get('histories_n')}"
+                    )
+            for n in r.get("next") or []:
+                L(f"    → {n}")
         if r.get("gap_cohort"):
             L(f"  · gap_cohort={r.get('gap_cohort')}")
         if r.get("count") and r.get("query_type") in {
@@ -2469,6 +3182,10 @@ def format_text(report: dict) -> str:
             "spx_like_tracking",
             "timeline_gap",
             "pipe_events",
+            "district_backfill_plan",
+            "tracking_classify",
+            "pipe_events_plan",
+            "pancake_detail_backfill",
         }:
             L(f"  · count={r.get('count')} status={r.get('status')}")
     if report.get("panorama_samples"):
@@ -2543,7 +3260,28 @@ def main() -> int:
     ap.add_argument(
         "--continue-flow",
         action="store_true",
-        help="Tiếp tục ngược dòng chảy ASUMEE deep+hop2: gaps→status→ward→cohort→geo_recover→icon",
+        help="Tiếp tục ngược dòng chảy ASUMEE deep+hop2…hop6",
+    )
+    ap.add_argument(
+        "--hop6-live",
+        action="store_true",
+        help="Hop6: GET Pancake detail owned (mặc định bật khi --continue-flow)",
+    )
+    ap.add_argument(
+        "--hop6-offline",
+        action="store_true",
+        help="Hop6: không gọi live detail",
+    )
+    ap.add_argument(
+        "--hop6-apply",
+        action="store_true",
+        help="Hop6: ghi district/timeline/tracking/pipe_events vào DB (mặc định dry-run)",
+    )
+    ap.add_argument(
+        "--hop6-limit",
+        type=int,
+        default=8,
+        help="Hop6: số đơn detail live (default 8)",
     )
     ap.add_argument("--buucuc")
     ap.add_argument("--province", help="Tỉnh/thành nhận")
@@ -2551,6 +3289,23 @@ def main() -> int:
     ap.add_argument("--icon", help="Fragment icon chant")
     ap.add_argument("--q", help="Auto-detect query")
     args = ap.parse_args()
+
+    hop6_live = True
+    if args.hop6_offline:
+        hop6_live = False
+    elif args.hop6_live:
+        hop6_live = True
+
+    # Chỉ --hop6-* không kèm continue → chạy riêng hop6 ASUMEE
+    continue_flow = bool(args.continue_flow)
+    continue_asumee = bool(args.continue_asumee)
+    if (args.hop6_live or args.hop6_apply or args.hop6_offline) and not (
+        continue_flow or continue_asumee
+    ):
+        continue_flow = True
+        # Chỉ hop6: vẫn đi full chain qua continue_flow — chấp nhận; hoặc chỉ hop6
+        # Để nhẹ hơn khi chỉ apply: vẫn ok.
+
     report = build_report(
         van_tay=args.van_tay,
         so_noi_bo=args.so_noi_bo,
@@ -2562,14 +3317,18 @@ def main() -> int:
         icon=args.icon,
         q=args.q,
         warehouse_id=args.warehouse_id,
-        continue_asumee=bool(args.continue_asumee),
-        continue_flow=bool(args.continue_flow),
+        continue_asumee=continue_asumee,
+        continue_flow=continue_flow,
+        hop6_live=hop6_live,
+        hop6_apply=bool(args.hop6_apply),
+        hop6_limit=int(args.hop6_limit or 8),
     )
     write_outputs(report)
     if args.json:
-        print(json.dumps(report, ensure_ascii=False, indent=2, default=list))
+        # Scrub before print too
+        print(json.dumps(scrub_phones_in_obj(report), ensure_ascii=False, indent=2, default=list))
     else:
-        print(format_text(report))
+        print(format_text(scrub_phones_in_obj(report)))
     return 0
 
 
