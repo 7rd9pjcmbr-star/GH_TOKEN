@@ -135,11 +135,30 @@ def from_url(text: str) -> dict:
         return {"ok": False, "kind": "url", "error": str(e), "explain": explain("url")}
 
 
+def is_pii_mask(text: str) -> bool:
+    """Redaction mask (**** / +84…**** / VĐ*****) — not ciphertext."""
+    t = (text or "").strip()
+    if "*" not in t:
+        return False
+    # digits / x with optional phone prefix +84 / 84 / 0 and separators
+    if re.fullmatch(r"[+]?(?:84)?[\d\s\-.*xX]+", t) and re.search(r"\d", t):
+        return True
+    if re.fullmatch(r"[\d*xX]+", t):
+        return True
+    # tracking-style partial masks (ASCII letters + digits + *)
+    if re.fullmatch(r"[A-Za-z0-9*]+", t) and re.search(r"[A-Za-z0-9]", t):
+        return True
+    # Vietnamese letter prefixes e.g. VĐ*******
+    if re.fullmatch(r"[^\W\d_]*[\d*]+", t, flags=re.UNICODE) and "*" in t:
+        return True
+    return False
+
+
 def detect_and_decode(text: str) -> dict:
     t = (text or "").strip()
     if not t:
         return {"ok": False, "kind": "missing", "explain": explain("missing")}
-    if "*" in t and re.fullmatch(r"[\d*xX]+", t):
+    if is_pii_mask(t):
         return {
             "ok": False,
             "kind": "mask",
@@ -165,8 +184,8 @@ def detect_and_decode(text: str) -> dict:
         r = from_base64(t)
         if r.get("ok") and (r.get("plain_text") or r.get("plain_hex")):
             return {**r, "detected": "base64"}
-    # url
-    if "%" in t or "+" in t:
+    # url — require %xx (or form +) but not phone-like +84…
+    if "%" in t or ("+" in t and not re.match(r"^\+\d", t)):
         r = from_url(t)
         if r.get("ok") and r.get("plain_text") != t:
             return {**r, "detected": "url"}

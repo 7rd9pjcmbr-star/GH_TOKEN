@@ -382,6 +382,23 @@ def fmt_crypto_cmp(_a: dict | None = None) -> str:
         )
 
 
+def fmt_decode(_a: dict | None = None) -> str:
+    try:
+        from crypto_decode_assist import build_report, format_text, write_outputs
+
+        report = build_report()
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "crypto_decode_assist.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Hỗ trợ giải mã lỗi: {e}\n"
+            "Chạy: python3 scripts/crypto_decode_assist.py"
+        )
+
+
 def fmt_urls(_a: dict | None = None) -> str:
     path = ROOT / "reports" / "telegram-classify" / "url_paths_expanded.txt"
     alt = ROOT / "reports" / "telegram-classify" / "url_paths_expanded.json"
@@ -468,6 +485,7 @@ HANDLERS = {
     "q:kho_be": fmt_kho_be,
     "q:rt_orders": fmt_rt_orders,
     "q:crypto_cmp": fmt_crypto_cmp,
+    "q:decode": fmt_decode,
 }
 
 
@@ -528,6 +546,7 @@ def main() -> int:
         "q:kho_be",
         "q:rt_orders",
         "q:crypto_cmp",
+        "q:decode",
     ]:
         send(
             token,
@@ -547,6 +566,7 @@ def main() -> int:
                 "q:kho_be",
                 "q:rt_orders",
                 "q:crypto_cmp",
+                "q:decode",
             }
             else None,
         )
