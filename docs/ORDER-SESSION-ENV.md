@@ -102,8 +102,10 @@ Alias host: `ghn.gateway.online.vn` / `online.gateway.ghn.vn` → `online-gatewa
 
 ```bash
 python3 scripts/ghn_gateway_icon_mapper.py --host ghn.gateway.online.vn --register-hosts
-# Deep map endpoint đơn hàng
+# Deep map + áp vai trò lấy đơn (list/search/detail) vào scan ngay
+python3 scripts/ghn_order_endpoint_deep_mapper.py apply-roles --host online.gateway.ghn.vn
 python3 scripts/ghn_order_endpoint_deep_mapper.py --host online.gateway.ghn.vn
 ```
 
+Vai trò gắn `scan_buucuc_orders.scan_ghn` + `token_session_maintain` + `ghn ensure`.  
 Chỉ ghi `GHN_API_TOKEN` khi probe `master-data/province` = 200.
