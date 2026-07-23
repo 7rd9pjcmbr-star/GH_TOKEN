@@ -203,6 +203,8 @@ def is_dump_filename(name: str) -> bool:
             "password",
             "assassin",
             "dump",
+            "results_cookies",
+            "vnpost_ok",
         )
     ) or n in {"ghn.txt"}  # url:user:pass dump
 

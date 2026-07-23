@@ -54,7 +54,8 @@ DUMP_HINTS = (
     "leaks.",
     "leak_",
     "darknet",
-    "token",
+    "results_cookies",
+    "vnpost_ok",
 )
 ORDER_HINTS = (
     "orders_",

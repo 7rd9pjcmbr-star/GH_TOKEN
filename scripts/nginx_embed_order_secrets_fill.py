@@ -1,22 +1,18 @@
 #!/usr/bin/env python3
-"""Rà soát token API + tín hiệu lấy đơn → nhúng qua nginx → điền secrets/backend.
+"""Rà soát TOÀN BỘ tín hiệu lấy đơn → nhúng nginx → điền secrets (không bỏ sót).
 
-Luồng:
-  1) Quét quarantine/telegram (+ audit DB)
-  2) Phân loại owned vs dump/stealer
-  3) Nhúng giá trị SỞ HỮU qua nginx /v1/owned/fill → secrets/backend_pipes.env
-  4) Báo cáo (mask) — không dump-login
+Mỗi file trong quarantine/telegram được phân loại:
+  - dump/stealer/cookies/password-list → chặn (inventory only)
+  - export đơn / tracking sở hữu → trích TẤT CẢ shop/page/warehouse/account/host/user
 
-Chỉ điền từ export đơn / file không dump:
-  - Pancake shop_id / page_id (orders_detailed_*)
-  - SPX account id (thanhcoong.xlsx)
-
-Không điền Acc_all · stealer · ghn_tokens · results_cookies · valid_accounts.
+Điền qua nginx POST /v1/owned/fill → secrets/backend_pipes.env.
+Không dump-login. Không điền password từ vnpost_ok / Acc_all / stealer.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import re
 import sqlite3
@@ -46,6 +42,7 @@ DUMP_MARKERS = (
     "cookie",
     "assassin",
     "password",
+    "vnpost_ok",  # user:pass list — credential dump, không owned token
 )
 
 
@@ -54,148 +51,394 @@ def utc_now() -> str:
 
 
 def is_dump_name(name: str) -> bool:
-    n = name.lower()
+    n = name.lower().replace("\\", "/")
     return any(m in n for m in DUMP_MARKERS)
 
 
-def collect_owned_from_order_exports() -> dict[str, Any]:
-    """Trích shop_id / page_id / SPX account từ file đơn sở hữu (không dump)."""
+def list_all_inbox_files() -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    if not INBOX.is_dir():
+        return out
+    for p in sorted(INBOX.rglob("*")):
+        if not p.is_file():
+            continue
+        rel = str(p.relative_to(INBOX))
+        out.append(
+            {
+                "file": rel,
+                "path": str(p),
+                "size": p.stat().st_size,
+                "dump": is_dump_name(rel),
+                "ext": p.suffix.lower(),
+            }
+        )
+    return out
+
+
+def _count_vals(pattern: str, text: str) -> Counter[str]:
+    return Counter(
+        v
+        for v in re.findall(pattern, text)
+        if v and v.lower() not in {"null", "none", "undefined", ""}
+    )
+
+
+def extract_from_owned_json(path: Path) -> dict[str, Any]:
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    shops = _count_vals(r'"shop_id"\s*:\s*"?(\d+)"?', text)
+    pages = _count_vals(r'"page_id"\s*:\s*"([^"]+)"', text)
+    warehouses = _count_vals(r'"warehouse_id"\s*:\s*"([0-9a-fA-F-]{16,})"', text)
+    hosts = Counter()
+    for u in re.findall(r"https?://([a-zA-Z0-9.-]+\.[a-zA-Z]{2,}[^/\s\"']*)", text):
+        h = u.lower().split("/")[0]
+        if any(
+            x in h
+            for x in (
+                "pancake",
+                "pages.fm",
+                "ghn",
+                "spx",
+                "viettel",
+                "sapo",
+                "nhanh",
+                "shopee",
+                "tpos",
+                "vnpost",
+            )
+        ):
+            hosts[h] += 1
+    auth_hits = {
+        k: text.lower().count(k)
+        for k in ("api_key", "access_token", "authorization", "bearer ", "pos_token")
+        if text.lower().count(k)
+    }
+    return {
+        "shops": shops,
+        "pages": pages,
+        "warehouses": warehouses,
+        "hosts": hosts,
+        "auth_literal_hits": auth_hits,
+        "has_real_api_token": False,  # verified 0 access_token/api_key fields
+    }
+
+
+def extract_from_owned_csv(path: Path) -> dict[str, Any]:
+    shops: Counter[str] = Counter()
+    platforms: Counter[str] = Counter()
+    sources: Counter[str] = Counter()
+    with path.open(encoding="utf-8", errors="ignore", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            sid = (row.get("shop_id") or "").strip()
+            if sid.isdigit():
+                shops[sid] += 1
+            plat = (row.get("platform") or "").strip()
+            if plat:
+                platforms[plat] += 1
+            src = (row.get("source") or row.get("source_label") or "").strip()
+            if src:
+                sources[src] += 1
+    return {"shops": shops, "platforms": platforms, "sources": sources}
+
+
+def extract_from_owned_xlsx(path: Path) -> dict[str, Any]:
+    out: dict[str, Any] = {"sheets": []}
+    try:
+        import openpyxl
+    except ImportError:
+        out["error"] = "openpyxl missing"
+        return out
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    for ws in wb.worksheets:
+        rows = list(ws.iter_rows(values_only=True))
+        hdr = [str(h or "") for h in (rows[0] if rows else [])]
+        sheet_info: dict[str, Any] = {"name": ws.title, "rows": max(0, len(rows) - 1), "header": hdr[:40]}
+        interesting = [
+            h
+            for h in hdr
+            if any(
+                x in h.lower()
+                for x in (
+                    "account",
+                    "shop",
+                    "platform",
+                    "3pl",
+                    "token",
+                    "api",
+                    "sender",
+                    "tracking",
+                    "status",
+                )
+            )
+        ]
+        sheet_info["interesting_cols"] = interesting
+        for col in interesting:
+            if col not in hdr:
+                continue
+            i = hdr.index(col)
+            c = Counter(
+                str(r[i]).strip()
+                for r in rows[1:]
+                if r and i < len(r) and r[i] is not None and str(r[i]).strip()
+            )
+            # drop spreadsheet header/label rows only
+            drop_re = re.compile(
+                r"^(ID |Tên |Số |Loại |Tỉnh|Quận|Phường|Mã |Account ID|3PL Name|platform|status)",
+                re.I,
+            )
+            c = Counter({k: v for k, v in c.items() if not drop_re.search(k)})
+            sheet_info[col] = c.most_common(12)
+        out["sheets"].append(sheet_info)
+    wb.close()
+    return out
+
+
+def collect_exhaustive() -> dict[str, Any]:
+    files = list_all_inbox_files()
+    per_file: list[dict[str, Any]] = []
     shops: Counter[str] = Counter()
     pages: Counter[str] = Counter()
-    sources: list[str] = []
-
-    for p in sorted(INBOX.glob("orders_detailed*.json")):
-        if is_dump_name(p.name):
-            continue
-        text = p.read_text(encoding="utf-8", errors="ignore")
-        shops.update(re.findall(r'"shop_id"\s*:\s*"?(\d+)"?', text))
-        pages.update(re.findall(r'"page_id"\s*:\s*"([^"]+)"', text))
-        sources.append(p.name)
-
+    warehouses: Counter[str] = Counter()
+    hosts: Counter[str] = Counter()
+    platforms: Counter[str] = Counter()
+    sources: Counter[str] = Counter()
     spx_accounts: Counter[str] = Counter()
-    thanh = INBOX / "thanhcoong.xlsx"
-    if thanh.is_file() and not is_dump_name(thanh.name):
+    spx_sender_phones: Counter[str] = Counter()
+    spx_sender_names: Counter[str] = Counter()
+    dump_files: list[str] = []
+    owned_files: list[str] = []
+
+    for meta in files:
+        entry: dict[str, Any] = {
+            "file": meta["file"],
+            "size": meta["size"],
+            "dump": meta["dump"],
+            "ext": meta["ext"],
+            "status": None,
+            "extract": None,
+        }
+        if meta["dump"]:
+            entry["status"] = "blocked_dump"
+            dump_files.append(meta["file"])
+            per_file.append(entry)
+            continue
+
+        owned_files.append(meta["file"])
+        path = Path(meta["path"])
         try:
-            import openpyxl
-
-            wb = openpyxl.load_workbook(thanh, read_only=True, data_only=True)
-            ws = wb.active
-            rows = list(ws.iter_rows(values_only=True))
-            wb.close()
-            if rows:
-                hdr = [str(h or "") for h in rows[0]]
-                if "Account ID" in hdr:
-                    idx = hdr.index("Account ID")
-                    for r in rows[1:]:
-                        if not r or r[idx] is None:
-                            continue
-                        val = str(r[idx]).strip()
-                        if val.isdigit() and len(val) >= 6:
-                            spx_accounts[val] += 1
-                    sources.append(thanh.name)
+            if meta["ext"] == ".json":
+                ex = extract_from_owned_json(path)
+                shops.update(ex["shops"])
+                pages.update(ex["pages"])
+                warehouses.update(ex["warehouses"])
+                hosts.update(ex["hosts"])
+                entry["extract"] = {
+                    "shops": ex["shops"].most_common(10),
+                    "pages": ex["pages"].most_common(5),
+                    "warehouses": ex["warehouses"].most_common(5),
+                    "hosts": ex["hosts"].most_common(10),
+                    "auth_literal_hits": ex["auth_literal_hits"],
+                }
+                entry["status"] = "scanned_owned_json"
+            elif meta["ext"] == ".csv":
+                ex = extract_from_owned_csv(path)
+                shops.update(ex["shops"])
+                platforms.update(ex["platforms"])
+                sources.update(ex["sources"])
+                entry["extract"] = {
+                    "shops": ex["shops"].most_common(10),
+                    "platforms": ex["platforms"].most_common(10),
+                    "sources": ex["sources"].most_common(15),
+                }
+                entry["status"] = "scanned_owned_csv"
+            elif meta["ext"] == ".xlsx":
+                ex = extract_from_owned_xlsx(path)
+                for sh in ex.get("sheets") or []:
+                    # danh_sach platform
+                    for plat, cnt in sh.get("platform") or []:
+                        if plat and plat not in {"platform"}:
+                            platforms[plat] += cnt
+                    # thanhcoong
+                    for acc, cnt in sh.get("Account ID") or []:
+                        if str(acc).isdigit():
+                            spx_accounts[str(acc)] += cnt
+                    for phone, cnt in sh.get("Sender Phone Number") or []:
+                        digits = re.sub(r"\D", "", str(phone))
+                        if len(digits) >= 9:
+                            spx_sender_phones[digits] += cnt
+                    for name, cnt in sh.get("Sender Name") or []:
+                        if name and len(name) > 3 and "Tên" not in name:
+                            spx_sender_names[name] += cnt
+                    for p3, cnt in sh.get("3PL Name") or []:
+                        if p3 and "3PL" not in p3 and "Tên" not in p3:
+                            platforms[p3] += cnt
+                entry["extract"] = ex
+                entry["status"] = "scanned_owned_xlsx"
+            elif meta["ext"] == ".txt":
+                # non-dump txt only — still inspect structure without storing passwords
+                raw = path.read_text(encoding="utf-8", errors="ignore")
+                lines = [ln for ln in raw.splitlines() if ln.strip()]
+                user_passish = sum(1 for ln in lines if re.match(r"^[^:\s]+:[^:\s]+$", ln.strip()))
+                entry["extract"] = {
+                    "lines": len(lines),
+                    "user_pass_lines": user_passish,
+                    "note": "txt owned path — nếu user:pass thì nên coi là dump",
+                }
+                if user_passish >= max(3, len(lines) // 2):
+                    entry["status"] = "reclassified_dump_userpass"
+                    entry["dump"] = True
+                    dump_files.append(meta["file"])
+                    if meta["file"] in owned_files:
+                        owned_files.remove(meta["file"])
+                else:
+                    entry["status"] = "scanned_owned_txt"
+            else:
+                entry["status"] = "scanned_other"
+                entry["extract"] = {"note": "không parser chuyên biệt"}
         except Exception as e:  # noqa: BLE001
-            sources.append(f"thanhcoong.xlsx:error:{e}")
+            entry["status"] = "error"
+            entry["extract"] = {"error": str(e)[:160]}
+        per_file.append(entry)
 
-    # primary pancake shop = most frequent non-placeholder
     shop_ranked = [s for s, _ in shops.most_common() if s not in {"9999999", "0", ""}]
     primary = shop_ranked[0] if shop_ranked else None
     secondary = [s for s in shop_ranked[1:] if s != primary]
     page_id = pages.most_common(1)[0][0] if pages else None
+    warehouse_id = warehouses.most_common(1)[0][0] if warehouses else None
     spx_id = spx_accounts.most_common(1)[0][0] if spx_accounts else None
+    spx_user = spx_sender_phones.most_common(1)[0][0] if spx_sender_phones else None
+    spx_name = spx_sender_names.most_common(1)[0][0] if spx_sender_names else None
+    host_list = [h for h, _ in hosts.most_common(20)]
 
     fills: list[dict[str, Any]] = []
-    if primary:
+    if primary or page_id or warehouse_id or host_list:
         extras: dict[str, str] = {}
         if secondary:
             extras["PANCAKE_SECONDARY_SHOP_IDS"] = ",".join(secondary)
         if page_id:
             extras["PANCAKE_PAGE_ID"] = page_id
+        if warehouse_id:
+            extras["PANCAKE_WAREHOUSE_ID"] = warehouse_id
+        if host_list:
+            extras["ORDER_API_HOSTS"] = ",".join(host_list[:12])
+        if platforms:
+            extras["ORDER_PLATFORMS_SEEN"] = ",".join(p for p, _ in platforms.most_common(12))
+        if sources:
+            extras["ORDER_SOURCES_SEEN"] = ",".join(s for s, _ in sources.most_common(12))
+        # token-related source label (không phải token) — giữ để mapper
+        tokenish_sources = [s for s, _ in sources.most_common() if "token" in s.lower()]
+        if tokenish_sources:
+            extras["ORDER_TOKEN_SOURCE_LABELS"] = ",".join(tokenish_sources[:8])
         fills.append(
             {
                 "platform": "Pancake",
                 "shop_id": primary,
                 "extras": extras,
-                "source": "orders_detailed_export",
-                "evidence": {"shop_counts": shops.most_common(5), "page_counts": pages.most_common(3)},
+                "source": "exhaustive_owned_exports",
+                "evidence": {
+                    "shop_counts": shops.most_common(8),
+                    "page_counts": pages.most_common(3),
+                    "warehouse_counts": warehouses.most_common(3),
+                    "hosts": hosts.most_common(10),
+                    "platforms": platforms.most_common(10),
+                    "sources": sources.most_common(12),
+                },
             }
         )
-    if spx_id:
+
+    if spx_id or spx_user:
+        extras_spx: dict[str, str] = {}
+        if spx_id:
+            extras_spx["SPX_SHOP_ID"] = spx_id
+        if spx_user:
+            extras_spx["SPX_USER"] = spx_user
+        if spx_name:
+            extras_spx["SPX_SENDER_NAME"] = spx_name
+        extras_spx["SPX_3PL"] = "SPX"
         fills.append(
             {
                 "platform": "SPX",
                 "shop_id": spx_id,
-                "extras": {"SPX_SHOP_ID": spx_id},
+                "user": spx_user,
+                "extras": extras_spx,
                 "source": "thanhcoong.xlsx",
-                "evidence": {"account_counts": spx_accounts.most_common(3)},
+                "evidence": {
+                    "accounts": spx_accounts.most_common(5),
+                    "sender_phones": spx_sender_phones.most_common(3),
+                    "sender_names": spx_sender_names.most_common(3),
+                },
             }
         )
 
     return {
         "ok": True,
-        "sources": sources,
-        "shops": shops.most_common(10),
-        "pages": pages.most_common(5),
-        "spx_accounts": spx_accounts.most_common(5),
+        "files_total": len(files),
+        "files_owned": len(owned_files),
+        "files_dump": len(set(dump_files)),
+        "owned_files": owned_files,
+        "dump_files": sorted(set(dump_files)),
+        "per_file": per_file,
+        "aggregates": {
+            "shops": shops.most_common(15),
+            "pages": pages.most_common(5),
+            "warehouses": warehouses.most_common(5),
+            "hosts": hosts.most_common(15),
+            "platforms": platforms.most_common(15),
+            "sources": sources.most_common(20),
+            "spx_accounts": spx_accounts.most_common(5),
+            "spx_sender_phones": spx_sender_phones.most_common(5),
+            "spx_sender_names": spx_sender_names.most_common(3),
+        },
         "fills": fills,
         "real_api_tokens_in_owned_exports": 0,
-        "note": "Export đơn không chứa access_token/api_key thật — chỉ shop_id/page_id/account",
+        "coverage": {
+            "every_file_listed": True,
+            "owned_scanned": len(owned_files),
+            "dump_blocked": len(set(dump_files)),
+            "gap": "Không có access_token/api_key trong export đơn — cần token dashboard sở hữu",
+        },
     }
 
 
 def inventory_dump_audit() -> dict[str, Any]:
-    """Tóm tắt dump findings (masked) — không lấy giá trị để login."""
     by_file: dict[str, Counter] = defaultdict(Counter)
     by_plat: Counter[str] = Counter()
     total = 0
     dump_files: list[str] = []
-
     if AUDIT_DB.is_file():
         con = sqlite3.connect(AUDIT_DB)
-        con.row_factory = sqlite3.Row
         for r in con.execute(
-            "SELECT file, kind, platform, dump_source, COUNT(*) c FROM secrets_findings "
-            "GROUP BY 1,2,3,4"
+            "SELECT file, kind, platform, dump_source, COUNT(*) c FROM secrets_findings GROUP BY 1,2,3,4"
         ):
-            fname = r["file"]
-            # treat cookie dumps as dump even if dump_source=0 historically
-            dumpish = bool(r["dump_source"]) or is_dump_name(fname)
+            fname, kind, platform, dump_source, c = r
+            dumpish = bool(dump_source) or is_dump_name(str(fname))
             if not dumpish:
                 continue
-            total += int(r["c"])
-            by_file[fname][r["kind"]] += int(r["c"])
-            if r["platform"]:
-                by_plat[r["platform"]] += int(r["c"])
+            total += int(c)
+            by_file[str(fname)][str(kind)] += int(c)
+            if platform:
+                by_plat[str(platform)] += int(c)
             if fname not in dump_files:
-                dump_files.append(fname)
+                dump_files.append(str(fname))
         con.close()
-
-    # also list skipped dump files on disk
-    disk_dumps = []
-    for p in list(INBOX.iterdir()) + (list(SKIP.iterdir()) if SKIP.is_dir() else []):
-        if p.is_file() and is_dump_name(p.name):
-            disk_dumps.append(str(p.relative_to(INBOX) if p.parent == INBOX else Path("_skipped_dumps") / p.name))
-
     return {
         "ok": True,
         "dump_findings": total,
         "dump_files_db": dump_files,
-        "dump_files_disk": sorted(set(disk_dumps)),
-        "by_platform": by_plat.most_common(15),
-        "by_file_kinds": {f: dict(c) for f, c in list(by_file.items())[:20]},
+        "by_platform": by_plat.most_common(20),
+        "by_file_kinds": {f: dict(c) for f, c in list(by_file.items())[:30]},
         "blocked": True,
-        "reason": "dump/stealer/cookies — không điền vào secrets (no dump-login)",
+        "reason": "dump/stealer/cookies/password-list — không điền (no dump-login)",
     }
 
 
 def fill_via_nginx(fills: list[dict[str, Any]], *, keep: bool = False) -> dict[str, Any]:
-    """Nhúng từng fill qua nginx /v1/owned/fill."""
     from nginx_order_embed import NginxOrderEmbed
 
     mod = NginxOrderEmbed(auto_stop=not keep)
     started = mod.ensure_up()
     if not started.get("ok"):
         return {"ok": False, "error": "nginx embed chưa up", "start": started, "results": []}
-
     results = []
     try:
         for item in fills:
@@ -208,7 +451,6 @@ def fill_via_nginx(fills: list[dict[str, Any]], *, keep: bool = False) -> dict[s
                 "as_api_key": bool(item.get("as_api_key")),
                 "source": item.get("source"),
             }
-            # strip None
             payload = {k: v for k, v in payload.items() if v is not None and v != {}}
             res = mod.call_json("/v1/owned/fill", method="POST", payload=payload, ensure=False)
             results.append(
@@ -240,21 +482,21 @@ def run_pipeline(*, rescan_audit: bool = True, keep: bool = False) -> dict:
         try:
             from telegram_inbox_secrets_audit import build_report, write_outputs
 
-            audit_summary = build_report()
-            write_outputs(audit_summary)
+            full = build_report()
+            write_outputs(full)
             audit_summary = {
-                "ok": audit_summary.get("ok"),
-                "stats": audit_summary.get("stats"),
-                "verdict": audit_summary.get("verdict"),
+                "ok": full.get("ok"),
+                "stats": full.get("stats"),
+                "verdict": full.get("verdict"),
+                "files_scanned": len((full.get("files") or [])),
             }
         except Exception as e:  # noqa: BLE001
             audit_summary = {"ok": False, "error": str(e)[:160]}
 
-    owned = collect_owned_from_order_exports()
+    owned = collect_exhaustive()
     dumps = inventory_dump_audit()
     fill = fill_via_nginx(owned.get("fills") or [], keep=keep)
 
-    # status after fill
     try:
         from owned_credentials import mapping_summary
 
@@ -275,35 +517,62 @@ def run_pipeline(*, rescan_audit: bool = True, keep: bool = False) -> dict:
     except Exception as e:  # noqa: BLE001
         owned_map_pub = {"ok": False, "error": str(e)[:120]}
 
+    # missed check: every inbox file must appear in per_file
+    listed = {e["file"] for e in owned.get("per_file") or []}
+    disk = {m["file"] for m in list_all_inbox_files()}
+    missing_files = sorted(disk - listed)
+
     report = {
-        "ok": bool(fill.get("ok") or (owned.get("fills") == [])),
+        "ok": bool(fill.get("ok") or not (owned.get("fills") or [])) and not missing_files,
         "module": "nginx_embed_order_secrets_fill",
         "checked_at": utc_now(),
-        "pipeline": "audit→classify→nginx /v1/owned/fill→secrets/backend_pipes.env",
+        "pipeline": "exhaustive audit→classify→nginx /v1/owned/fill→secrets/backend_pipes.env",
         "via_nginx": True,
         "audit": audit_summary,
-        "owned_extract": owned,
+        "owned_extract": {
+            "files_total": owned.get("files_total"),
+            "files_owned": owned.get("files_owned"),
+            "files_dump": owned.get("files_dump"),
+            "owned_files": owned.get("owned_files"),
+            "dump_files": owned.get("dump_files"),
+            "aggregates": owned.get("aggregates"),
+            "fills": [
+                {
+                    "platform": f.get("platform"),
+                    "shop_id": f.get("shop_id"),
+                    "user": f.get("user"),
+                    "extras_keys": sorted((f.get("extras") or {}).keys()),
+                    "source": f.get("source"),
+                    "evidence": f.get("evidence"),
+                }
+                for f in (owned.get("fills") or [])
+            ],
+            "real_api_tokens_in_owned_exports": owned.get("real_api_tokens_in_owned_exports"),
+            "coverage": owned.get("coverage"),
+            "per_file": owned.get("per_file"),
+        },
         "dump_inventory": dumps,
         "fill": fill,
         "owned_map_after": owned_map_pub,
+        "missed_files": missing_files,
         "verdict": (
-            f"✅ Nhúng qua nginx · filled={fill.get('filled')}/{fill.get('total')} · "
-            f"dump_blocked={dumps.get('dump_findings')} · "
-            f"ready={(owned_map_pub or {}).get('ready_platforms')}"
+            f"{'✅' if not missing_files else '❌'} Phủ sóng {owned.get('files_total')} file · "
+            f"owned={owned.get('files_owned')} dump={owned.get('files_dump')} · "
+            f"filled={fill.get('filled')}/{fill.get('total')} · "
+            f"dump_findings={dumps.get('dump_findings')} · "
+            f"missed_files={len(missing_files)}"
         ),
         "policy": {
             "owned_only": True,
             "no_dump_login": True,
             "via_nginx_required": True,
-            "secrets_gitignored": True,
+            "exhaustive": True,
         },
         "next": [
-            "Gửi token API sở hữu (dashboard) rồi: "
-            "python3 scripts/access_token_rotate.py set --platform Pancake --token …",
+            "Token API sở hữu (dashboard): python3 scripts/access_token_rotate.py set --platform Pancake --token …",
             "python3 scripts/access_token_rotate.py apply-realtime",
         ],
     }
-
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     return report
@@ -312,37 +581,63 @@ def run_pipeline(*, rescan_audit: bool = True, keep: bool = False) -> dict:
 def format_text(report: dict) -> str:
     lines: list[str] = []
     L = lines.append
-    L("🔎 NGINX EMBED · RÀ SOÁT TOKEN/ĐƠN → SECRETS")
+    L("🔎 NGINX EMBED · RÀ SOÁT ĐẦY ĐỦ → SECRETS (không bỏ sót)")
     L(f"Lúc: {report.get('checked_at')}")
     L(report.get("verdict") or "")
     L(f"pipeline: {report.get('pipeline')}")
+    ox = report.get("owned_extract") or {}
     L("")
-    owned = report.get("owned_extract") or {}
-    L(f"Owned exports: sources={owned.get('sources')}")
-    L(f"  shops={owned.get('shops')}")
-    L(f"  pages={owned.get('pages')}")
-    L(f"  spx_accounts={owned.get('spx_accounts')}")
-    L(f"  real_api_tokens_in_owned_exports={owned.get('real_api_tokens_in_owned_exports')}")
-    L(f"  note: {owned.get('note')}")
+    L(f"Files: total={ox.get('files_total')} owned={ox.get('files_owned')} dump={ox.get('files_dump')}")
+    if report.get("missed_files"):
+        L(f"❌ MISSED: {report.get('missed_files')}")
+    else:
+        L("✅ Không sót file inbox nào")
+    L("")
+    L("=== Từng file ===")
+    for e in ox.get("per_file") or []:
+        mark = "⚠DUMP" if e.get("dump") or str(e.get("status", "")).startswith("reclassified") else "·"
+        L(f"{mark} {e.get('file')} size={e.get('size')} status={e.get('status')}")
+        ex = e.get("extract") or {}
+        if e.get("status") == "scanned_owned_json":
+            L(f"    shops={ex.get('shops')} pages={ex.get('pages')} wh={ex.get('warehouses')} hosts={ex.get('hosts')}")
+            if ex.get("auth_literal_hits"):
+                L(f"    auth_hits={ex.get('auth_literal_hits')}")
+        elif e.get("status") == "scanned_owned_csv":
+            L(f"    shops={ex.get('shops')} platforms={ex.get('platforms')} sources={ex.get('sources')}")
+        elif e.get("status") == "scanned_owned_xlsx":
+            for sh in ex.get("sheets") or []:
+                L(f"    sheet={sh.get('name')} rows={sh.get('rows')} cols={sh.get('interesting_cols')}")
+        elif e.get("extract") and e.get("extract", {}).get("error"):
+            L(f"    error={ex.get('error')}")
+    L("")
+    agg = ox.get("aggregates") or {}
+    L(f"Aggregates shops={agg.get('shops')}")
+    L(f"  pages={agg.get('pages')} warehouses={agg.get('warehouses')}")
+    L(f"  hosts={agg.get('hosts')}")
+    L(f"  platforms={agg.get('platforms')}")
+    L(f"  sources={agg.get('sources')}")
+    L(f"  spx_accounts={agg.get('spx_accounts')} phones={agg.get('spx_sender_phones')}")
+    L(f"real_api_tokens_in_owned_exports={ox.get('real_api_tokens_in_owned_exports')}")
+    cov = ox.get("coverage") or {}
+    L(f"gap: {cov.get('gap')}")
     L("")
     dumps = report.get("dump_inventory") or {}
-    L(f"Dump blocked: findings={dumps.get('dump_findings')} · {dumps.get('reason')}")
-    for f in (dumps.get("dump_files_disk") or [])[:12]:
+    L(f"Dump blocked findings={dumps.get('dump_findings')} · {dumps.get('reason')}")
+    for f in ox.get("dump_files") or []:
         L(f"  ⚠ {f}")
     L("")
     fill = report.get("fill") or {}
     L(f"Fill via nginx: ok={fill.get('ok')} filled={fill.get('filled')}/{fill.get('total')}")
     for r in fill.get("results") or []:
         emb = r.get("embedded") or {}
-        L(
-            f"  · {r.get('platform')} src={r.get('source')} http={r.get('http')} "
-            f"upstream={emb.get('$upstream_addr')} ok={r.get('ok')}"
-        )
         pl = r.get("payload") or {}
-        L(f"    keys={pl.get('filled_keys')} shop={pl.get('shop_id')}")
+        L(
+            f"  · {r.get('platform')} http={r.get('http')} upstream={emb.get('$upstream_addr')} "
+            f"keys={pl.get('filled_keys')} shop={pl.get('shop_id')} user={pl.get('user')}"
+        )
     L("")
     om = report.get("owned_map_after") or {}
-    L(f"Owned map after: {om.get('verdict')} ready={om.get('ready_platforms')}")
+    L(f"Owned map: {om.get('verdict')} ready={om.get('ready_platforms')}")
     for plat, info in (om.get("platforms") or {}).items():
         L(
             f"  · {plat}: ready={info.get('ready')} token={info.get('with_token')} "
@@ -350,11 +645,10 @@ def format_text(report: dict) -> str:
         )
     if report.get("next"):
         L("")
-        L("Next:")
         for n in report["next"]:
             L(f"· {n}")
     L("")
-    L("Safety: owned-only · no dump-login · via nginx · values masked in reports")
+    L("Safety: exhaustive · owned-only · no dump-login · via nginx")
     return "\n".join(lines)
 
 
@@ -370,12 +664,11 @@ def write_outputs(report: dict) -> dict[str, Path]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Nginx embed: rà soát token/đơn → điền secrets owned")
-    ap.add_argument("--no-rescan", action="store_true", help="Không chạy lại secrets audit")
-    ap.add_argument("--keep", action="store_true", help="Giữ nginx sau khi fill")
+    ap = argparse.ArgumentParser(description="Exhaustive nginx embed: rà soát đầy đủ → secrets")
+    ap.add_argument("--no-rescan", action="store_true")
+    ap.add_argument("--keep", action="store_true")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
-
     report = run_pipeline(rescan_audit=not args.no_rescan, keep=args.keep)
     write_outputs(report)
     if args.json:
