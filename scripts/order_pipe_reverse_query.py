@@ -636,78 +636,102 @@ def _load_pancake_env() -> dict[str, str]:
 
 
 def map_pancake_histories_to_timeline(detail: dict) -> dict:
-    """Map histories[] / timestamps → candidates picked_at / delivered_at (không bịa)."""
+    """Map histories[] / partner.extend_update → picked_at / delivered_at (không bịa)."""
     out: dict[str, Any] = {
         "picked_at": None,
         "delivered_at": None,
         "status": detail.get("status") or detail.get("status_name"),
+        "partner_name": None,
         "signals": [],
     }
     # Direct fields if ever present
-    for k in ("picked_at", "pick_at", "partner_picked_at"):
+    for k in ("picked_at", "pick_at", "partner_picked_at", "picked_up_at"):
         if detail.get(k):
             out["picked_at"] = detail.get(k)
             out["signals"].append(f"field:{k}")
             break
-    for k in ("delivered_at", "delivery_at", "partner_delivered_at"):
+    for k in ("delivered_at", "delivery_at", "partner_delivered_at", "first_delivery_at"):
         if detail.get(k):
             out["delivered_at"] = detail.get(k)
             out["signals"].append(f"field:{k}")
             break
 
+    partner = detail.get("partner") if isinstance(detail.get("partner"), dict) else {}
+    if partner.get("partner_name"):
+        out["partner_name"] = partner.get("partner_name")
+    for k in ("picked_up_at", "picked_at"):
+        if partner.get(k) and not out["picked_at"]:
+            out["picked_at"] = partner.get(k)
+            out["signals"].append(f"partner:{k}")
+    for k in ("first_delivery_at", "delivered_at"):
+        if partner.get(k) and not out["delivered_at"]:
+            out["delivered_at"] = partner.get(k)
+            out["signals"].append(f"partner:{k}")
+
+    # J&T / SPX extend_update timeline (richer than histories for ASUMEE)
+    ext = partner.get("extend_update")
+    if isinstance(ext, list):
+        for ev in ext:
+            if not isinstance(ev, dict):
+                continue
+            desc = str(ev.get("description") or ev.get("status") or "").lower()
+            ts = ev.get("updated_at") or ev.get("time")
+            code = ev.get("action_code")
+            if not ts:
+                continue
+            # pick / collected
+            if not out["picked_at"] and (
+                code in {30901, 30101, 30001}
+                or "collected" in desc
+                or "picked up" in desc
+                or "đã lấy" in desc
+            ):
+                out["picked_at"] = ts
+                out["signals"].append(f"extend_update:pick:{code}")
+            # delivered
+            if not out["delivered_at"] and (
+                code in {50101, 50001}
+                or "been delivered" in desc
+                or "delivered successfully" in desc
+                or "giao thành công" in desc
+            ):
+                out["delivered_at"] = ts
+                out["signals"].append(f"extend_update:deliver:{code}")
+
     histories = detail.get("histories")
     if not isinstance(histories, list):
         histories = []
 
-    pick_keys = ("picked", "picking", "đã lấy", "lay hang", "lấy hàng", "picked_up", "spx_picked")
-    deliver_keys = ("delivered", "giao thành công", "hoàn thành", "success", "delivered_success")
-
     for h in histories:
         if not isinstance(h, dict):
             continue
-        # status change payloads vary
-        st = str(
-            h.get("status")
-            or h.get("new_status")
-            or (h.get("status_name") if isinstance(h.get("status_name"), str) else "")
-            or h.get("type")
-            or ""
-        ).lower()
-        ts = (
-            h.get("time")
-            or h.get("updated_at")
-            or h.get("created_at")
-            or h.get("inserted_at")
-            or h.get("at")
-        )
-        # nested .new status
-        new = h.get("new") if isinstance(h.get("new"), dict) else {}
-        old = h.get("old") if isinstance(h.get("old"), dict) else {}
-        for blob in (h, new, old):
-            if not isinstance(blob, dict):
-                continue
-            for kk in ("status", "status_name", "partner_status"):
-                if blob.get(kk):
-                    st = f"{st} {blob.get(kk)}".lower()
-        if ts and any(x in st for x in pick_keys) and not out["picked_at"]:
-            out["picked_at"] = ts
-            out["signals"].append(f"history:pick:{st[:40]}")
-        if ts and any(x in st for x in deliver_keys) and not out["delivered_at"]:
+        ts = h.get("updated_at") or h.get("time") or h.get("created_at") or h.get("inserted_at")
+        st_obj = h.get("status")
+        new_st = None
+        if isinstance(st_obj, dict):
+            new_st = st_obj.get("new")
+        elif st_obj is not None:
+            new_st = st_obj
+        shopee = h.get("shopee_status")
+        shopee_new = shopee.get("new") if isinstance(shopee, dict) else shopee
+        label = f"{new_st}|{shopee_new}".lower()
+        if ts and not out["picked_at"] and (
+            str(new_st) in {"2", "8"}  # in_transit / awaiting_collection
+            or (isinstance(shopee_new, str) and shopee_new.upper() in {
+                "IN_TRANSIT",
+                "AWAITING_COLLECTION",
+            })
+        ):
+            # chỉ lấy mốc IN_TRANSIT đầu như proxy pick nếu chưa có extend_update
+            if "in_transit" in label or str(new_st) == "2":
+                out["picked_at"] = ts
+                out["signals"].append(f"history:pick:{label[:40]}")
+        if ts and not out["delivered_at"] and (
+            str(new_st) == "3"
+            or (isinstance(shopee_new, str) and shopee_new.upper() == "DELIVERED")
+        ):
             out["delivered_at"] = ts
-            out["signals"].append(f"history:deliver:{st[:40]}")
-
-    # Partner block timestamps (if any)
-    partner = detail.get("partner") if isinstance(detail.get("partner"), dict) else {}
-    for k in ("picked_at", "updated_at", "extend_update_at"):
-        if partner.get(k) and not out["picked_at"] and str(detail.get("status") or "").lower() in {
-            "shipped",
-            "delivered",
-            "returning",
-        }:
-            # only use as weak pick signal when status already shipped+
-            if k == "picked_at":
-                out["picked_at"] = partner.get(k)
-                out["signals"].append(f"partner:{k}")
+            out["signals"].append(f"history:deliver:{label[:40]}")
 
     return out
 
@@ -752,29 +776,47 @@ def extract_pancake_tracking(detail: dict) -> dict:
                 if v and str(v).strip():
                     cands.append((f"shipments.{k}", str(v).strip()))
     partner = detail.get("partner") if isinstance(detail.get("partner"), dict) else {}
-    for k in ("extend_code", "order_number_v2", "tracking_number"):
+    for k in ("extend_code", "order_number_v2", "tracking_number", "order_number_vtp"):
         v = partner.get(k)
         if v and str(v).strip():
             cands.append((f"partner.{k}", str(v).strip()))
     link = detail.get("tracking_link") or partner.get("tracking_link")
+    partner_name = partner.get("partner_name") or partner.get("delivery_name")
     best = None
     source = None
     for src, code in cands:
         if order_id and code == order_id:
             continue
         # prefer SPX-like / alphanumeric 3PL over pure long digit pancake id
-        if re.fullmatch(r"26[0-9A-Za-z]{12}", code):
+        if re.fullmatch(r"26[0-9A-Za-z]{12}", code) or str(code).upper().startswith("SPX"):
             best, source = code, src
             break
         if not best:
             best, source = code, src
-        elif best.isdigit() and len(best) >= 15 and not code.isdigit():
+        elif best.isdigit() and len(best) >= 15 and not (code.isdigit() and len(code) >= 15):
             best, source = code, src
+    # provider hint from partner_name
+    prov = None
+    pn = str(partner_name or "").upper()
+    if "J&T" in pn or "JNT" in pn or "JT" == pn:
+        prov = "jnt"
+    elif "SPX" in pn or "SHOPEE" in pn:
+        prov = "spx"
+    elif "GHN" in pn:
+        prov = "ghn"
+    elif "VIETTEL" in pn or "VTP" in pn:
+        prov = "viettelpost"
+    elif best and re.fullmatch(r"26[0-9A-Za-z]{12}", str(best)):
+        prov = "spx"
+    elif best and str(best).upper().startswith("SPX"):
+        prov = "spx"
     return {
         "tracking_code": best,
         "source": source,
         "tracking_link": link,
         "order_id": order_id or None,
+        "partner_name": partner_name,
+        "provider": prov,
         "candidates": [{"source": s, "code": c} for s, c in cands[:8]],
     }
 
@@ -1078,6 +1120,8 @@ def reverse_pancake_detail_backfill(
                 "tracking_api": tr.get("tracking_code"),
                 "tracking_source": tr.get("source"),
                 "tracking_link": tr.get("tracking_link"),
+                "partner_name": tr.get("partner_name") or tl.get("partner_name"),
+                "provider": tr.get("provider"),
                 "picked_at_api": tl.get("picked_at"),
                 "delivered_at_api": tl.get("delivered_at"),
                 "timeline_signals": tl.get("signals"),
@@ -1103,14 +1147,20 @@ def reverse_pancake_detail_backfill(
             if tr.get("tracking_code") and tr["tracking_code"] != t.get("tracking_code"):
                 cur = conn.execute(
                     """
-                    UPDATE orders SET tracking_code = ?, tracking_ref = ?,
-                      tracking_provider = COALESCE(tracking_provider, ?)
+                    UPDATE orders
+                    SET tracking_code = ?,
+                        tracking_ref = ?,
+                        tracking_provider = COALESCE(?, tracking_provider),
+                        tracking_url = COALESCE(?, tracking_url),
+                        carrier = COALESCE(?, carrier)
                     WHERE van_tay = ?
                     """,
                     (
                         tr["tracking_code"],
                         tr["tracking_code"],
-                        "spx" if re.fullmatch(r"26[0-9A-Za-z]{12}", tr["tracking_code"] or "") else None,
+                        tr.get("provider"),
+                        tr.get("tracking_link"),
+                        tr.get("partner_name"),
                         vt,
                     ),
                 )
@@ -1139,8 +1189,9 @@ def reverse_pancake_detail_backfill(
                     oid,
                     (
                         f"dist={dist or '∅'}|trk={tr.get('tracking_code') or '∅'}|"
+                        f"prov={tr.get('provider') or '∅'}|partner={tr.get('partner_name') or '∅'}|"
                         f"pick={tl.get('picked_at') or '∅'}|del={tl.get('delivered_at') or '∅'}|"
-                        f"hist={hist_n}"
+                        f"hist={hist_n}|sig={','.join(tl.get('signals') or [])[:80]}"
                     ),
                 ),
             )
@@ -1922,9 +1973,16 @@ def _district_hint_from_address(addr: str) -> str | None:
     )
     if m:
         hint = re.sub(r"\s+", " ", m.group(1)).strip(" .,")
+        # Cắt đuôi "tỉnh …" nếu regex nuốt quá dài từ marketplace text
+        hint = re.split(r"\s+tỉnh\s+", hint, maxsplit=1, flags=re.IGNORECASE)[0].strip()
         if "*" in hint:
             return None
         if len(hint) >= 5:
+            # Chuẩn hoá viết hoa nhẹ
+            if hint.lower().startswith("huyện ") and not hint.startswith("Huyện"):
+                hint = "Huyện " + hint[6:]
+            elif hint.lower().startswith("quận ") and not hint.startswith("Quận"):
+                hint = "Quận " + hint[5:]
             return hint
     parts = [p.strip() for p in re.split(r"[,/|]", addr) if p.strip()]
     for p in parts:
@@ -3162,8 +3220,9 @@ def format_text(report: dict) -> str:
                         f"  · so={s.get('so_noi_bo')} st={s.get('status_api') or s.get('status_pipe')} "
                         f"dist={s.get('district_api') or '∅'} "
                         f"trk={s.get('tracking_api') or '∅'}@{s.get('tracking_source') or '∅'} "
+                        f"partner={s.get('partner_name') or '∅'}/{s.get('provider') or '∅'} "
                         f"pick={s.get('picked_at_api') or '∅'} del={s.get('delivered_at_api') or '∅'} "
-                        f"hist={s.get('histories_n')}"
+                        f"hist={s.get('histories_n')} sig={s.get('timeline_signals')}"
                     )
             for n in r.get("next") or []:
                 L(f"    → {n}")
