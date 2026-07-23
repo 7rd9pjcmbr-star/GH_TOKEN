@@ -245,6 +245,19 @@ def maintain_once(
         ghn_maintain = ensure_ghn_session(try_pending=True)
         if ghn_maintain.get("reingested"):
             env = load_env()
+        # luôn áp vai trò lấy đơn (list/search/detail) sau ensure
+        try:
+            from ghn_order_endpoint_deep_mapper import apply_roles
+
+            roles = apply_roles(host="online-gateway.ghn.vn", ensure_token=False)
+            ghn_maintain["roles"] = {
+                "ok": roles.get("ok"),
+                "fetch_roles": (roles.get("plan") or {}).get("fetch_roles"),
+                "verdict": roles.get("verdict"),
+                "endpoints_n": len((roles.get("plan") or {}).get("endpoints") or []),
+            }
+        except Exception as re:  # noqa: BLE001
+            ghn_maintain["roles"] = {"ok": False, "error": str(re)[:120]}
     except Exception as e:  # noqa: BLE001
         ghn_maintain = {"ok": False, "alive": False, "error": str(e)[:160], "verdict": f"GHN ensure lỗi: {e}"}
 
@@ -330,6 +343,7 @@ def maintain_once(
             "pending_tried": ghn_maintain.get("pending_tried"),
             "verdict": ghn_maintain.get("verdict"),
             "need": ghn_maintain.get("need"),
+            "roles": ghn_maintain.get("roles"),
         },
         "ensure": {
             "ok": ensure.get("ok"),
@@ -455,9 +469,11 @@ def format_text(report: dict[str, Any]) -> str:
     )
     ghn = report.get("ghn") or {}
     if ghn:
+        roles = ghn.get("roles") or {}
         lines.append(
             f"GHN: alive={ghn.get('alive')} reingest={ghn.get('reingested')} "
-            f"token={ghn.get('token_masked')} · {ghn.get('verdict')}"
+            f"token={ghn.get('token_masked')} · roles={roles.get('fetch_roles')} · "
+            f"{ghn.get('verdict')}"
         )
     ens = report.get("ensure") or {}
     if ens:

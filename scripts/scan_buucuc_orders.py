@@ -31,6 +31,7 @@ ENV_FILES = (
     SECRETS / "telegram.env",
     SECRETS / "backend_pipes.env",
     SECRETS / "pancake.env",
+    SECRETS / "order_session.env",
 )
 
 GHN_BASE = "https://online-gateway.ghn.vn/shiip/public-api"
@@ -170,6 +171,86 @@ def _norm_order(
 # —— GHN ——————————————————————————————————————
 
 
+def _ghn_role_endpoints(from_ts: int, to_ts: int, limit: int) -> tuple[list[tuple], dict[str, Any]]:
+    """Lấy endpoint theo vai trò đã apply (list/search/detail)."""
+    meta: dict[str, Any] = {"roles_source": "fallback", "fetch_roles": ["list", "search", "detail"]}
+    plan_eps: list[dict[str, Any]] = []
+    try:
+        from ghn_order_endpoint_deep_mapper import apply_roles, load_applied_roles
+
+        state = load_applied_roles()
+        if not state or not (state.get("plan") or {}).get("endpoints"):
+            state = apply_roles(host="online-gateway.ghn.vn", ensure_token=False)
+        plan = state.get("plan") or {}
+        plan_eps = list(plan.get("endpoints") or [])
+        meta = {
+            "roles_source": "ghn_roles.state",
+            "fetch_roles": plan.get("fetch_roles") or ["list", "search", "detail"],
+            "host": plan.get("host"),
+            "applied_at": plan.get("applied_at") or state.get("checked_at"),
+            "icon_chant": (state.get("icon") or {}).get("icon_chant"),
+        }
+    except Exception as e:  # noqa: BLE001
+        meta["roles_error"] = str(e)[:120]
+
+    endpoints: list[tuple] = []
+    if plan_eps:
+        for ep in plan_eps:
+            role = ep.get("role")
+            method = (ep.get("method") or "POST").upper()
+            path = ep.get("path") or ""
+            url = ep.get("url") or f"{GHN_BASE}{path}"
+            if role in {"list", "search"}:
+                body: dict[str, Any] | None = {
+                    "from_time": from_ts,
+                    "to_time": to_ts,
+                    "offset": 0,
+                    "limit": min(limit, 200),
+                }
+                if role == "list":
+                    body["payment_type_id"] = None
+                    body["required_note"] = None
+                else:
+                    body["status"] = []
+                endpoints.append((method, url, body, role, ep.get("id")))
+            elif role == "detail":
+                # detail cần order_code — giữ slot GET/POST rỗng để attempt ghi nhận vai trò
+                endpoints.append((method, url, None, role, ep.get("id")))
+    if not endpoints:
+        endpoints = [
+            (
+                "POST",
+                f"{GHN_BASE}/v2/shipping-order/all",
+                {
+                    "payment_type_id": None,
+                    "required_note": None,
+                    "from_time": from_ts,
+                    "to_time": to_ts,
+                    "offset": 0,
+                    "limit": min(limit, 200),
+                },
+                "list",
+                "order.all",
+            ),
+            (
+                "POST",
+                f"{GHN_BASE}/v2/shipping-order/search",
+                {
+                    "status": [],
+                    "from_time": from_ts,
+                    "to_time": to_ts,
+                    "offset": 0,
+                    "limit": min(limit, 200),
+                },
+                "search",
+                "order.search",
+            ),
+            ("GET", f"{GHN_BASE}/v2/shipping-order/detail", None, "detail", "order.detail"),
+        ]
+        meta["roles_source"] = "fallback"
+    return endpoints, meta
+
+
 def scan_ghn(env: dict[str, str], *, days: int, limit: int) -> dict[str, Any]:
     token = (env.get("GHN_API_TOKEN") or env.get("GHN_TOKEN") or "").strip()
     shop_id = (env.get("GHN_SHOP_ID") or "").strip()
@@ -181,9 +262,22 @@ def scan_ghn(env: dict[str, str], *, days: int, limit: int) -> dict[str, Any]:
         "orders": [],
         "attempts": [],
         "detail": "",
+        "roles": None,
     }
     if not token:
-        result["detail"] = "Thiếu GHN_API_TOKEN — không quét được đơn GHN bưu cục"
+        # vẫn gắn roles plan để báo cáo / sẵn sàng khi có token
+        try:
+            from ghn_order_endpoint_deep_mapper import apply_roles
+
+            applied = apply_roles(host="online-gateway.ghn.vn", ensure_token=True)
+            result["roles"] = {
+                "fetch_roles": (applied.get("plan") or {}).get("fetch_roles"),
+                "verdict": applied.get("verdict"),
+                "token_alive": (applied.get("ghn_ensure") or {}).get("alive"),
+            }
+        except Exception:  # noqa: BLE001
+            pass
+        result["detail"] = "Thiếu GHN_API_TOKEN — không quét được đơn GHN bưu cục (roles đã apply)"
         return result
 
     headers = {"Token": token, "Content-Type": "application/json"}
@@ -196,36 +290,11 @@ def scan_ghn(env: dict[str, str], *, days: int, limit: int) -> dict[str, Any]:
     from_ts = int(start.timestamp())
     to_ts = int(end.timestamp())
 
-    endpoints = [
-        (
-            "POST",
-            f"{GHN_BASE}/v2/shipping-order/all",
-            {
-                "payment_type_id": None,
-                "required_note": None,
-                "from_time": from_ts,
-                "to_time": to_ts,
-                "offset": 0,
-                "limit": min(limit, 200),
-            },
-        ),
-        (
-            "POST",
-            f"{GHN_BASE}/v2/shipping-order/search",
-            {
-                "status": [],
-                "from_time": from_ts,
-                "to_time": to_ts,
-                "offset": 0,
-                "limit": min(limit, 200),
-            },
-        ),
-        (
-            "GET",
-            f"{GHN_BASE}/v2/shipping-order/detail",
-            None,
-        ),
-    ]
+    role_endpoints, roles_meta = _ghn_role_endpoints(from_ts, to_ts, limit)
+    result["roles"] = roles_meta
+    # normalize to (method, url, body) for existing loop; keep role in attempts
+    endpoints = [(m, u, b) for (m, u, b, _role, _eid) in role_endpoints]
+    role_by_url = {u: (role, eid) for (_m, u, _b, role, eid) in role_endpoints}
 
     orders: list[dict] = []
     seen: set[str] = set()
@@ -233,10 +302,19 @@ def scan_ghn(env: dict[str, str], *, days: int, limit: int) -> dict[str, Any]:
     for method, url, body in endpoints:
         if len(orders) >= limit:
             break
+        role_id = role_by_url.get(url, (None, None))
         # paginate all/search
         if method == "GET":
             code, data, err = _http_json(method, url, headers=headers)
-            result["attempts"].append({"url": url, "http": code, "err": err or None})
+            result["attempts"].append(
+                {
+                    "url": url,
+                    "http": code,
+                    "err": err or None,
+                    "role": role_id[0],
+                    "endpoint_id": role_id[1],
+                }
+            )
             continue
 
         offset = 0
@@ -249,7 +327,15 @@ def scan_ghn(env: dict[str, str], *, days: int, limit: int) -> dict[str, Any]:
             page_body["limit"] = page_limit
             code, data, err = _http_json(method, url, headers=headers, body=page_body)
             result["attempts"].append(
-                {"url": url, "offset": offset, "http": code, "err": err or None, "code_field": (data or {}).get("code") if isinstance(data, dict) else None}
+                {
+                    "url": url,
+                    "offset": offset,
+                    "http": code,
+                    "err": err or None,
+                    "code_field": (data or {}).get("code") if isinstance(data, dict) else None,
+                    "role": role_id[0],
+                    "endpoint_id": role_id[1],
+                }
             )
             if code == 0:
                 result["status"] = "error"

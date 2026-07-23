@@ -26,8 +26,15 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 REPORTS = ROOT / "reports" / "telegram-classify"
 SECRETS = ROOT / "secrets"
+ROLES_STATE = SECRETS / "ghn_roles.state.json"
 
 CANONICAL_HOST = "online-gateway.ghn.vn"
+
+# Vai trò áp dụng ngay cho lấy đơn (scan / pipe)
+FETCH_ROLES = ("list", "search", "detail")
+SUPPORT_ROLES = ("master", "shop", "fee", "print")
+# Không tự gọi khi lấy đơn
+BLOCKED_ROLES = ("create", "mutate", "status", "token")
 HOST_ALIASES = {
     "online.gateway.ghn.vn": CANONICAL_HOST,
     "ghn.gateway.online.vn": CANONICAL_HOST,
@@ -238,6 +245,157 @@ ORDER_ENDPOINTS: list[dict[str, Any]] = [
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def endpoints_for_roles(roles: tuple[str, ...] | list[str]) -> list[dict[str, Any]]:
+    want = set(roles)
+    return [dict(ep) for ep in ORDER_ENDPOINTS if ep.get("role") in want]
+
+
+def build_fetch_plan(*, host: str = CANONICAL_HOST) -> dict[str, Any]:
+    """Kế hoạch lấy đơn theo vai trò — dùng ngay bởi scan_ghn."""
+    canonical = normalize_host(host)
+    base = f"https://{canonical}/shiip/public-api"
+    fetch_eps = endpoints_for_roles(FETCH_ROLES)
+    plan_endpoints: list[dict[str, Any]] = []
+    for ep in fetch_eps:
+        # scan dùng path relative sau /shiip/public-api
+        rel = ep["path"]
+        if rel.startswith("/shiip/public-api"):
+            rel = rel[len("/shiip/public-api") :]
+        plan_endpoints.append(
+            {
+                "id": ep["id"],
+                "role": ep["role"],
+                "method": "POST" if "POST" in ep["methods"] else ep["methods"][0],
+                "path": rel,
+                "url": f"https://{canonical}{ep['path']}",
+                "purpose": ep["purpose"],
+                "icon": ROLE_ICON.get(ep["role"], "network"),
+            }
+        )
+    # ưu tiên: list → search → detail
+    order = {"list": 0, "search": 1, "detail": 2}
+    plan_endpoints.sort(key=lambda x: (order.get(x["role"], 9), x["id"]))
+    return {
+        "host": canonical,
+        "base": base,
+        "fetch_roles": list(FETCH_ROLES),
+        "support_roles": list(SUPPORT_ROLES),
+        "blocked_roles": list(BLOCKED_ROLES),
+        "endpoints": plan_endpoints,
+        "applied_at": utc_now(),
+    }
+
+
+def apply_roles(
+    *,
+    host: str = "online.gateway.ghn.vn",
+    ensure_token: bool = True,
+) -> dict[str, Any]:
+    """Áp dụng vai trò endpoint vào secrets + (optional) ensure token GHN."""
+    from realtime_icon_feedback_mapper import chant, feedback_line
+
+    plan = build_fetch_plan(host=host)
+    SECRETS.mkdir(parents=True, exist_ok=True)
+
+    ghn_ensure: dict[str, Any] = {"skipped": True}
+    if ensure_token:
+        try:
+            from ghn_cookie_ingest import ensure_ghn_session
+
+            ghn_ensure = ensure_ghn_session(try_pending=True)
+        except Exception as e:  # noqa: BLE001
+            ghn_ensure = {"ok": False, "error": str(e)[:160]}
+
+    icons = ["network", "monitor", "compass", "hash"]
+    if not (ghn_ensure.get("alive") or ghn_ensure.get("ok")):
+        icons.extend(["key", "lock"])
+    icons = list(dict.fromkeys(icons))
+
+    state = {
+        "ok": True,
+        "module": "ghn_order_endpoint_deep_mapper.apply_roles",
+        "checked_at": utc_now(),
+        "plan": plan,
+        "ghn_ensure": {
+            "ok": ghn_ensure.get("ok"),
+            "alive": ghn_ensure.get("alive"),
+            "token_masked": ghn_ensure.get("token_masked"),
+            "verdict": ghn_ensure.get("verdict"),
+            "need": ghn_ensure.get("need"),
+        },
+        "icon": {
+            "icons": icons,
+            "icon_chant": chant(icons),
+            "feedback": feedback_line(
+                icons,
+                f"apply roles {plan['fetch_roles']} → scan_ghn · "
+                f"token={'Y' if ghn_ensure.get('alive') else 'N'}",
+            ),
+        },
+        "wired_into": ["scan_buucuc_orders.scan_ghn", "token_session_maintain", "ghn ensure"],
+        "policy": {"owned_only": True, "no_dump_login": True, "mutate_blocked": True},
+    }
+    if ghn_ensure.get("alive"):
+        state["verdict"] = (
+            f"✅ Đã áp vai trò lấy đơn {plan['fetch_roles']} trên {plan['host']} · "
+            f"token alive · {chant(icons)}"
+        )
+    else:
+        state["verdict"] = (
+            f"⚠ Đã áp vai trò {plan['fetch_roles']} trên {plan['host']} · "
+            f"chưa có GHN_API_TOKEN sống — scan sẽ dùng plan khi có token · {chant(icons)}"
+        )
+        state["ok"] = True  # roles applied even without token
+
+    ROLES_STATE.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    try:
+        import os
+
+        os.chmod(ROLES_STATE, 0o600)
+    except OSError:
+        pass
+
+    # mirror report
+    REPORTS.mkdir(parents=True, exist_ok=True)
+    (REPORTS / "ghn_roles_applied.json").write_text(
+        json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    (REPORTS / "ghn_roles_applied.txt").write_text(
+        "\n".join(
+            [
+                "🧩 GHN ROLES APPLIED → LẤY ĐƠN",
+                f"Lúc: {state['checked_at']}",
+                f"Verdict: {state['verdict']}",
+                f"Host: {plan['host']}",
+                f"Fetch roles: {plan['fetch_roles']}",
+                f"Blocked: {plan['blocked_roles']}",
+                f"Token: {state['ghn_ensure'].get('token_masked') or 'missing'}",
+                f"Chant: {state['icon']['icon_chant']}",
+                "",
+                "=== Endpoints gắn scan ===",
+                *[
+                    f"· [{e['role']}] {e['method']} {e['path']} — {e['purpose']}"
+                    for e in plan["endpoints"]
+                ],
+                "",
+                "Next: GHN_API_TOKEN owned → python3 scripts/scan_buucuc_orders.py --backends GHN --days 3",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return state
+
+
+def load_applied_roles() -> dict[str, Any] | None:
+    if not ROLES_STATE.is_file():
+        return None
+    try:
+        return json.loads(ROLES_STATE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
 
 
 def normalize_host(raw: str) -> str:
@@ -609,23 +767,60 @@ def write_outputs(report: dict[str, Any]) -> dict[str, str]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Mapper truy vấn sâu endpoint đơn GHN gateway")
+    ap.add_argument(
+        "command",
+        nargs="?",
+        default="probe",
+        choices=["probe", "apply-roles", "show-roles"],
+        help="probe (mặc định) | apply-roles | show-roles",
+    )
     ap.add_argument("--host", default="online.gateway.ghn.vn")
     ap.add_argument("--no-probe", action="store_true")
     ap.add_argument("--allow-mutate", action="store_true")
     ap.add_argument("--no-token", action="store_true")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
+
+    if args.command == "show-roles":
+        state = load_applied_roles() or {"ok": False, "verdict": "Chưa apply-roles"}
+        if args.json:
+            print(json.dumps(state, ensure_ascii=False, indent=2, default=str))
+        else:
+            print(state.get("verdict") or state)
+            plan = (state.get("plan") or {}) if isinstance(state, dict) else {}
+            for e in plan.get("endpoints") or []:
+                print(f"· [{e.get('role')}] {e.get('method')} {e.get('path')}")
+        return 0 if state.get("ok") else 1
+
+    if args.command == "apply-roles":
+        state = apply_roles(host=args.host, ensure_token=not args.no_token)
+        if args.json:
+            print(json.dumps(state, ensure_ascii=False, indent=2, default=str))
+        else:
+            print((REPORTS / "ghn_roles_applied.txt").read_text(encoding="utf-8"))
+        return 0 if state.get("ok") else 1
+
     report = deep_map(
         host=args.host,
         probe=not args.no_probe,
         allow_mutate=args.allow_mutate,
         with_token=not args.no_token,
     )
+    # auto-apply fetch roles after deep probe
+    applied = apply_roles(host=args.host, ensure_token=False)
+    report["roles_applied"] = {
+        "ok": applied.get("ok"),
+        "verdict": applied.get("verdict"),
+        "fetch_roles": (applied.get("plan") or {}).get("fetch_roles"),
+        "endpoints_n": len((applied.get("plan") or {}).get("endpoints") or []),
+    }
     write_outputs(report)
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
     else:
         print(format_text(report))
+        print("")
+        print(f"Roles: {report['roles_applied'].get('verdict')}")
     return 0 if report.get("ok") else 1
 
 

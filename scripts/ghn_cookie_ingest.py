@@ -263,8 +263,21 @@ def ensure_ghn_session(*, try_pending: bool = True) -> dict[str, Any]:
         if probe.get("success"):
             report["ok"] = True
             report["alive"] = True
+            # Áp dụng vai trò lấy đơn ngay khi token sống
+            try:
+                from ghn_order_endpoint_deep_mapper import apply_roles
+
+                roles = apply_roles(host="online-gateway.ghn.vn", ensure_token=False)
+                report["roles"] = {
+                    "ok": roles.get("ok"),
+                    "fetch_roles": (roles.get("plan") or {}).get("fetch_roles"),
+                    "verdict": roles.get("verdict"),
+                }
+            except Exception as e:  # noqa: BLE001
+                report["roles"] = {"ok": False, "error": str(e)[:120]}
             report["verdict"] = (
-                f"✅ GHN token alive · {_mask(token)} · provinces={probe.get('provinces_n')}"
+                f"✅ GHN token alive · {_mask(token)} · provinces={probe.get('provinces_n')} · "
+                f"roles={((report.get('roles') or {}).get('fetch_roles'))}"
             )
             _save_ghn_state(report)
             write_outputs({**report, "via": "ghn_ensure_probe"})
@@ -300,7 +313,21 @@ def ensure_ghn_session(*, try_pending: bool = True) -> dict[str, Any]:
                     (ing.get("extracted") or {}).get("chosen_masked")
                 )
                 report["probe"] = ing.get("probe")
-                report["verdict"] = f"✅ GHN re-ingest từ {path.name} · {report['token_masked']}"
+                try:
+                    from ghn_order_endpoint_deep_mapper import apply_roles
+
+                    roles = apply_roles(host="online-gateway.ghn.vn", ensure_token=False)
+                    report["roles"] = {
+                        "ok": roles.get("ok"),
+                        "fetch_roles": (roles.get("plan") or {}).get("fetch_roles"),
+                        "verdict": roles.get("verdict"),
+                    }
+                except Exception as e:  # noqa: BLE001
+                    report["roles"] = {"ok": False, "error": str(e)[:120]}
+                report["verdict"] = (
+                    f"✅ GHN re-ingest từ {path.name} · {report['token_masked']} · "
+                    f"roles={((report.get('roles') or {}).get('fetch_roles'))}"
+                )
                 _save_ghn_state(report)
                 write_outputs({**report, "via": "ghn_ensure_reingest"})
                 return report
@@ -410,10 +437,22 @@ def ingest(
     apply = apply_token(token, shop_id=shop_id)
     report["apply"] = apply
     report["ok"] = True
+    try:
+        from ghn_order_endpoint_deep_mapper import apply_roles
+
+        roles = apply_roles(host="online-gateway.ghn.vn", ensure_token=False)
+        report["roles"] = {
+            "ok": roles.get("ok"),
+            "fetch_roles": (roles.get("plan") or {}).get("fetch_roles"),
+            "verdict": roles.get("verdict"),
+        }
+    except Exception as e:  # noqa: BLE001
+        report["roles"] = {"ok": False, "error": str(e)[:120]}
     note = " (force)" if force and not probe.get("success") else ""
     report["verdict"] = (
         f"✅ Đã nhúng GHN_API_TOKEN{note} · source={chosen.get('source')} · "
-        f"{_mask(token)} · provinces={probe.get('provinces_n')}"
+        f"{_mask(token)} · provinces={probe.get('provinces_n')} · "
+        f"roles={((report.get('roles') or {}).get('fetch_roles'))}"
     )
     write_outputs(report)
     return report
