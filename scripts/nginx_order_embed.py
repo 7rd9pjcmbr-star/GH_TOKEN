@@ -424,8 +424,11 @@ class NginxOrderEmbed:
 
     def describe(self) -> dict:
         return {
+            "ok": True,
             "module": "nginx_order_embed",
             "title": "Nhúng gọi đơn qua nginx (on-demand)",
+            "base": self.base,
+            "upstream": self.upstream,
             "when_needed": [
                 "once — chạy một lần rồi tắt",
                 "start/ensure_up — bật khi cần nhiều lần",
