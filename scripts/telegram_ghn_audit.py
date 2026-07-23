@@ -54,35 +54,38 @@ DUMP_NAME_RE = re.compile(
 
 def redact_preview(line: str) -> str:
     """Mask passwords/tokens in dump-like lines before report."""
-    shown = UUID_RE.sub(lambda m: mask(m.group(1)), line)
-    shown = mask_url(shown)
+    shown = line
 
-    # url:user:pass  OR host/path:user:pass
+    # user:pass:uuid-token  (before generic UUID mask)
     shown = re.sub(
-        r"(https?://[^\s:]+|(?:sso(?:-v2)?\.)?ghn\.vn[^\s:]*)"
-        r":([^:\s]{2,80}):([^:\s]{2,200})",
-        lambda m: f"{m.group(1)}:{mask(m.group(2), keep=2)}:***",
-        shown,
-        flags=re.I,
-    )
-    # user:pass:uuid-token
-    shown = re.sub(
-        r"\b([^:\s]{2,80}):([^:\s]{2,80}):([0-9a-fA-F]{8}-[0-9a-fA-F\-]{27})\b",
+        r"\b([^:\s]{2,80}):([^:\s]{2,120}):([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\b",
         lambda m: f"{mask(m.group(1), keep=2)}:***:{mask(m.group(3))}",
         shown,
     )
     # email:pass:token
     shown = re.sub(
-        r"\b([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}):([^:\s]{2,80}):([^\s]{8,})\b",
+        r"\b([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}):([^:\s]{2,120}):([^\s]{8,})\b",
         lambda m: f"{mask(m.group(1), keep=3)}:***:{mask(m.group(3))}",
         shown,
     )
-    # leftover phone:password (no token)
+    # url-or-ghn-path:user:pass
     shown = re.sub(
-        r"\b(0\d{8,11}):([^:\s]{3,80})\b",
+        r"((?:https?://)?[^\s]*ghn\.vn[^\s:]*)"
+        r":([^:\s]{2,80}):([^:\s]{2,200})",
+        lambda m: f"{m.group(1)}:{mask(m.group(2), keep=2)}:***",
+        shown,
+        flags=re.I,
+    )
+    # leftover phone:password
+    shown = re.sub(
+        r"\b(0\d{8,11}):([^:\s]{3,120})\b",
         lambda m: f"{mask(m.group(1), keep=2)}:***",
         shown,
     )
+    shown = UUID_RE.sub(lambda m: mask(m.group(1)), shown)
+    shown = mask_url(shown)
+    # scrub any remaining |user|pass fragments in urls list style
+    shown = re.sub(r"\|[^|]{3,40}\|[^|\s]{3,40}", "|***|***", shown)
     return shown[:220]
 
 
