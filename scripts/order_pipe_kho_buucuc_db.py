@@ -594,6 +594,69 @@ def save_fp_state(rows: list[dict]) -> None:
     FP_STATE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def load_buucuc_scan_orders(limit: int = 10000) -> list[dict]:
+    """Đơn remote đã quét (nginx buucuc scan) → đưa vào pipe kho/BC theo shop."""
+    paths = [
+        ROOT / "docker" / "nginx-order" / "orders_buucuc_scan_cache.json",
+        REPORTS / "scan_buucuc_orders_full.json",
+    ]
+    orders: list[dict] = []
+    for path in paths:
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+        rows = data.get("orders") if isinstance(data, dict) else data
+        if not isinstance(rows, list):
+            continue
+        for o in rows:
+            if not isinstance(o, dict):
+                continue
+            oid = o.get("order_id") or o.get("oms_id") or o.get("id")
+            if not oid:
+                continue
+            orders.append(
+                {
+                    "oms_id": oid,
+                    "order_key": oid,
+                    "backend": o.get("backend") or "Pancake",
+                    "buucuc": o.get("buucuc") or "Pancake-partner",
+                    "carrier": o.get("carrier"),
+                    "tracking_code": o.get("tracking_code"),
+                    "status": o.get("status") or o.get("status_order"),
+                    "shop_id": o.get("shop_id"),
+                    "shop_name": o.get("shop_name"),
+                    "account": o.get("account"),
+                    "warehouse_id": o.get("warehouse_id"),
+                    "warehouse_name": o.get("kho"),
+                    "warehouse_display_name": o.get("kho"),
+                    "receiver_name": o.get("customer_name"),
+                    "customer_name": o.get("customer_name"),
+                    "receiver_phone": o.get("customer_phone"),
+                    "customer_phone": o.get("customer_phone"),
+                    "province": o.get("province"),
+                    "district": o.get("district"),
+                    "ward": o.get("ward"),
+                    "address_detail": o.get("address"),
+                    "full_address": o.get("full_address") or o.get("address"),
+                    "cod_amount": o.get("cod_amount"),
+                    "created_at": o.get("order_created_at") or o.get("created_at"),
+                    "order_created_at": o.get("order_created_at") or o.get("created_at"),
+                    "source": o.get("source") or "scan_buucuc_orders",
+                    "channel": o.get("channel") or "remote_api",
+                    "platform": o.get("platform") or o.get("backend") or "Pancake",
+                    "file": "orders_buucuc_scan_cache.json",
+                }
+            )
+            if len(orders) >= limit:
+                break
+        if orders:
+            break
+    return orders[:limit]
+
+
 def build_report(*, ingest_limit: int = 5000, run_cycle: bool = True, limit_rt: int = 50) -> dict:
     from buucuc_backend_db_query import BUUCUC_BACKENDS
     from oms_interconnect import ingest_local_orders, load_env
@@ -619,6 +682,13 @@ def build_report(*, ingest_limit: int = 5000, run_cycle: bool = True, limit_rt: 
         enriched.append(row)
         rt_new_rows.append(row)
 
+    # Đơn remote các shop (nginx buucuc scan) — pipe kho/BC toàn shop
+    scan_rows_raw = load_buucuc_scan_orders(limit=max(ingest_limit, 10000))
+    scan_piped = 0
+    for rec in scan_rows_raw:
+        enriched.append(enrich_row(rec, realtime_new=True, pipe_source="buucuc_scan"))
+        scan_piped += 1
+
     # dedupe by van_tay — prefer realtime_new + richer fields
     dedup: dict[str, dict] = {}
     for row in enriched:
@@ -630,13 +700,42 @@ def build_report(*, ingest_limit: int = 5000, run_cycle: bool = True, limit_rt: 
         merged = dict(prev)
         if row.get("realtime_new"):
             merged["realtime_new"] = 1
+        # prefer buucuc_scan / richer shop fields
+        if (row.get("pipe_source") == "buucuc_scan") and (prev.get("pipe_source") != "buucuc_scan"):
+            for fld in (
+                "shop_id",
+                "shop_name",
+                "staff_account",
+                "warehouse_id",
+                "warehouse_display",
+                "kho",
+                "buucuc",
+                "backend",
+                "so_noi_bo",
+                "oms_id",
+                "order_key",
+                "tracking_code",
+                "created_at",
+                "province",
+                "district",
+                "ward",
+                "full_address",
+                "receiver_name",
+                "receiver_phone",
+                "cod_amount",
+                "pipe_source",
+            ):
+                if row.get(fld):
+                    merged[fld] = row[fld]
         for fld in (
             "so_noi_bo",
             "oms_id",
             "order_key",
             "tracking_code",
             "shop_name",
+            "shop_id",
             "staff_creator",
+            "staff_account",
             "created_at",
             "synced_at",
             "event_at",
@@ -644,6 +743,8 @@ def build_report(*, ingest_limit: int = 5000, run_cycle: bool = True, limit_rt: 
             "icon_feedback",
             "province",
             "carrier",
+            "warehouse_id",
+            "warehouse_display",
         ):
             if not merged.get(fld) and row.get(fld):
                 merged[fld] = row[fld]
@@ -664,13 +765,17 @@ def build_report(*, ingest_limit: int = 5000, run_cycle: bool = True, limit_rt: 
                 "upsert",
                 row["van_tay"],
                 row["so_noi_bo"],
-                f"{row['backend']}|{row['kho']}|{row['buucuc']}",
+                f"{row['backend']}|{row['kho']}|{row['buucuc']}|{row.get('pipe_source')}",
             ),
         )
     refresh_nodes(pipe)
     pipe.execute(
         "INSERT OR REPLACE INTO meta(key,value) VALUES ('piped_at',?), ('orders',?), ('fingerprints',?)",
         (utc_now(), str(len(rows)), str(len(rows))),
+    )
+    pipe.execute(
+        "INSERT OR REPLACE INTO meta(key,value) VALUES ('scan_shop_orders', ?)",
+        (str(scan_piped),),
     )
     # seed backends catalog into mirror
     mirror = sqlite3.connect(str(BUUCUC_DB))
@@ -687,6 +792,7 @@ def build_report(*, ingest_limit: int = 5000, run_cycle: bool = True, limit_rt: 
     mirror.execute("INSERT OR REPLACE INTO meta(key,value) VALUES ('piped_at', ?)", (utc_now(),))
     mirror.execute("INSERT OR REPLACE INTO meta(key,value) VALUES ('records', ?)", (str(len(rows)),))
     mirror.execute("INSERT OR REPLACE INTO meta(key,value) VALUES ('pipe', ?)", ("kho_buucuc_pipe",))
+    mirror.execute("INSERT OR REPLACE INTO meta(key,value) VALUES ('scan_shop_orders', ?)", (str(scan_piped),))
     mirror.commit()
     mirror.close()
 
@@ -711,6 +817,20 @@ def build_report(*, ingest_limit: int = 5000, run_cycle: bool = True, limit_rt: 
             """
             SELECT kho, buucuc, COUNT(*) AS orders, COUNT(DISTINCT van_tay) AS fps
             FROM orders GROUP BY kho, buucuc ORDER BY orders DESC LIMIT 40
+            """
+        )
+    ]
+    by_shop = [
+        {"shop_id": r[0], "shop_name": r[1], "orders": r[2], "kho_n": r[3], "buucuc_n": r[4]}
+        for r in pipe.execute(
+            """
+            SELECT shop_id, shop_name, COUNT(*) AS orders,
+                   COUNT(DISTINCT kho) AS kho_n, COUNT(DISTINCT buucuc) AS buucuc_n
+            FROM orders
+            WHERE shop_id IS NOT NULL AND shop_id != ''
+            GROUP BY shop_id, shop_name
+            ORDER BY orders DESC
+            LIMIT 40
             """
         )
     ]
@@ -743,8 +863,8 @@ def build_report(*, ingest_limit: int = 5000, run_cycle: bool = True, limit_rt: 
     top_fb = feedback_line(
         icons,
         f"pipe→DB kho+buucuc · orders={len(rows)} · van_tay={with_fp} · "
-        f"so_noi_bo={with_so} · rt_new={len(rt_new_rows)} · "
-        f"kho={len(by_kho)} buucuc={len(by_buucuc)}",
+        f"so_noi_bo={with_so} · scan_shops={scan_piped} · rt_new={len(rt_new_rows)} · "
+        f"kho={len(by_kho)} buucuc={len(by_buucuc)} shops={len(by_shop)}",
     )
 
     return {
@@ -778,6 +898,7 @@ def build_report(*, ingest_limit: int = 5000, run_cycle: bool = True, limit_rt: 
         "by_kho": by_kho,
         "by_buucuc": by_buucuc,
         "kho_buucuc": kho_buucuc,
+        "by_shop": by_shop,
         "fingerprint_samples": fp_samples,
         "realtime_new_samples": [
             {
@@ -796,6 +917,8 @@ def build_report(*, ingest_limit: int = 5000, run_cycle: bool = True, limit_rt: 
             "fingerprints": with_fp,
             "with_so_noi_bo": with_so,
             "realtime_new": len(rt_new_rows),
+            "scan_shop_orders": scan_piped,
+            "shops": len(by_shop),
             "kho_nodes": len(by_kho),
             "buucuc_nodes": len(by_buucuc),
             "icon_chant": chant(icons),
@@ -805,7 +928,10 @@ def build_report(*, ingest_limit: int = 5000, run_cycle: bool = True, limit_rt: 
         "next_actions": [
             f"SQL pipe: SELECT kho, buucuc, van_tay, so_noi_bo FROM orders LIMIT 20 — {PIPE_DB}",
             f"SQL BC: SELECT van_tay, so_noi_bo, kho, buucuc FROM orders WHERE van_tay IS NOT NULL — {BUUCUC_DB}",
-            "Re-pipe: python3 scripts/order_pipe_kho_buucuc_db.py",
+            "Re-pipe: python3 scripts/order_pipe_kho_buucuc_db.py --limit 15000 --no-cycle",
+            "Mapper: python3 scripts/comprehensive_order_mapper.py",
+            "Kho·NS·Shop: python3 scripts/kho_buucuc_staff_shop_mapper.py",
+            "Panorama: python3 scripts/buucuc_db_panorama_audit.py --refresh-db",
             "Icon RT: python3 scripts/realtime_icon_feedback_mapper.py",
             "Điền secrets/backend_pipes.env để pipe live GHN/Pancake vào cùng van_tay",
         ],
@@ -826,7 +952,8 @@ def format_text(report: dict) -> str:
     L(f"Chant: {s.get('icon_chant')}")
     L(
         f"piped={s['orders_piped']} van_tay={s['fingerprints']} "
-        f"so_noi_bo={s['with_so_noi_bo']} rt_new={s['realtime_new']}"
+        f"so_noi_bo={s['with_so_noi_bo']} rt_new={s['realtime_new']} "
+        f"scan_shops={s.get('scan_shop_orders')} shops={s.get('shops')}"
     )
     L(f"DB pipe: {db['pipe_db']}")
     L(f"DB buucuc mirror: {db['buucuc_db']}")
@@ -837,6 +964,13 @@ def format_text(report: dict) -> str:
     L(f"· at={cy.get('checked_at')} new={cy.get('new_count')} blocked={cy.get('blocked')}")
     for b in cy.get("backends") or []:
         L(f"  - {b.get('backend')}: {b.get('status')} new={b.get('new')} · {str(b.get('detail') or '')[:80]}")
+    L("")
+    L("=== Shop (từ scan/pipe) ===")
+    for sh in (report.get("by_shop") or [])[:16]:
+        L(
+            f"· {sh.get('shop_id')} {sh.get('shop_name') or ''}: "
+            f"orders={sh.get('orders')} kho_n={sh.get('kho_n')} buucuc_n={sh.get('buucuc_n')}"
+        )
     L("")
     L("=== Kho (nodes) ===")
     for k in report["by_kho"][:12]:
