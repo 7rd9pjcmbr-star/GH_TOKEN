@@ -150,6 +150,9 @@ def panel_keyboard() -> dict:
                 {"text": "🔓 Hỗ trợ giải mã", "callback_data": "q:decode"},
                 {"text": "🗺 Giải mã×icon", "callback_data": "q:decode_map"},
             ],
+            [
+                {"text": "🏬 Kho·NS·Shop", "callback_data": "q:kho_shop"},
+            ],
             [{"text": "🔁 Làm mới phân tích", "callback_data": "q:refresh"}],
         ]
     }
@@ -417,6 +420,23 @@ def fmt_decode_map(_a: dict | None = None) -> str:
         )
 
 
+def fmt_kho_shop(_a: dict | None = None) -> str:
+    try:
+        from kho_buucuc_staff_shop_mapper import build_report, format_text, write_outputs
+
+        report = build_report()
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "kho_buucuc_staff_shop.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Kho·NS·Shop lỗi: {e}\n"
+            "Chạy: python3 scripts/kho_buucuc_staff_shop_mapper.py"
+        )
+
+
 def fmt_urls(_a: dict | None = None) -> str:
     path = ROOT / "reports" / "telegram-classify" / "url_paths_expanded.txt"
     alt = ROOT / "reports" / "telegram-classify" / "url_paths_expanded.json"
@@ -505,6 +525,7 @@ HANDLERS = {
     "q:crypto_cmp": fmt_crypto_cmp,
     "q:decode": fmt_decode,
     "q:decode_map": fmt_decode_map,
+    "q:kho_shop": fmt_kho_shop,
 }
 
 
@@ -567,6 +588,7 @@ def main() -> int:
         "q:crypto_cmp",
         "q:decode",
         "q:decode_map",
+        "q:kho_shop",
     ]:
         send(
             token,
@@ -588,6 +610,7 @@ def main() -> int:
                 "q:crypto_cmp",
                 "q:decode",
                 "q:decode_map",
+                "q:kho_shop",
             }
             else None,
         )

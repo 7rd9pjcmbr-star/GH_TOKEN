@@ -174,22 +174,28 @@ def read_xlsx_rows(path: Path) -> list[dict]:
 
 def normalize_from_csv_row(r: dict, file_name: str) -> dict:
     phone = (r.get("customer_phone") or "").strip()
+    shop = (r.get("shop_id") or "").strip() or None
     return {
         "oms_id": f"csv:{r.get('order_key') or r.get('id') or ''}",
         "order_key": r.get("order_key"),
         "remote_id": r.get("remote_id"),
         "source": r.get("source"),
         "platform": r.get("platform"),
-        "shop_id": r.get("shop_id"),
+        "shop_id": shop,
+        "shop_name": None,
+        "page_id": None,
+        "pancake_shop_id": shop,
         "status": r.get("status_normalized") or r.get("status_raw"),
         "customer_name": r.get("customer_name"),
         "customer_phone": phone,
         "phone_class": phone_class(phone),
         "warehouse_id": None,
         "warehouse_name": None,
+        "warehouse_display_name": None,
         "assigning_seller": None,
         "assigning_care": None,
         "creator": None,
+        "account": None,
         "carrier": None,
         "tracking_code": None,
         "province": None,
@@ -214,22 +220,36 @@ def normalize_from_json_order(o: dict, file_name: str) -> dict:
         s0 = shipments[0]
         tracking = s0.get("tracking_number") or s0.get("extend_code") or s0.get("partner_id")
         carrier = s0.get("partner_name") or s0.get("partner_id")
+    outer_shop = o.get("shop_id")
+    payload_shop = p.get("shop_id")
+    shop_id = outer_shop or payload_shop
+    # Tên shop gần đúng: warehouse_info.name (POS) / page / shop fields
+    shop_name = wi.get("name") or p.get("shop_name") or p.get("page_name") or p.get("store_name")
+    page = p.get("page") if isinstance(p.get("page"), dict) else None
+    if not shop_name and page:
+        shop_name = page.get("name") or page.get("username")
+    account = p.get("account")
     return {
         "oms_id": f"json:{o.get('order_key') or o.get('id') or ''}",
         "order_key": o.get("order_key"),
         "remote_id": o.get("remote_id") or o.get("id"),
         "source": o.get("source"),
         "platform": o.get("platform"),
-        "shop_id": o.get("shop_id") or p.get("shop_id"),
+        "shop_id": str(shop_id) if shop_id not in (None, "") else None,
+        "shop_name": shop_name,
+        "page_id": p.get("page_id") or o.get("page_id"),
+        "pancake_shop_id": str(payload_shop) if payload_shop not in (None, "") else None,
         "status": o.get("status_normalized") or o.get("status_raw") or p.get("status"),
         "customer_name": o.get("customer_name") or p.get("bill_full_name"),
         "customer_phone": phone,
         "phone_class": phone_class(phone),
         "warehouse_id": p.get("warehouse_id"),
         "warehouse_name": wi.get("custom_id") or wi.get("name"),
+        "warehouse_display_name": wi.get("name") or wi.get("custom_id"),
         "assigning_seller": (seller.get("name") if isinstance(seller, dict) else seller),
         "assigning_care": (care.get("name") if isinstance(care, dict) else care),
-        "creator": (creator.get("name") if isinstance(creator, dict) else creator) or p.get("account"),
+        "creator": (creator.get("name") if isinstance(creator, dict) else creator) or account,
+        "account": str(account) if account not in (None, "") else None,
         "carrier": carrier,
         "tracking_code": tracking,
         "province": addr.get("province_name") or addr.get("province"),
@@ -241,22 +261,34 @@ def normalize_from_json_order(o: dict, file_name: str) -> dict:
 
 def normalize_from_thanhcoong(r: dict) -> dict:
     phone = (r.get("Receiver Phone Number") or r.get("Số điện thoại người nhận") or "").strip()
+    sender = (r.get("Sender Name") or r.get("Tên người gửi") or "").strip()
+    account = (r.get("Account ID") or r.get("ID tài khoản") or "").strip()
+    creator = (r.get("Order Creator") or r.get("Người tạo đơn") or "").strip()
+    # bỏ hàng header tiếng Việt/Anh
+    if sender in {"Sender Name", "Tên người gửi"} or account in {"Account ID", "ID tài khoản"}:
+        return {}
+    shop_name = sender or None
     return {
         "oms_id": f"spx:{r.get('Tracking No.') or r.get('Mã vận đơn') or ''}",
         "order_key": r.get("Customer Reference No.") or r.get("Tracking No."),
         "remote_id": r.get("Tracking No.") or r.get("Mã vận đơn"),
         "source": "thanhcoong_xlsx",
         "platform": "SPX",
-        "shop_id": r.get("Account ID"),
+        "shop_id": account or None,
+        "shop_name": shop_name,
+        "page_id": None,
+        "pancake_shop_id": None,
         "status": r.get("Tracking Status") or r.get("Trạng thái hiện tại"),
         "customer_name": r.get("Receiver Name"),
         "customer_phone": phone,
         "phone_class": phone_class(phone),
         "warehouse_id": None,
-        "warehouse_name": r.get("Sender Name"),
+        "warehouse_name": sender or None,
+        "warehouse_display_name": sender or None,
         "assigning_seller": None,
         "assigning_care": None,
-        "creator": r.get("Order Creator"),
+        "creator": creator or None,
+        "account": account or None,
         "carrier": r.get("3PL Name") or r.get("Tên 3PL") or "SPX",
         "tracking_code": r.get("Tracking No.") or r.get("Mã vận đơn"),
         "province": r.get("Receiver Province") or r.get("Tỉnh, thành"),
@@ -289,7 +321,9 @@ def ingest_local_orders(limit_per_file: int = 5000) -> list[dict]:
     xlsx = INBOX / "thanhcoong.xlsx"
     if xlsx.is_file():
         for r in read_xlsx_rows(xlsx)[:limit_per_file]:
-            records.append(normalize_from_thanhcoong(r))
+            rec = normalize_from_thanhcoong(r)
+            if rec:
+                records.append(rec)
     return records
 
 
