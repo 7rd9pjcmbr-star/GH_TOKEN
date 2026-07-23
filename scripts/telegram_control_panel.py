@@ -144,6 +144,9 @@ def panel_keyboard() -> dict:
             ],
             [
                 {"text": "⏱ Mapper RT đơn", "callback_data": "q:rt_orders"},
+                {"text": "📈 Mở rộng RT", "callback_data": "q:rt_expand"},
+            ],
+            [
                 {"text": "🔐 So sánh mã hoá", "callback_data": "q:crypto_cmp"},
             ],
             [
@@ -373,6 +376,23 @@ def fmt_rt_orders(_a: dict | None = None) -> str:
         )
 
 
+def fmt_rt_expand(_a: dict | None = None) -> str:
+    try:
+        from realtime_order_expand import build_report, format_text, write_outputs
+
+        report = build_report()
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "realtime_order_expand.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Mở rộng RT lỗi: {e}\n"
+            "Chạy: python3 scripts/realtime_order_expand.py"
+        )
+
+
 def fmt_crypto_cmp(_a: dict | None = None) -> str:
     try:
         from crypto_encryption_issue_compare import build_report, format_text, write_outputs
@@ -560,6 +580,7 @@ HANDLERS = {
     "q:icon_rt": fmt_icon_rt,
     "q:kho_be": fmt_kho_be,
     "q:rt_orders": fmt_rt_orders,
+    "q:rt_expand": fmt_rt_expand,
     "q:crypto_cmp": fmt_crypto_cmp,
     "q:decode": fmt_decode,
     "q:decode_map": fmt_decode_map,
@@ -625,6 +646,7 @@ def main() -> int:
         "q:icon_rt",
         "q:kho_be",
         "q:rt_orders",
+        "q:rt_expand",
         "q:crypto_cmp",
         "q:decode",
         "q:decode_map",
@@ -649,6 +671,7 @@ def main() -> int:
                 "q:icon_rt",
                 "q:kho_be",
                 "q:rt_orders",
+                "q:rt_expand",
                 "q:crypto_cmp",
                 "q:decode",
                 "q:decode_map",

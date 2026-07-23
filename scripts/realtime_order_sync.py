@@ -218,6 +218,7 @@ def sync_inbox_files(state: dict) -> dict[str, Any]:
         name_l = path.name.lower()
         if not (
             path.name.startswith("orders_detailed_")
+            or path.name.lower() == "thanhcoong.xlsx"
             or ("don" in name_l and path.suffix.lower() in {".csv", ".json", ".xlsx"})
         ):
             continue
@@ -341,6 +342,123 @@ def sync_tpos_probe(env: dict[str, str], state: dict) -> dict[str, Any]:
     return result
 
 
+def sync_spx_local(state: dict) -> dict[str, Any]:
+    """SPX 3PL local (thanhcoong.xlsx) — mở rộng realtime theo Tracking No."""
+    from oms_interconnect import normalize_from_thanhcoong, read_xlsx_rows
+
+    result: dict[str, Any] = {
+        "backend": "SPX-local",
+        "status": "ok",
+        "new_orders": [],
+        "fetched": 0,
+        "detail": "",
+    }
+    path = INBOX / "thanhcoong.xlsx"
+    if not path.is_file():
+        result["status"] = "missing_file"
+        result["detail"] = "thiếu quarantine/telegram/thanhcoong.xlsx"
+        state.setdefault("backends", {})["SPX-local"] = {
+            "status": result["status"],
+            "checked_at": utc_now(),
+            "detail": result["detail"],
+        }
+        return result
+
+    st = path.stat()
+    meta = {"mtime": st.st_mtime, "size": st.st_size}
+    known = state.setdefault("inbox_files", {})
+    file_changed = True
+    prev = known.get(path.name)
+    if prev and prev.get("mtime") == meta["mtime"] and prev.get("size") == meta["size"]:
+        file_changed = False
+    known[path.name] = meta
+
+    try:
+        rows = read_xlsx_rows(path)
+        new_orders: list[dict] = []
+        for r in rows:
+            rec = normalize_from_thanhcoong(r)
+            if not rec:
+                continue
+            result["fetched"] += 1
+            # fingerprint by tracking
+            oid = rec.get("tracking_code") or rec.get("order_key") or ""
+            fp = order_fingerprint("SPX-local", {"order_key": oid, "id": oid, "shop_id": rec.get("shop_id")})
+            if fp in state.setdefault("seen_orders", {}):
+                continue
+            state["seen_orders"][fp] = {
+                "at": utc_now(),
+                "backend": "SPX-local",
+                "file": path.name,
+                "tracking": oid,
+            }
+            oo = dict(rec)
+            oo["_backend"] = "SPX-local"
+            oo["_file"] = path.name
+            oo["id"] = oid
+            oo["_realtime_new"] = True
+            # enrich times from raw sheet when present
+            oo["created_at"] = r.get("Create Time") or r.get("Thời gian tạo")
+            oo["delivered_at"] = r.get("Delivered Time") or r.get("Thời gian giao")
+            oo["picked_at"] = r.get("Actual Pickup/Drop Off Time")
+            new_orders.append(oo)
+        result["new_orders"] = new_orders
+        result["detail"] = (
+            f"file={path.name} changed={file_changed} rows={result['fetched']} "
+            f"new={len(new_orders)}"
+        )
+    except Exception as exc:  # noqa: BLE001
+        result["status"] = "error"
+        result["detail"] = str(exc)[:200]
+
+    state.setdefault("backends", {})["SPX-local"] = {
+        "status": result["status"],
+        "checked_at": utc_now(),
+        "fetched": result.get("fetched") or 0,
+        "new": len(result.get("new_orders") or []),
+        "detail": result["detail"],
+    }
+    return result
+
+
+def sync_vnpost_local(state: dict) -> dict[str, Any]:
+    """VNPost file đối soát — theo dõi file mới (chưa parse đơn đầy đủ)."""
+    result: dict[str, Any] = {
+        "backend": "VNPost-local",
+        "status": "ok",
+        "new_orders": [],
+        "new_files": [],
+        "detail": "",
+    }
+    if not INBOX.is_dir():
+        result["status"] = "missing_inbox"
+        result["detail"] = "quarantine/telegram trống"
+        return result
+    known = state.setdefault("inbox_files", {})
+    new_files = []
+    for path in sorted(INBOX.iterdir()):
+        if not path.is_file():
+            continue
+        if not path.name.lower().startswith("vnpost"):
+            continue
+        st = path.stat()
+        meta = {"mtime": st.st_mtime, "size": st.st_size}
+        prev = known.get(path.name)
+        if prev and prev.get("mtime") == meta["mtime"] and prev.get("size") == meta["size"]:
+            continue
+        known[path.name] = meta
+        new_files.append(path.name)
+    result["new_files"] = new_files
+    result["detail"] = f"vnpost_files_new={len(new_files)} (topology/đối soát; chưa map order rows)"
+    state.setdefault("backends", {})["VNPost-local"] = {
+        "status": result["status"],
+        "checked_at": utc_now(),
+        "new_files": len(new_files),
+        "detail": result["detail"],
+    }
+    return result
+
+
 def write_snapshot(cycle: dict) -> Path:
     OUT.mkdir(parents=True, exist_ok=True)
     path = OUT / "realtime_latest.json"
@@ -396,6 +514,8 @@ def run_cycle(env: dict[str, str], limit: int, notify: bool, notify_new_only: bo
     backends = [
         sync_pancake(env, state, limit=limit),
         sync_inbox_files(state),
+        sync_spx_local(state),
+        sync_vnpost_local(state),
         sync_ghn_probe(env, state),
         sync_tpos_probe(env, state),
     ]
