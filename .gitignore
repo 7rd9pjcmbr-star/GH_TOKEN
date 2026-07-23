@@ -19,3 +19,5 @@ reports/*
 
 __pycache__/
 *.pyc
+docker/nginx-order/logs/
+docker/nginx-order/tmp/
