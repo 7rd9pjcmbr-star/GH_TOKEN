@@ -167,6 +167,7 @@ def panel_keyboard() -> dict:
             ],
             [
                 {"text": "🧭 Tracking aship", "callback_data": "q:aship"},
+                {"text": "📥 Inbox·hôm nay", "callback_data": "q:inbox_today"},
             ],
             [{"text": "🔁 Làm mới phân tích", "callback_data": "q:refresh"}],
         ]
@@ -571,6 +572,23 @@ def fmt_aship(_a: dict | None = None) -> str:
         )
 
 
+def fmt_inbox_today(_a: dict | None = None) -> str:
+    try:
+        from telegram_inbox_today_mapper import build_report, format_text, write_outputs
+
+        report = build_report(pull=True, wait=2)
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "telegram_inbox_today_mapper.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Inbox hôm nay lỗi: {e}\n"
+            "Chạy: python3 scripts/telegram_inbox_today_mapper.py"
+        )
+
+
 def fmt_urls(_a: dict | None = None) -> str:
     path = ROOT / "reports" / "telegram-classify" / "url_paths_expanded.txt"
     alt = ROOT / "reports" / "telegram-classify" / "url_paths_expanded.json"
@@ -667,6 +685,7 @@ HANDLERS = {
     "q:rev_q": fmt_rev_q,
     "q:dg_tbl": fmt_dg_tbl,
     "q:aship": fmt_aship,
+    "q:inbox_today": fmt_inbox_today,
 }
 
 
@@ -737,6 +756,7 @@ def main() -> int:
         "q:rev_q",
         "q:dg_tbl",
         "q:aship",
+        "q:inbox_today",
     ]:
         send(
             token,
@@ -766,6 +786,7 @@ def main() -> int:
                 "q:rev_q",
                 "q:dg_tbl",
                 "q:aship",
+                "q:inbox_today",
             }
             else None,
         )
@@ -798,6 +819,38 @@ def main() -> int:
             cb = upd.get("callback_query")
             if not cb:
                 msg = upd.get("message") or {}
+                # Capture order docs into quarantine so panel listen không nuốt file
+                if msg.get("document"):
+                    try:
+                        from telegram_inbox_today_mapper import (
+                            download_file,
+                            is_order_document,
+                            re_safe,
+                            today_utc,
+                        )
+
+                        doc = msg["document"]
+                        name = doc.get("file_name") or f"{doc.get('file_id')}.bin"
+                        if is_order_document(name, doc.get("mime_type")):
+                            day = today_utc().replace("-", "")
+                            safe = re_safe(name)
+                            dest_name = safe if safe.startswith(day) else f"{day}_{safe}"
+                            dest = INBOX / dest_name
+                            download_file(token, doc["file_id"], dest)
+                            send(
+                                token,
+                                str(msg["chat"]["id"]),
+                                f"📥 Đã lưu `{dest.name}` → mapper hôm nay sẵn sàng.\n"
+                                "Bấm 📥 Inbox·hôm nay để map.",
+                                panel_keyboard(),
+                            )
+                    except Exception as e:  # noqa: BLE001
+                        send(
+                            token,
+                            str(msg.get("chat", {}).get("id") or chat),
+                            f"❌ Lưu file inbox lỗi: `{e}`",
+                            panel_keyboard(),
+                        )
                 text = (msg.get("text") or "").strip().lower()
                 if text in {"/panel", "panel", "/menu", "bang dieu khien"}:
                     open_panel(token, str(msg["chat"]["id"]), analysis)
