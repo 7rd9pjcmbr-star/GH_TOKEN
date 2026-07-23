@@ -68,9 +68,9 @@ def redact_preview(line: str) -> str:
         lambda m: f"{mask(m.group(1), keep=3)}:***:{mask(m.group(3))}",
         shown,
     )
-    # url-or-ghn-path:user:pass
+    # url-or-ghn-path:user:pass  (avoid matching emails *@ghn.vn)
     shown = re.sub(
-        r"((?:https?://)?[^\s]*ghn\.vn[^\s:]*)"
+        r"((?:https?://)?(?:[\w.-]+\.)?ghn\.vn[^\s:@]*)"
         r":([^:\s]{2,80}):([^:\s]{2,200})",
         lambda m: f"{m.group(1)}:{mask(m.group(2), keep=2)}:***",
         shown,
@@ -279,7 +279,9 @@ def scan_inbox_files() -> tuple[list[dict], list[dict]]:
                 "urls_masked": [
                     mask_url(u)
                     for u in urls
-                    if "Login" not in u and ":/" in u and u.count(":") <= 1
+                    if "Login" not in u
+                    and u.count(":") <= 1
+                    and "|" not in u
                 ][:10],
                 "sample_uuids_masked": [mask(u) for u in uuids[:8]],
                 "ghn_lines": lines,
