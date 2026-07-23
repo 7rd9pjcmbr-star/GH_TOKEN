@@ -175,6 +175,7 @@ def panel_keyboard() -> dict:
             ],
             [
                 {"text": "🔐 Owned·env map", "callback_data": "q:owned_env"},
+                {"text": "🔎 Audit·token inbox", "callback_data": "q:secrets_audit"},
             ],
             [{"text": "🔁 Làm mới phân tích", "callback_data": "q:refresh"}],
         ]
@@ -651,6 +652,23 @@ def fmt_owned_env(_a: dict | None = None) -> str:
         )
 
 
+def fmt_secrets_audit(_a: dict | None = None) -> str:
+    try:
+        from telegram_inbox_secrets_audit import build_report, format_text, write_outputs
+
+        report = build_report()
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "telegram_inbox_secrets_audit.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Audit token inbox lỗi: {e}\n"
+            "Chạy: python3 scripts/telegram_inbox_secrets_audit.py"
+        )
+
+
 def fmt_urls(_a: dict | None = None) -> str:
     path = ROOT / "reports" / "telegram-classify" / "url_paths_expanded.txt"
     alt = ROOT / "reports" / "telegram-classify" / "url_paths_expanded.json"
@@ -751,6 +769,7 @@ HANDLERS = {
     "q:inbox_scan": fmt_inbox_scan,
     "q:ngx_order": fmt_ngx_order,
     "q:owned_env": fmt_owned_env,
+    "q:secrets_audit": fmt_secrets_audit,
 }
 
 
@@ -825,6 +844,7 @@ def main() -> int:
         "q:inbox_scan",
         "q:ngx_order",
         "q:owned_env",
+        "q:secrets_audit",
     ]:
         send(
             token,
@@ -858,6 +878,7 @@ def main() -> int:
                 "q:inbox_scan",
                 "q:ngx_order",
                 "q:owned_env",
+                "q:secrets_audit",
             }
             else None,
         )
