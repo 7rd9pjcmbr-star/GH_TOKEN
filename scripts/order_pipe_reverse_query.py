@@ -5,6 +5,10 @@ Lookup van_tay / so_noi_bo / tracking / kho / buucuc / tỉnh·huyện·địa c
 → lộ trình: kho → backend → bưu cục → mã VĐ → trạng thái → người nhận → địa chỉ.
 
 Đọc kho_buucuc_pipe.db. Secrets-only. Không dump login.
+
+Module capability mới (khuyến nghị): ``python3 -m order_pipe`` — xem
+``docs/ORDER-PIPE-MODULE.md`` và package ``scripts/order_pipe/``.
+Script này giữ CLI hop1–13 tương thích / engine bên dưới facade.
 """
 
 from __future__ import annotations

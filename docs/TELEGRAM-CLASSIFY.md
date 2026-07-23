@@ -125,3 +125,27 @@ python3 scripts/realtime_order_backend_mapper.py
 
 Gộp OMS probe + realtime sync + ingest local → map từng đơn theo backend/kho/carrier/NS.
 Panel: **Mapper RT đơn**. Báo cáo: `reports/telegram-classify/realtime_order_backend_mapper.txt`.
+
+## Order Pipe module (truy vấn ngược toàn diện)
+
+Module capability (không còn “hopN”): `seed → deep → enrich → tracking → pancake_id → accept → waiting → close`.
+
+```bash
+# pipeline an toàn (offline)
+python3 -m order_pipe --run
+# hoặc
+python3 scripts/order_pipe_module.py --stages seed,close
+
+# lấy đơn + hỗ trợ unmask (owned secrets)
+PYTHONPATH=scripts python3 -m order_pipe --fetch-orders --limit 80
+PYTHONPATH=scripts python3 -m order_pipe --unmask-assist --sample-limit 20
+
+# live enrich (owned key)
+python3 -m order_pipe --stages enrich,waiting --live --apply --limit 40
+
+# lookup
+python3 -m order_pipe --kho ASUMEE
+python3 -m order_pipe --tracking SPXVN067951046107
+```
+
+Docs: `docs/ORDER-PIPE-MODULE.md` · facade `scripts/order_pipe/` · legacy hops: `scripts/order_pipe_reverse_query.py`.
