@@ -434,13 +434,105 @@ def decrypt_frida_a11y_bundle(
     out_txt.write_text(plain[:20000], encoding="utf-8")
     report["outputs"] = {"json": str(out_plain), "txt": str(out_txt)}
 
-    shop = meta.get("path") or "?"
-    report["verdict"] = (
-        f"✅ Đã giải AES-GCM · {shop} · plain={len(plain_bytes)}B · "
-        f"sha16={'OK' if report['integrity']['match'] else 'MISMATCH'} · "
-        f"key_src={key_info.get('source')}"
-    )
+    # Hỗ trợ unmask inner envelope: b64/display thường chỉ là mask đã encode
+    if isinstance(inner, dict):
+        report["inner_unmask_assist"] = assist_frida_inner_envelope(inner)
+        iu = report["inner_unmask_assist"]
+        report["verdict"] = (
+            f"✅ Đã giải AES-GCM · {meta.get('path') or '?'} · plain={len(plain_bytes)}B · "
+            f"sha16={'OK' if report['integrity']['match'] else 'MISMATCH'} · "
+            f"key_src={key_info.get('source')} · "
+            f"inner_mask={iu.get('masked_n', 0)} b64→mask={iu.get('b64_decodes_to_mask', 0)} "
+            f"(AES≠unmask PII)"
+        )
+    else:
+        shop = meta.get("path") or "?"
+        report["verdict"] = (
+            f"✅ Đã giải AES-GCM · {shop} · plain={len(plain_bytes)}B · "
+            f"sha16={'OK' if report['integrity']['match'] else 'MISMATCH'} · "
+            f"key_src={key_info.get('source')}"
+        )
     return report
+
+
+def assist_frida_inner_envelope(inner: dict) -> dict[str, Any]:
+    """Phân loại field trong envelope Frida sau AES — b64 thường decode ra ****."""
+    resp = inner.get("response") if isinstance(inner.get("response"), dict) else {}
+    enc = inner.get("encoding") if isinstance(inner.get("encoding"), dict) else {}
+    previews = list(resp.get("preview_masked") or [])[:12]
+    samples: list[dict] = []
+    masked_n = 0
+    b64_to_mask = 0
+    b64_to_clear = 0
+
+    def handle_field(order_id: Any, field: str, node: Any) -> None:
+        nonlocal masked_n, b64_to_mask, b64_to_clear
+        if not isinstance(node, dict):
+            return
+        display = node.get("display")
+        b64 = node.get("b64")
+        entry: dict[str, Any] = {
+            "order_id": order_id,
+            "field": field,
+            "display": display,
+            "masked_flag": bool(node.get("masked")),
+            "encoding": node.get("encoding"),
+        }
+        if isinstance(display, str) and is_pii_mask(display):
+            masked_n += 1
+            entry["display_assist"] = detect_and_decode(display)
+        if isinstance(b64, str) and b64.strip():
+            decoded = detect_and_decode(b64)
+            entry["b64_assist"] = {
+                "ok": decoded.get("ok"),
+                "kind": decoded.get("kind") or decoded.get("detected"),
+                "plain_text": decoded.get("plain_text"),
+            }
+            plain = decoded.get("plain_text") or ""
+            if decoded.get("ok") and is_pii_mask(plain):
+                b64_to_mask += 1
+                entry["b64_result"] = "decodes_to_mask"
+                entry["path_id"] = "PATH-MASK-REDACTION"
+            elif decoded.get("ok") and plain and not is_pii_mask(plain):
+                b64_to_clear += 1
+                entry["b64_result"] = "decodes_to_clear"
+                entry["path_id"] = "PATH-ENCODING"
+            else:
+                entry["b64_result"] = "other"
+                entry["path_id"] = "PATH-ENCODING" if decoded.get("ok") else "PATH-UNKNOWN"
+        if len(samples) < 20:
+            samples.append(entry)
+
+    for o in previews:
+        if not isinstance(o, dict):
+            continue
+        oid = o.get("id")
+        for field in ("customer_phone", "customer_name", "shipping_phone", "shipping_name"):
+            handle_field(oid, field, o.get(field))
+        ship = o.get("shipping") if isinstance(o.get("shipping"), dict) else {}
+        for field in ("phone", "phone_number", "full_name", "name", "address"):
+            handle_field(oid, f"shipping.{field}", ship.get(field))
+
+    return {
+        "mode": enc.get("mode"),
+        "note": enc.get("note"),
+        "masked_field_count_meta": enc.get("masked_field_count"),
+        "preview_n": len(previews),
+        "masked_n": masked_n,
+        "b64_decodes_to_mask": b64_to_mask,
+        "b64_decodes_to_clear": b64_to_clear,
+        "samples": samples,
+        "verdict": (
+            f"Inner envelope mode={enc.get('mode')}: display MASK={masked_n}, "
+            f"b64→mask={b64_to_mask}, b64→clear={b64_to_clear}. "
+            "fromBase64 trên b64 chỉ ra **** — không unmask PII."
+            if enc.get("mode") == "mask" or masked_n or b64_to_mask
+            else f"Inner envelope: mode={enc.get('mode')}"
+        ),
+        "action": "fetch_unmasked_from_source_api"
+        if (enc.get("mode") == "mask" or masked_n)
+        else "inspect_clear_fields",
+    }
 
 
 def assist_frida_aes_latest(*, key_b64: str | None = None, key_file: str | None = None) -> dict[str, Any]:
@@ -1426,6 +1518,16 @@ def format_unmask_text(report: dict) -> str:
         if fr.get("need"):
             for n in fr["need"]:
                 L(f"  need: {n}")
+        iu = fr.get("inner_unmask_assist") or {}
+        if iu:
+            L(f"· inner: {iu.get('verdict')}")
+            L(f"  action={iu.get('action')} b64→mask={iu.get('b64_decodes_to_mask')} b64→clear={iu.get('b64_decodes_to_clear')}")
+            for s in (iu.get("samples") or [])[:6]:
+                b64a = s.get("b64_assist") or {}
+                L(
+                    f"  - {s.get('order_id')}.{s.get('field')}: display={s.get('display')!r} "
+                    f"b64→{b64a.get('plain_text')!r} result={s.get('b64_result')}"
+                )
     asu = report.get("asunmee")
     if asu:
         L("")
