@@ -525,7 +525,7 @@ def scan_vnpost(env: dict[str, str], *, days: int, limit: int) -> dict[str, Any]
 
 
 def scan_pancake_shipping(env: dict[str, str], *, days: int, limit: int) -> dict[str, Any]:
-    """Pancake POS orders → lấy shipping/partner (bưu cục gắn đơn), không đọc file danh_sach."""
+    """Pancake POS orders (Bearer/api_key) — remote, không đọc file danh_sach."""
     result: dict[str, Any] = {
         "backend": "Pancake",
         "buucuc": "Pancake-partner",
@@ -536,58 +536,79 @@ def scan_pancake_shipping(env: dict[str, str], *, days: int, limit: int) -> dict
         "detail": "",
     }
     try:
-        from pancake_pos_client import auth_ready, fetch_shop_orders, resolve_credentials
+        from pancake_pos_client import auth_ready, resolve_credentials
+        import requests
     except Exception as e:  # noqa: BLE001
         result["detail"] = f"pancake client: {e}"
         return result
 
-    creds = resolve_credentials()
+    if env.get("PANCAKE_POS_ACCESS_TOKEN"):
+        creds = {"api_key": "", "access_token": env["PANCAKE_POS_ACCESS_TOKEN"].strip()}
+    else:
+        creds = resolve_credentials()
     if not auth_ready(creds):
         result["detail"] = "Thiếu PANCAKE_POS_API_KEY / Bearer — không quét shipping Pancake"
         return result
 
-    shop_ids: list[str] = []
-    for key in ("PANCAKE_SHOP_ID", "PANCAKE_POS_SHOP_IDS", "PANCAKE_SHOP_IDS", "PANCAKE_SECONDARY_SHOP_IDS"):
+    headers = {"Accept": "application/json"}
+    params_auth: dict[str, Any] = {}
+    if creds.get("api_key"):
+        params_auth["api_key"] = creds["api_key"]
+    else:
+        headers["Authorization"] = f"Bearer {creds['access_token']}"
+        headers["Cookie"] = f"pos_jwt={creds['access_token']}; pos_locale=vi"
+
+    base = (env.get("PANCAKE_POS_BASE_URL") or "https://pos.pancake.vn/api/v1").rstrip("/")
+    try:
+        sr = requests.get(f"{base}/shops", headers=headers, params=params_auth, timeout=30)
+        result["attempts"].append({"url": f"{base}/shops", "http": sr.status_code})
+        shops = (sr.json().get("shops") or []) if sr.ok else []
+    except Exception as e:  # noqa: BLE001
+        result["status"] = "error"
+        result["detail"] = str(e)[:160]
+        return result
+
+    shop_ids = [str(s.get("id")) for s in shops if s.get("id")]
+    for key in ("PANCAKE_POS_SHOP_IDS", "PANCAKE_SHOP_ID", "PANCAKE_SECONDARY_SHOP_IDS"):
         raw = (env.get(key) or "").strip()
-        if not raw:
-            continue
         for part in raw.replace(";", ",").split(","):
             p = part.strip()
             if p and p not in shop_ids:
                 shop_ids.append(p)
     if not shop_ids:
-        result["detail"] = "Có Pancake token nhưng thiếu PANCAKE_SHOP_ID"
+        result["detail"] = "Có Pancake token nhưng không lấy được shop_id"
         return result
 
     start, end = _window(days)
     orders: list[dict] = []
     seen: set[str] = set()
+    page_size = 100
     for shop in shop_ids:
         page = 1
-        while len(orders) < limit and page <= 50:
+        while len(orders) < limit and page <= 200:
             try:
-                data, base = fetch_shop_orders(shop, creds, page=page, page_size=min(100, limit))
+                rr = requests.get(
+                    f"{base}/shops/{shop}/orders",
+                    headers=headers,
+                    params={**params_auth, "page_number": page, "page_size": page_size},
+                    timeout=45,
+                )
             except Exception as e:  # noqa: BLE001
-                result["attempts"].append({"shop": shop, "page": page, "error": str(e)[:160]})
+                result["attempts"].append({"shop": shop, "page": page, "error": str(e)[:120]})
                 break
-            result["attempts"].append({"shop": shop, "page": page, "base": base})
-            rows = []
-            if isinstance(data, dict):
-                for k in ("data", "orders", "items"):
-                    if isinstance(data.get(k), list):
-                        rows = data[k]
-                        break
-            elif isinstance(data, list):
-                rows = data
+            result["attempts"].append({"shop": shop, "page": page, "http": rr.status_code})
+            if not rr.ok:
+                break
+            rows = rr.json().get("data") or []
             if not rows:
                 break
             for row in rows:
                 if not isinstance(row, dict):
                     continue
-                oid = str(row.get("id") or row.get("display_id") or "")
+                oid = str(row.get("id") or "")
                 if not oid or oid in seen:
                     continue
-                created = row.get("inserted_at") or row.get("created_at") or row.get("order_created_at")
+                created = row.get("inserted_at") or row.get("created_at")
                 dt = None
                 if created:
                     try:
@@ -604,36 +625,43 @@ def scan_pancake_shipping(env: dict[str, str], *, days: int, limit: int) -> dict
                         track = str(row.get(k))
                         break
                 partner = row.get("shop_partner_id") or row.get("partner_id")
-                buucuc = f"Pancake-partner:{partner}" if partner else "Pancake-partner"
-                orders.append(
-                    _norm_order(
-                        backend="Pancake",
-                        buucuc=buucuc,
-                        order_id=oid,
-                        tracking=track,
-                        status=str(row.get("status") or row.get("status_name") or ""),
-                        created_at=str(created) if created else None,
-                        shop_id=shop,
-                        customer_name=str(sa.get("full_name") or row.get("bill_full_name") or "") or None,
-                        customer_phone=str(sa.get("phone_number") or row.get("bill_phone_number") or "") or None,
-                        address=str(sa.get("full_address") or sa.get("address") or "") or None,
-                        province=str(sa.get("province_name") or "") or None,
-                        district=str(sa.get("district_name") or "") or None,
-                        ward=str(sa.get("commnue_name") or sa.get("commune_name") or "") or None,
-                        cod_amount=float(row["cod"]) if row.get("cod") is not None else None,
-                        extra={"partner_id": partner},
-                    )
+                wh = row.get("warehouse_info") if isinstance(row.get("warehouse_info"), dict) else {}
+                item = _norm_order(
+                    backend="Pancake",
+                    buucuc=f"Pancake-partner:{partner}" if partner else "Pancake-partner",
+                    order_id=oid,
+                    tracking=track,
+                    status=str(row.get("status_name") or row.get("status") or ""),
+                    created_at=str(created) if created else None,
+                    shop_id=shop,
+                    customer_name=str(sa.get("full_name") or row.get("bill_full_name") or "") or None,
+                    customer_phone=str(sa.get("phone_number") or row.get("bill_phone_number") or "") or None,
+                    address=str(sa.get("full_address") or sa.get("address") or "") or None,
+                    province=str(sa.get("province_name") or "") or None,
+                    district=str(sa.get("district_name") or "") or None,
+                    ward=str(sa.get("commnue_name") or sa.get("commune_name") or "") or None,
+                    cod_amount=float(row["cod"]) if row.get("cod") is not None else None,
+                    extra={"partner_id": partner, "warehouse": wh.get("name")},
                 )
+                item["warehouse_id"] = row.get("warehouse_id")
+                item["kho"] = wh.get("name")
+                orders.append(item)
                 if len(orders) >= limit:
                     break
-            if len(rows) < 50:
+            try:
+                last_dt = datetime.fromisoformat(
+                    str(rows[-1].get("inserted_at") or "").replace("Z", "+00:00")
+                ).replace(tzinfo=None)
+            except ValueError:
+                last_dt = None
+            if last_dt and last_dt < start:
                 break
             page += 1
 
     result["orders"] = orders[:limit]
     result["fetched"] = len(result["orders"])
     result["status"] = "ok" if result["fetched"] else "empty"
-    result["detail"] = f"Pancake shipping quét {result['fetched']} đơn / {days}d (shop={','.join(shop_ids)})"
+    result["detail"] = f"Pancake shipping quét {result['fetched']} đơn / {days}d (shops={len(shop_ids)})"
     return result
 
 
