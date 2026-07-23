@@ -21,3 +21,5 @@ __pycache__/
 *.pyc
 docker/nginx-order/logs/
 docker/nginx-order/tmp/
+
+docker/nginx-order/orders_local_cache.json
