@@ -202,6 +202,10 @@ def normalize_from_csv_row(r: dict, file_name: str) -> dict:
         "district": None,
         "channel": "direct_api" if "direct_api" in (r.get("source") or "") else "inbox_csv",
         "file": file_name,
+        "order_created_at": r.get("order_created_at"),
+        "synced_at": r.get("synced_at"),
+        "updated_at": r.get("updated_at"),
+        "created_at": r.get("order_created_at"),
     }
 
 
@@ -256,6 +260,10 @@ def normalize_from_json_order(o: dict, file_name: str) -> dict:
         "district": addr.get("district_name") or addr.get("district"),
         "channel": "pancake_payload" if p else "json_flat",
         "file": file_name,
+        "order_created_at": o.get("order_created_at") or p.get("inserted_at"),
+        "synced_at": o.get("synced_at"),
+        "updated_at": o.get("updated_at") or p.get("updated_at"),
+        "created_at": o.get("order_created_at") or p.get("inserted_at"),
     }
 
 
@@ -296,6 +304,12 @@ def normalize_from_thanhcoong(r: dict) -> dict:
         or r.get("Quận, huyện (cũ) / Phường, xã (mới)"),
         "channel": "spx_local",
         "file": "thanhcoong.xlsx",
+        "order_created_at": r.get("Create Time") or r.get("Thời gian tạo"),
+        "created_at": r.get("Create Time") or r.get("Thời gian tạo"),
+        "picked_at": r.get("Actual Pickup/Drop Off Time"),
+        "delivered_at": r.get("Delivered Time") or r.get("Thời gian giao"),
+        "synced_at": None,
+        "updated_at": r.get("Delivered Time") or r.get("Create Time"),
     }
 
 
