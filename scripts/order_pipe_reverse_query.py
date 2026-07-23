@@ -501,6 +501,7 @@ def reverse_chain_asumee(
     hop9_live: bool = False,
     hop9_apply: bool = False,
     hop9_limit: int = 40,
+    hop10_apply: bool = False,
 ) -> list[dict]:
     """Chuỗi truy vấn ngược đào sâu cho kho ASUMEE / UUID chính.
 
@@ -648,6 +649,9 @@ def reverse_chain_asumee(
                 apply=hop9_apply,
                 limit=hop9_limit,
             )
+        )
+        results.extend(
+            reverse_chain_asumee_hop10(conn, wid, apply=hop10_apply)
         )
 
     return results
@@ -2801,6 +2805,343 @@ def reverse_chain_asumee_hop9(
     return out
 
 
+def reverse_soft_gap_accept(
+    conn: sqlite3.Connection, wid: str, *, apply: bool = False
+) -> dict:
+    """Đánh dấu soft-gap: delivered có delivered_at nhưng∅picked_at (SPX hist thiếu pick)."""
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT van_tay, so_noi_bo, tracking_code, status, carrier, buucuc,
+                   picked_at, delivered_at, tracking_provider, province
+            FROM orders
+            WHERE warehouse_id = ?
+              AND status = 'delivered'
+              AND delivered_at IS NOT NULL AND delivered_at != ''
+              AND (picked_at IS NULL OR picked_at = '')
+            ORDER BY piped_at DESC
+            """,
+            (wid,),
+        )
+    ]
+    by_carrier: dict[str, int] = {}
+    for r in rows:
+        c = str(r.get("carrier") or "(none)")
+        by_carrier[c] = by_carrier.get(c, 0) + 1
+    applied = 0
+    if apply and rows:
+        for r in rows:
+            # chỉ ghi event 1 lần / van_tay
+            has = conn.execute(
+                """
+                SELECT 1 FROM pipe_events
+                WHERE van_tay = ? AND event = 'soft_gap_accept' LIMIT 1
+                """,
+                (r.get("van_tay"),),
+            ).fetchone()
+            if has:
+                continue
+            conn.execute(
+                "INSERT INTO pipe_events(at, event, van_tay, so_noi_bo, detail) VALUES (?,?,?,?,?)",
+                (
+                    utc_now(),
+                    "soft_gap_accept",
+                    r.get("van_tay"),
+                    r.get("so_noi_bo"),
+                    (
+                        f"PATH-ACCEPT|car={r.get('carrier')}|del={r.get('delivered_at')}|"
+                        f"pick=∅|trk={r.get('tracking_code')}"
+                    ),
+                ),
+            )
+            applied += 1
+        conn.commit()
+    return {
+        "query_type": "soft_gap_accept",
+        "query": wid,
+        "hit": bool(rows),
+        "count": len(rows),
+        "by_carrier": [
+            {"carrier": k, "n": v} for k, v in sorted(by_carrier.items(), key=lambda x: -x[1])
+        ],
+        "apply": apply,
+        "applied": applied,
+        "samples": rows[:12],
+        "path": (
+            f"soft_gap_accept n={len(rows)} apply={apply} applied={applied} "
+            f"by={by_carrier}"
+        ),
+        "unmask_map": {
+            "path_id": "PATH-ACCEPT",
+            "action": "accept_missing_pick_when_deliver_known_spx_no_histories",
+            "note": "Không bịa picked_at; soft gap chủ yếu Shopee Xpress",
+        },
+        "next": [
+            "Hard gap SPX ship/del không có timestamp — giữ PATH-MISSING",
+            "Submitted pancake-id chờ ship rồi hop7 lại",
+        ],
+    }
+
+
+def reverse_spx_marketplace_promote(
+    conn: sqlite3.Connection, wid: str, *, apply: bool = False
+) -> dict:
+    """Promote mã 26* (=so) → carrier/buucuc/provider/url SPX dù chưa có SPXVN."""
+    try:
+        from tracking_aship import build_tracking_url
+    except Exception as e:  # noqa: BLE001
+        return {
+            "query_type": "spx_marketplace_promote",
+            "query": wid,
+            "hit": False,
+            "error": str(e),
+            "path": "spx_marketplace_promote: module lỗi",
+        }
+
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT van_tay, so_noi_bo, tracking_code, status, carrier, buucuc,
+                   tracking_provider, tracking_url
+            FROM orders
+            WHERE warehouse_id = ?
+              AND tracking_code GLOB '26*' AND length(tracking_code) = 14
+            ORDER BY piped_at DESC
+            """,
+            (wid,),
+        )
+    ]
+    plan = []
+    applied = {"carrier": 0, "buucuc": 0, "provider": 0, "url": 0, "events": 0}
+    for r in rows:
+        code = str(r.get("tracking_code") or "")
+        url = build_tracking_url(code, provider="spx", tracking_code=code)
+        need_car = (r.get("carrier") or "Pancake") in {"", "Pancake", None} or r.get(
+            "carrier"
+        ) != "Shopee Xpress"
+        # only promote if not already fully SPX
+        need_buu = (r.get("buucuc") or "Pancake") in {"", "Pancake", None} or r.get(
+            "buucuc"
+        ) != "SPX"
+        need_prov = (r.get("tracking_provider") or "") != "spx"
+        need_url = not r.get("tracking_url") or "provider=spx" not in str(
+            r.get("tracking_url")
+        )
+        if not (need_car or need_buu or need_prov or need_url):
+            continue
+        item = {
+            "van_tay": r.get("van_tay"),
+            "so_noi_bo": r.get("so_noi_bo"),
+            "tracking_code": code,
+            "status": r.get("status"),
+            "carrier_old": r.get("carrier"),
+            "buucuc_old": r.get("buucuc"),
+            "url": url,
+        }
+        plan.append(item)
+        if apply:
+            vt = r.get("van_tay")
+            if need_car:
+                conn.execute(
+                    "UPDATE orders SET carrier = 'Shopee Xpress' WHERE van_tay = ?",
+                    (vt,),
+                )
+                applied["carrier"] += 1
+            if need_buu:
+                conn.execute(
+                    "UPDATE orders SET buucuc = 'SPX' WHERE van_tay = ?",
+                    (vt,),
+                )
+                applied["buucuc"] += 1
+            if need_prov:
+                conn.execute(
+                    "UPDATE orders SET tracking_provider = 'spx' WHERE van_tay = ?",
+                    (vt,),
+                )
+                applied["provider"] += 1
+            if need_url and url:
+                conn.execute(
+                    """
+                    UPDATE orders
+                    SET tracking_url = ?, tracking_ref = COALESCE(tracking_ref, ?)
+                    WHERE van_tay = ?
+                    """,
+                    (url, code, vt),
+                )
+                applied["url"] += 1
+            conn.execute(
+                "INSERT INTO pipe_events(at, event, van_tay, so_noi_bo, detail) VALUES (?,?,?,?,?)",
+                (
+                    utc_now(),
+                    "spx_marketplace_promote",
+                    vt,
+                    r.get("so_noi_bo"),
+                    f"26*=so|car→SPX|url=1|st={r.get('status')}",
+                ),
+            )
+            applied["events"] += 1
+    if apply and applied["events"]:
+        conn.commit()
+    return {
+        "query_type": "spx_marketplace_promote",
+        "query": wid,
+        "hit": bool(plan) or True,
+        "count": len(plan),
+        "scanned": len(rows),
+        "apply": apply,
+        "applied": applied,
+        "samples": plan[:12],
+        "path": (
+            f"spx_marketplace_promote candidates={len(plan)}/{len(rows)} "
+            f"apply={apply} applied={applied}"
+        ),
+        "unmask_map": {
+            "path_id": "PATH-CLEAR",
+            "note": "Mã 26* marketplace id dùng làm ref aship spx trước khi có SPXVN",
+        },
+        "next": [
+            "Khi ship, hop7 sẽ thay bằng SPXVN… nếu partner.extend_code khác",
+        ],
+    }
+
+
+def reverse_flow_completeness(conn: sqlite3.Connection, wid: str) -> dict:
+    """Điểm đầy đủ dòng chảy ASUMEE sau hop1–9."""
+    row = dict(
+        conn.execute(
+            """
+            SELECT
+              COUNT(*) AS orders,
+              SUM(CASE WHEN tracking_code IS NOT NULL AND tracking_code != ''
+                        AND tracking_code != so_noi_bo THEN 1 ELSE 0 END) AS trk_real,
+              SUM(CASE WHEN tracking_code GLOB '26*' AND length(tracking_code)=14
+                        THEN 1 ELSE 0 END) AS spx_market_id,
+              SUM(CASE WHEN ifnull(tracking_url,'') != '' THEN 1 ELSE 0 END) AS with_url,
+              SUM(CASE WHEN ifnull(picked_at,'') != '' THEN 1 ELSE 0 END) AS with_pick,
+              SUM(CASE WHEN ifnull(delivered_at,'') != '' THEN 1 ELSE 0 END) AS with_del,
+              SUM(CASE WHEN ifnull(district,'') != '' THEN 1 ELSE 0 END) AS with_district,
+              SUM(CASE WHEN ifnull(province,'') != '' THEN 1 ELSE 0 END) AS with_province,
+              SUM(CASE WHEN buucuc IN ('J&T','SPX','GHN') THEN 1 ELSE 0 END) AS with_3pl,
+              SUM(CASE WHEN buucuc = 'Pancake' THEN 1 ELSE 0 END) AS still_pancake
+            FROM orders WHERE warehouse_id = ?
+            """,
+            (wid,),
+        ).fetchone()
+    )
+    n = max(int(row.get("orders") or 1), 1)
+    scores = {
+        "trk_real_pct": round(100 * int(row.get("trk_real") or 0) / n, 1),
+        "url_pct": round(100 * int(row.get("with_url") or 0) / n, 1),
+        "pick_pct": round(100 * int(row.get("with_pick") or 0) / n, 1),
+        "del_pct": round(100 * int(row.get("with_del") or 0) / n, 1),
+        "district_pct": round(100 * int(row.get("with_district") or 0) / n, 1),
+        "three_pl_pct": round(100 * int(row.get("with_3pl") or 0) / n, 1),
+    }
+    return {
+        "query_type": "flow_completeness",
+        "query": wid,
+        "hit": True,
+        "count": row.get("orders"),
+        "fills": row,
+        "scores": scores,
+        "path": (
+            f"flow_completeness n={row.get('orders')} "
+            f"3pl={scores['three_pl_pct']}% url={scores['url_pct']}% "
+            f"pick={scores['pick_pct']}% del={scores['del_pct']}%"
+        ),
+        "unmask_map": {"path_id": "PATH-CLEAR"},
+        "next": [
+            "pancake_id submitted/canceled → chờ ship hoặc accept",
+            "soft_gap SPX → PATH-ACCEPT",
+        ],
+    }
+
+
+def reverse_chain_asumee_hop10(
+    conn: sqlite3.Connection, wid: str, *, apply: bool = False
+) -> list[dict]:
+    """Hop-10: soft-gap accept, promote SPX marketplace id, completeness, drill."""
+    out: list[dict] = []
+
+    out.append(reverse_flow_completeness(conn, wid))
+    out.append(reverse_hard_soft_gaps(conn, wid))
+
+    soft = reverse_soft_gap_accept(conn, wid, apply=apply)
+    out.append(soft)
+    for s in (soft.get("samples") or [])[:4]:
+        vt = s.get("van_tay")
+        tr = s.get("tracking_code")
+        if vt:
+            r = reverse_by_van_tay(conn, str(vt))
+            r["gap_cohort"] = "hop10_soft_accept"
+            out.append(r)
+        if tr:
+            r = reverse_by_tracking(conn, str(tr))
+            r["gap_cohort"] = "hop10_soft_accept"
+            out.append(r)
+
+    promo = reverse_spx_marketplace_promote(conn, wid, apply=apply)
+    out.append(promo)
+    for s in (promo.get("samples") or [])[:4]:
+        tr = s.get("tracking_code")
+        vt = s.get("van_tay")
+        if vt:
+            r = reverse_by_van_tay(conn, str(vt))
+            r["gap_cohort"] = "hop10_spx_market"
+            out.append(r)
+        if tr:
+            r = reverse_by_tracking(conn, str(tr))
+            r["gap_cohort"] = "hop10_spx_market"
+            out.append(r)
+
+    # Returning with real 3PL
+    out.append(reverse_by_status_warehouse(conn, wid, "returning", limit=12))
+    for (tr,) in conn.execute(
+        """
+        SELECT tracking_code FROM orders
+        WHERE warehouse_id = ? AND status = 'returning'
+          AND tracking_code IS NOT NULL AND tracking_code != so_noi_bo
+        ORDER BY piped_at DESC LIMIT 4
+        """,
+        (wid,),
+    ):
+        r = reverse_by_tracking(conn, str(tr))
+        r["gap_cohort"] = "hop10_returning"
+        out.append(r)
+
+    # Canceled pancake-id accept note
+    canceled_n = conn.execute(
+        """
+        SELECT COUNT(*) FROM orders
+        WHERE warehouse_id = ? AND status = 'canceled' AND tracking_code = so_noi_bo
+        """,
+        (wid,),
+    ).fetchone()[0]
+    out.append(
+        {
+            "query_type": "canceled_pancake_id",
+            "query": wid,
+            "hit": canceled_n > 0,
+            "count": canceled_n,
+            "path": f"canceled_pancake_id n={canceled_n} (thường không có 3PL)",
+            "unmask_map": {
+                "path_id": "PATH-ACCEPT",
+                "action": "accept_canceled_without_3pl_tracking",
+            },
+            "next": ["Canceled giữ order_id — không ép extend_code"],
+        }
+    )
+
+    out.append(reverse_3pl_completeness(conn, wid))
+    out.append(reverse_flow_completeness(conn, wid))
+    out.append(reverse_pipe_events_asumee(conn, wid))
+    out.append(reverse_tracking_classify(conn, wid))
+    out.append(reverse_hard_soft_gaps(conn, wid))
+    return out
+
+
 def reverse_chain_asumee_hop5(conn: sqlite3.Connection, wid: str) -> list[dict]:
     """Hop-5 ngược dòng: recover huyện, SPX-like URL, timeline trống, pipe_events."""
     out: list[dict] = []
@@ -4293,6 +4634,7 @@ def build_report(
     hop9_live: bool = False,
     hop9_apply: bool = False,
     hop9_limit: int = 40,
+    hop10_apply: bool = False,
 ) -> dict:
     from realtime_icon_feedback_mapper import chant, feedback_line, receive_fingerprint
 
@@ -4323,6 +4665,7 @@ def build_report(
                 hop9_live=hop9_live,
                 hop9_apply=hop9_apply,
                 hop9_limit=hop9_limit,
+                hop10_apply=hop10_apply,
             )
         )
 
@@ -4485,10 +4828,10 @@ def build_report(
         "index_stats": index_stats,
         "verdict": top_fb,
         "next_actions": [
+            "python3 scripts/order_pipe_reverse_query.py --continue-flow --hop10-apply",
+            "python3 scripts/order_pipe_reverse_query.py --hop7-apply --hop7-limit 200",
             "python3 scripts/order_pipe_reverse_query.py --continue-flow --hop9-live --hop9-apply --hop9-limit 40",
-            "python3 scripts/order_pipe_reverse_query.py --hop9-live --hop9-apply --hop9-limit 80",
             "python3 scripts/order_pipe_reverse_query.py --continue-flow --hop8-apply",
-            "python3 scripts/order_pipe_reverse_query.py --hop7-apply --hop7-limit 50",
             "python3 scripts/order_pipe_reverse_query.py --continue-asumee",
             "python3 scripts/order_pipe_reverse_query.py --kho ASUMEE",
             "python3 scripts/crypto_decode_assist.py --unmask",
@@ -4859,6 +5202,51 @@ def format_text(report: dict) -> str:
                     f"  · {m.get('buucuc')} → {m.get('province')}: n={m.get('orders')} "
                     f"pick={m.get('with_pick')} del={m.get('with_del')}"
                 )
+        if r.get("query_type") == "soft_gap_accept":
+            L(
+                f"  · soft={r.get('count')} apply={r.get('apply')} "
+                f"applied={r.get('applied')} by={r.get('by_carrier')}"
+            )
+            for s in (r.get("samples") or [])[:6]:
+                L(
+                    f"  · {s.get('so_noi_bo')} car={s.get('carrier')} "
+                    f"del={s.get('delivered_at') or '∅'} pick=∅ trk={s.get('tracking_code')}"
+                )
+            for n in r.get("next") or []:
+                L(f"    → {n}")
+        if r.get("query_type") == "spx_marketplace_promote":
+            L(
+                f"  · candidates={r.get('count')}/{r.get('scanned')} apply={r.get('apply')} "
+                f"applied={r.get('applied')}"
+            )
+            for s in (r.get("samples") or [])[:6]:
+                L(
+                    f"  · {s.get('so_noi_bo')} st={s.get('status')} "
+                    f"{s.get('carrier_old')}→SPX {s.get('buucuc_old')}→SPX "
+                    f"trk={s.get('tracking_code')}"
+                )
+            for n in r.get("next") or []:
+                L(f"    → {n}")
+        if r.get("query_type") == "flow_completeness":
+            sc = r.get("scores") or {}
+            fills = r.get("fills") or {}
+            L(
+                f"  · scores 3pl={sc.get('three_pl_pct')}% url={sc.get('url_pct')}% "
+                f"pick={sc.get('pick_pct')}% del={sc.get('del_pct')}% "
+                f"trk_real={sc.get('trk_real_pct')}% dist={sc.get('district_pct')}%"
+            )
+            L(
+                f"  · fills trk_real={fills.get('trk_real')} spx26={fills.get('spx_market_id')} "
+                f"url={fills.get('with_url')} pick={fills.get('with_pick')} "
+                f"del={fills.get('with_del')} 3pl={fills.get('with_3pl')} "
+                f"pancake={fills.get('still_pancake')}"
+            )
+            for n in r.get("next") or []:
+                L(f"    → {n}")
+        if r.get("query_type") == "canceled_pancake_id":
+            L(f"  · canceled_pancake_id n={r.get('count')}")
+            for n in r.get("next") or []:
+                L(f"    → {n}")
         if r.get("gap_cohort"):
             L(f"  · gap_cohort={r.get('gap_cohort')}")
         if r.get("count") and r.get("query_type") in {
@@ -4887,6 +5275,10 @@ def format_text(report: dict) -> str:
             "pancake_id_cohort",
             "pancake_id_backfill",
             "three_pl_province",
+            "soft_gap_accept",
+            "spx_marketplace_promote",
+            "flow_completeness",
+            "canceled_pancake_id",
         }:
             L(f"  · count={r.get('count')} status={r.get('status')}")
     if report.get("panorama_samples"):
@@ -4961,7 +5353,7 @@ def main() -> int:
     ap.add_argument(
         "--continue-flow",
         action="store_true",
-        help="Tiếp tục ngược dòng chảy ASUMEE deep+hop2…hop9",
+        help="Tiếp tục ngược dòng chảy ASUMEE deep+hop2…hop10",
     )
     ap.add_argument(
         "--hop6-live",
@@ -5032,6 +5424,11 @@ def main() -> int:
         default=40,
         help="Hop9: số đơn pancake-id live (default 40)",
     )
+    ap.add_argument(
+        "--hop10-apply",
+        action="store_true",
+        help="Hop10: soft-gap PATH-ACCEPT + promote SPX marketplace 26*",
+    )
     ap.add_argument("--buucuc")
     ap.add_argument("--province", help="Tỉnh/thành nhận")
     ap.add_argument("--address", help="Fragment địa chỉ / ward / huyện / tên nhận")
@@ -5047,6 +5444,7 @@ def main() -> int:
     hop8_probe = bool(args.hop8_probe)
     hop9_live = bool(args.hop9_live)
     hop9_apply = bool(args.hop9_apply)
+    hop10_apply = bool(args.hop10_apply)
 
     # Bật continue-flow nếu chỉ truyền cờ hop*
     if (
@@ -5059,6 +5457,7 @@ def main() -> int:
         or args.hop8_probe
         or args.hop9_live
         or args.hop9_apply
+        or args.hop10_apply
     ) and not (continue_flow or continue_asumee):
         continue_flow = True
 
@@ -5095,6 +5494,7 @@ def main() -> int:
         hop9_live=hop9_live,
         hop9_apply=hop9_apply,
         hop9_limit=int(args.hop9_limit or 40),
+        hop10_apply=hop10_apply,
     )
     write_outputs(report)
     if args.json:
