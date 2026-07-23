@@ -3227,10 +3227,10 @@ def reverse_returning_cohort(conn: sqlite3.Connection, wid: str) -> dict:
     for r in rows:
         tr = str(r.get("tracking_code") or "")
         so = str(r.get("so_noi_bo") or "")
-        if tr and tr == so:
+        if r.get("buucuc") == "SPX" or (tr.startswith("26") and len(tr) == 14):
+            kind = "spx_market_id" if tr == so else "spx"
+        elif tr and tr == so:
             kind = "pancake_id"
-        elif tr.startswith("SPX") or (r.get("buucuc") == "SPX"):
-            kind = "spx"
         else:
             kind = "other"
         by_kind[kind] = by_kind.get(kind, 0) + 1
