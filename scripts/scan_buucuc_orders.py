@@ -526,23 +526,62 @@ def scan_vnpost(env: dict[str, str], *, days: int, limit: int) -> dict[str, Any]
     return result
 
 
-def _pancake_tokens(env: dict[str, str]) -> list[dict[str, str]]:
-    """Primary + secondary + secrets/pancake_multi_accounts.json (owned)."""
+def _pancake_accounts(env: dict[str, str]) -> list[dict[str, str]]:
+    """Primary JWT + secondary JWT + multi JSON + owned api_key (ASUNMEE, …)."""
     out: list[dict[str, str]] = []
     seen: set[str] = set()
 
-    def add(token: str, *, name: str = "", uid: str = "") -> None:
+    def add(*, token: str = "", api_key: str = "", name: str = "", uid: str = "") -> None:
+        if api_key:
+            k = f"api:{api_key.strip()}"
+            if not api_key.strip() or k in seen:
+                return
+            seen.add(k)
+            out.append({"auth": "api_key", "token": "", "api_key": api_key.strip(), "name": name or "api_key", "uid": uid or ""})
+            return
         t = (token or "").strip()
         if not t or t in seen:
             return
         seen.add(t)
-        out.append({"token": t, "name": name or "", "uid": uid or ""})
+        out.append({"auth": "jwt", "token": t, "api_key": "", "name": name or "", "uid": uid or ""})
 
-    add(env.get("PANCAKE_POS_ACCESS_TOKEN") or "", name=env.get("PANCAKE_USER") or "")
-    add(
-        env.get("PANCAKE_POS_SECONDARY_ACCESS_TOKEN") or "",
-        name=env.get("PANCAKE_POS_SECONDARY_USER") or "secondary",
-    )
+    # Prefer names from multi-accounts for JWTs (PANCAKE_USER may bị ghi đè khi set api_key)
+    multi_path = SECRETS / "pancake_multi_accounts.json"
+    multi_by_tok: dict[str, dict] = {}
+    if multi_path.is_file():
+        try:
+            data = json.loads(multi_path.read_text(encoding="utf-8"))
+            for acc in data.get("accounts") or []:
+                if isinstance(acc, dict) and acc.get("token"):
+                    multi_by_tok[str(acc["token"])] = acc
+        except Exception:  # noqa: BLE001
+            pass
+
+    primary = (env.get("PANCAKE_POS_ACCESS_TOKEN") or "").strip()
+    if primary:
+        meta = multi_by_tok.get(primary) or {}
+        name = str(meta.get("name") or "").strip() or "primary"
+        uid = str(meta.get("uid") or "")
+        if name == "primary":
+            try:
+                import base64
+
+                pad = "=" * ((4 - len(primary.split(".")[1]) % 4) % 4)
+                payload = json.loads(base64.urlsafe_b64decode(primary.split(".")[1] + pad))
+                name = str(payload.get("name") or name).strip() or name
+                uid = str(payload.get("uid") or uid)
+            except Exception:  # noqa: BLE001
+                pass
+        add(token=primary, name=name, uid=uid)
+    secondary = (env.get("PANCAKE_POS_SECONDARY_ACCESS_TOKEN") or "").strip()
+    if secondary:
+        meta = multi_by_tok.get(secondary) or {}
+        add(
+            token=secondary,
+            name=str(meta.get("name") or env.get("PANCAKE_POS_SECONDARY_USER") or "secondary"),
+            uid=str(meta.get("uid") or ""),
+        )
+
     raw_multi = (env.get("PANCAKE_POS_ACCESS_TOKENS") or "").strip()
     if raw_multi:
         if raw_multi.startswith("["):
@@ -550,34 +589,38 @@ def _pancake_tokens(env: dict[str, str]) -> list[dict[str, str]]:
                 arr = json.loads(raw_multi)
                 for item in arr:
                     if isinstance(item, str):
-                        add(item)
+                        add(token=item)
                     elif isinstance(item, dict):
-                        add(str(item.get("token") or ""), name=str(item.get("name") or ""))
+                        add(
+                            token=str(item.get("token") or ""),
+                            api_key=str(item.get("api_key") or ""),
+                            name=str(item.get("name") or ""),
+                        )
             except json.JSONDecodeError:
                 pass
         else:
             for part in raw_multi.replace(";", ",").split(","):
-                add(part.strip())
+                add(token=part.strip())
 
-    multi_path = SECRETS / "pancake_multi_accounts.json"
-    if multi_path.is_file():
-        try:
-            data = json.loads(multi_path.read_text(encoding="utf-8"))
-            for acc in data.get("accounts") or []:
-                if isinstance(acc, dict):
-                    add(
-                        str(acc.get("token") or ""),
-                        name=str(acc.get("name") or ""),
-                        uid=str(acc.get("uid") or ""),
-                    )
-        except Exception:  # noqa: BLE001
-            pass
+    for tok, acc in multi_by_tok.items():
+        add(token=tok, name=str(acc.get("name") or ""), uid=str(acc.get("uid") or ""))
+
+    # Owned API keys (ASUNMEE …)
+    for key_name, user_name in (
+        ("PANCAKE_POS_API_KEY", env.get("PANCAKE_API_KEY_USER") or env.get("PANCAKE_USER") or "api_key"),
+        ("PANCAKE_API_KEY", env.get("PANCAKE_API_KEY_USER") or "api_key"),
+    ):
+        ak = (env.get(key_name) or "").strip()
+        if ak:
+            add(api_key=ak, name=str(user_name or "ASUNMEE"))
+
     return out
 
 
 def _scan_pancake_one(
     *,
-    token: str,
+    token: str = "",
+    api_key: str = "",
     account_name: str,
     days: int,
     limit: int,
@@ -586,18 +629,28 @@ def _scan_pancake_one(
     end: datetime,
     seen: set[str],
 ) -> tuple[list[dict], list[dict], dict[str, Any]]:
-    """Quét 1 pos_jwt → shops của đúng account đó (không trộn shop_id account khác)."""
+    """Quét 1 account (pos_jwt HOẶC api_key) → chỉ shops của account đó."""
     import requests
 
-    headers = {
-        "Accept": "application/json",
-        "Authorization": f"Bearer {token}",
-        "Cookie": f"pos_jwt={token}; pos_locale=vi",
+    headers = {"Accept": "application/json"}
+    params_auth: dict[str, Any] = {}
+    if api_key:
+        params_auth["api_key"] = api_key
+    elif token:
+        headers["Authorization"] = f"Bearer {token}"
+        headers["Cookie"] = f"pos_jwt={token}; pos_locale=vi"
+    else:
+        return [], [], {"account": account_name, "shops": [], "fetched": 0, "error": "missing auth"}
+
+    meta: dict[str, Any] = {
+        "account": account_name,
+        "auth": "api_key" if api_key else "jwt",
+        "shops": [],
+        "fetched": 0,
     }
-    meta: dict[str, Any] = {"account": account_name, "shops": [], "fetched": 0}
     attempts: list[dict] = []
     try:
-        sr = requests.get(f"{base}/shops", headers=headers, timeout=30)
+        sr = requests.get(f"{base}/shops", headers=headers, params=params_auth or None, timeout=30)
         attempts.append({"account": account_name, "url": f"{base}/shops", "http": sr.status_code})
         shops = (sr.json().get("shops") or []) if sr.ok else []
     except Exception as e:  # noqa: BLE001
@@ -612,7 +665,7 @@ def _scan_pancake_one(
     shop_ids = list(shop_meta.keys())
     meta["shops"] = [{"id": sid, "name": shop_meta[sid]} for sid in shop_ids]
     if not shop_ids:
-        meta["detail"] = "token ok nhưng 0 shop"
+        meta["detail"] = "token/api_key ok nhưng 0 shop"
         return [], attempts, meta
 
     orders: list[dict] = []
@@ -626,7 +679,7 @@ def _scan_pancake_one(
                 rr = requests.get(
                     f"{base}/shops/{shop}/orders",
                     headers=headers,
-                    params={"page_number": page, "page_size": page_size},
+                    params={**params_auth, "page_number": page, "page_size": page_size},
                     timeout=45,
                 )
             except Exception as e:  # noqa: BLE001
@@ -734,23 +787,10 @@ def scan_pancake_shipping(env: dict[str, str], *, days: int, limit: int) -> dict
         result["detail"] = f"requests: {e}"
         return result
 
-    tokens = _pancake_tokens(env)
-    if not tokens:
-        # fallback api_key path
-        try:
-            from pancake_pos_client import auth_ready, resolve_credentials
-        except Exception as e:  # noqa: BLE001
-            result["detail"] = f"pancake client: {e}"
-            return result
-        creds = resolve_credentials()
-        if not auth_ready(creds):
-            result["detail"] = "Thiếu PANCAKE_POS_API_KEY / Bearer — không quét shipping Pancake"
-            return result
-        if creds.get("access_token"):
-            tokens = [{"token": creds["access_token"], "name": "api", "uid": ""}]
-        else:
-            result["detail"] = "Chỉ có api_key — cần pos_jwt để quét multi-shop"
-            return result
+    accounts = _pancake_accounts(env)
+    if not accounts:
+        result["detail"] = "Thiếu PANCAKE_POS_ACCESS_TOKEN / PANCAKE_POS_API_KEY — không quét Pancake"
+        return result
 
     base = (env.get("PANCAKE_POS_BASE_URL") or "https://pos.pancake.vn/api/v1").rstrip("/")
     start, end = _window(days)
@@ -758,12 +798,13 @@ def scan_pancake_shipping(env: dict[str, str], *, days: int, limit: int) -> dict
 
     orders: list[dict] = []
     seen: set[str] = set()
-    for acc in tokens:
+    for acc in accounts:
         if len(orders) >= limit:
             break
         remaining = limit - len(orders)
         chunk, attempts, meta = _scan_pancake_one(
-            token=acc["token"],
+            token=acc.get("token") or "",
+            api_key=acc.get("api_key") or "",
             account_name=acc.get("name") or "pancake",
             days=days,
             limit=remaining,
@@ -776,6 +817,7 @@ def scan_pancake_shipping(env: dict[str, str], *, days: int, limit: int) -> dict
         result["accounts"].append(
             {
                 "name": meta.get("account"),
+                "auth": meta.get("auth") or acc.get("auth"),
                 "shops_n": len(meta.get("shops") or []),
                 "shops": meta.get("shops"),
                 "fetched": meta.get("fetched"),
@@ -789,7 +831,8 @@ def scan_pancake_shipping(env: dict[str, str], *, days: int, limit: int) -> dict
     result["fetched"] = len(result["orders"])
     result["status"] = "ok" if result["fetched"] else "empty"
     acc_bits = ", ".join(
-        f"{a.get('name')}={a.get('fetched')}@{a.get('shops_n')}shops" for a in result["accounts"]
+        f"{a.get('name')}({a.get('auth')})={a.get('fetched')}@{a.get('shops_n')}shops"
+        for a in result["accounts"]
     )
     result["detail"] = (
         f"Pancake multi-account quét {result['fetched']} đơn / {days}d "
