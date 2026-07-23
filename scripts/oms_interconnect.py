@@ -39,6 +39,7 @@ ENV_FILES = (
     SECRETS / "telegram.env",
     SECRETS / "backend_pipes.env",
     SECRETS / "pancake.env",
+    SECRETS / "order_session.env",
 )
 NS = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 
@@ -420,18 +421,48 @@ def probe_pancake(env: dict[str, str]) -> dict:
 
 
 def probe_ghn(env: dict[str, str]) -> dict:
-    token = (env.get("GHN_API_TOKEN") or "").strip()
+    token = (env.get("GHN_API_TOKEN") or env.get("GHN_TOKEN") or "").strip()
+    # Áp vai trò lấy đơn (list/search/detail) trước khi probe
+    roles_meta: dict[str, Any] = {}
+    try:
+        from ghn_order_endpoint_deep_mapper import apply_roles
+
+        applied = apply_roles(host="online-gateway.ghn.vn", ensure_token=False)
+        roles_meta = {
+            "fetch_roles": (applied.get("plan") or {}).get("fetch_roles"),
+            "endpoints_n": len((applied.get("plan") or {}).get("endpoints") or []),
+        }
+    except Exception as e:  # noqa: BLE001
+        roles_meta = {"error": str(e)[:80]}
+
     if not token:
-        return {"id": "ghn", "status": "missing_cred", "detail": "Thiếu GHN_API_TOKEN", "http": None}
-    url = "https://dev-online-gateway.ghn.vn/shiip/public-api/master-data/province"
-    code, _ = http_json(url, method="POST", headers={"Token": token, "Content-Type": "application/json"}, body=b"{}")
+        return {
+            "id": "ghn",
+            "status": "missing_cred",
+            "detail": f"Thiếu GHN_API_TOKEN · roles={roles_meta.get('fetch_roles')}",
+            "http": None,
+            "roles": roles_meta,
+        }
+    url = "https://online-gateway.ghn.vn/shiip/public-api/master-data/province"
+    code, _ = http_json(
+        url,
+        method="GET",
+        headers={"Token": token, "Content-Type": "application/json"},
+    )
     if code in (401, 403):
-        return {"id": "ghn", "status": "auth_fail", "detail": "Token GHN fail", "http": code}
+        return {
+            "id": "ghn",
+            "status": "auth_fail",
+            "detail": f"Token GHN fail · roles={roles_meta.get('fetch_roles')}",
+            "http": code,
+            "roles": roles_meta,
+        }
     return {
         "id": "ghn",
         "status": "connected" if code == 200 else "error",
-        "detail": f"province probe http={code}",
+        "detail": f"province probe http={code} · roles={roles_meta.get('fetch_roles')}",
         "http": code,
+        "roles": roles_meta,
     }
 
 
