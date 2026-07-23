@@ -396,22 +396,27 @@ def probe_telegram(env: dict[str, str]) -> dict:
 
 
 def probe_pancake(env: dict[str, str]) -> dict:
-    from pancake_pos_client import auth_ready, resolve_credentials
+    from pancake_pos_client import auth_ready, fetch_shop_orders, fetch_shops, resolve_credentials
 
-    creds = resolve_credentials()
-    # also honor env already loaded into os.environ by caller
+    creds = resolve_credentials(
+        api_key=env.get("PANCAKE_POS_API_KEY") or env.get("PANCAKE_API_KEY") or "",
+        access_token=env.get("PANCAKE_POS_ACCESS_TOKEN") or "",
+    )
     if not auth_ready(creds):
         return {"id": "pancake", "status": "missing_cred", "detail": "Thiếu PANCAKE_* key", "http": None}
-    shop = (env.get("PANCAKE_SHOP_ID") or env.get("PANCAKE_DEFAULT_SHOP_ID") or "1530618").strip()
+    shop = (env.get("PANCAKE_SHOP_ID") or env.get("PANCAKE_DEFAULT_SHOP_ID") or "").strip()
     try:
-        from pancake_pos_client import fetch_shop_orders
-
-        data, base = fetch_shop_orders(shop, creds, page=1, page_size=1)
-        n = len(data.get("data") or data.get("orders") or []) if isinstance(data, dict) else 0
+        shops, base = fetch_shops(creds, timeout=15)
+        if not shop and shops:
+            shop = str((shops[0] or {}).get("id") or "")
+        n = 0
+        if shop:
+            orders = fetch_shop_orders(creds, shop, base, params={"page_size": 1}, timeout=15)
+            n = len(orders)
         return {
             "id": "pancake",
             "status": "connected",
-            "detail": f"shop={shop} base={base} sample_orders={n}",
+            "detail": f"shop={shop or '?'} base={base} shops={len(shops)} sample_orders={n}",
             "http": 200,
         }
     except Exception as e:  # noqa: BLE001
