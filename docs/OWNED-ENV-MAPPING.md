@@ -41,11 +41,12 @@ row = apply_owned_mapping(order) # gắn owned_user / owned_ready khi mapper ch�
 
 ## Script đã nối
 
-- `realtime_order_sync.py` — load env overlay + gắn owned lên đơn mới
+- `realtime_order_sync.py` — load env overlay + gắn owned lên đơn mới + `ensure_tokens` trước mỗi vòng
+- `access_token_rotate.py` — đổi/refresh token rồi gọi đơn realtime (`docs/ACCESS-TOKEN-ROTATE.md`)
 - `oms_interconnect.py` — load env overlay
 - `telegram_inbox_today_mapper.py` — apply_owned_mapping từng đơn hôm nay
 
-Panel: **🔐 Owned·env map**
+Panel: **🔐 Owned·env map** · **🔑 Token·realtime**
 
 ## Safety
 

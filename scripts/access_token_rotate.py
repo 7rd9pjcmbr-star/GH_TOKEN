@@ -1,0 +1,640 @@
+#!/usr/bin/env python3
+"""Đổi / refresh access token để gọi đơn hàng realtime (owned-only).
+
+Hỗ trợ:
+  - set: ghi token mới vào secrets/backend_pipes.env
+  - refresh: ViettelPost Login(+ownerconnect) bằng USER/PASSWORD sở hữu
+  - ensure: kiểm tra token; refresh khi auth_fail (VTP) rồi dùng cho sync
+  - apply-realtime: ensure → realtime_order_sync --once
+
+Không đọc Acc_all/stealer dumps. Không dump-login.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+SECRETS = ROOT / "secrets"
+ENV_PATH = SECRETS / "backend_pipes.env"
+STATE_PATH = SECRETS / "access_tokens.state.json"
+REPORTS = ROOT / "reports" / "telegram-classify"
+
+# platform → env keys
+TOKEN_KEYS = {
+    "Pancake": "PANCAKE_POS_ACCESS_TOKEN",
+    "GHN": "GHN_API_TOKEN",
+    "ViettelPost": "VIETTELPOST_TOKEN",
+    "TPOS": "TPOS_ACCESS_TOKEN",
+    "Sapo": "SAPO_ACCESS_TOKEN",
+    "Nhanh": "NHANH_API_KEY",
+    "Shopee": "SHOPEE_ACCESS_TOKEN",
+    "SPX": "SPX_TOKEN",
+    "VNPost": "VNPOST_TOKEN",
+}
+USER_KEYS = {
+    "Pancake": "PANCAKE_USER",
+    "GHN": "GHN_USER",
+    "ViettelPost": "VIETTELPOST_USER",
+    "TPOS": "TPOS_USER",
+    "Sapo": "SAPO_USER",
+    "Nhanh": "NHANH_USER",
+    "Shopee": "SHOPEE_USER",
+    "SPX": "SPX_USER",
+    "VNPost": "VNPOST_USER",
+}
+SHOP_KEYS = {
+    "Pancake": "PANCAKE_SHOP_ID",
+    "GHN": "GHN_SHOP_ID",
+    "ViettelPost": "VIETTELPOST_SHOP_ID",
+    "TPOS": "TPOS_SHOP_ID",
+    "Sapo": "SAPO_STORE",
+    "Nhanh": "NHANH_BUSINESS_ID",
+    "Shopee": "SHOPEE_SHOP_ID",
+    "SPX": "SPX_SHOP_ID",
+    "VNPost": "VNPOST_CUSTOMER_CODE",
+}
+# alias API key cho Pancake (một số shop dùng api_key 32 ký tự thay Bearer)
+ALT_TOKEN_KEYS = {
+    "Pancake": ("PANCAKE_POS_API_KEY", "PANCAKE_API_KEY"),
+}
+
+PLATFORM_ALIASES = {
+    "pancake": "Pancake",
+    "ghn": "GHN",
+    "vtp": "ViettelPost",
+    "viettelpost": "ViettelPost",
+    "tpos": "TPOS",
+    "sapo": "Sapo",
+    "nhanh": "Nhanh",
+    "shopee": "Shopee",
+    "spx": "SPX",
+    "vnpost": "VNPost",
+}
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def mask(token: str | None) -> str | None:
+    if not token:
+        return None
+    t = str(token)
+    if len(t) <= 8:
+        return "*" * len(t)
+    return f"{t[:4]}…{t[-4:]}(len={len(t)})"
+
+
+def normalize_platform(name: str) -> str:
+    n = (name or "").strip()
+    if n in TOKEN_KEYS:
+        return n
+    return PLATFORM_ALIASES.get(n.lower(), n)
+
+
+def load_env() -> dict[str, str]:
+    from owned_credentials import env_overlay_from_owned, load_env as base_load
+
+    return env_overlay_from_owned(base_load())
+
+
+def load_state() -> dict:
+    if STATE_PATH.is_file():
+        try:
+            return json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            pass
+    return {"rotations": [], "platforms": {}}
+
+
+def save_state(state: dict) -> None:
+    SECRETS.mkdir(parents=True, exist_ok=True)
+    state["updated_at"] = utc_now()
+    STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def ensure_env_file() -> Path:
+    from owned_credentials import ensure_env_file as ensure
+
+    return ensure()
+
+
+def upsert_env_values(updates: dict[str, str], *, path: Path | None = None) -> Path:
+    """Ghi/ cập nhật key=value trong secrets/backend_pipes.env (giữ comment/thứ tự)."""
+    path = path or ensure_env_file()
+    text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    lines = text.splitlines()
+    keys_done = set()
+    out: list[str] = []
+    for line in lines:
+        raw = line
+        t = line.strip()
+        if t and not t.startswith("#") and "=" in t:
+            k = t.split("=", 1)[0].strip()
+            if k in updates:
+                val = updates[k]
+                # quote if spaces/special
+                if re.search(r'[\s#"\']', val):
+                    val = json.dumps(val, ensure_ascii=False)
+                out.append(f"{k}={val}")
+                keys_done.add(k)
+                continue
+        out.append(raw)
+    for k, v in updates.items():
+        if k in keys_done:
+            continue
+        val = v
+        if re.search(r'[\s#"\']', val):
+            val = json.dumps(val, ensure_ascii=False)
+        out.append(f"{k}={val}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return path
+
+
+def http_json(
+    url: str,
+    *,
+    method: str = "GET",
+    headers: dict | None = None,
+    body: bytes | None = None,
+    timeout: int = 25,
+) -> tuple[int, Any]:
+    req = urllib.request.Request(url, data=body, headers=headers or {}, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+            code = resp.status
+    except urllib.error.HTTPError as e:
+        code = e.code
+        raw = e.read() if e.fp else b""
+    except Exception as e:  # noqa: BLE001
+        return 0, {"error": str(e)[:200]}
+    try:
+        return code, json.loads(raw.decode("utf-8", errors="replace") or "null")
+    except json.JSONDecodeError:
+        return code, {"raw": raw[:200].decode("utf-8", errors="replace")}
+
+
+def extract_token_from_body(body: Any) -> str | None:
+    if not isinstance(body, dict):
+        return None
+    # common shapes
+    for k in ("token", "Token", "access_token", "accessToken", "data"):
+        v = body.get(k)
+        if isinstance(v, str) and len(v) >= 16:
+            return v.strip()
+        if isinstance(v, dict):
+            for kk in ("token", "Token", "access_token", "accessToken"):
+                vv = v.get(kk)
+                if isinstance(vv, str) and len(vv) >= 16:
+                    return vv.strip()
+    return None
+
+
+# —— set / rotate ————————————————————————————
+
+
+def set_access_token(
+    platform: str,
+    token: str,
+    *,
+    user: str | None = None,
+    shop_id: str | None = None,
+    as_api_key: bool = False,
+) -> dict:
+    """Đổi access token sở hữu → secrets/backend_pipes.env."""
+    plat = normalize_platform(platform)
+    if plat not in TOKEN_KEYS:
+        return {"ok": False, "error": f"platform không hỗ trợ: {platform}", "supported": list(TOKEN_KEYS)}
+    token = (token or "").strip()
+    if not token:
+        return {"ok": False, "error": "token trống"}
+
+    updates: dict[str, str] = {}
+    if as_api_key and plat == "Pancake":
+        updates["PANCAKE_POS_API_KEY"] = token
+    else:
+        updates[TOKEN_KEYS[plat]] = token
+        # pancake: cũng set ACCESS_TOKEN canonical
+        if plat == "Pancake":
+            updates["PANCAKE_POS_ACCESS_TOKEN"] = token
+
+    if user:
+        updates[USER_KEYS[plat]] = user.strip()
+    if shop_id:
+        updates[SHOP_KEYS[plat]] = str(shop_id).strip()
+
+    path = upsert_env_values(updates)
+    st = load_state()
+    st.setdefault("platforms", {})[plat] = {
+        "token_masked": mask(token),
+        "user": user,
+        "shop_id": shop_id,
+        "updated_at": utc_now(),
+        "source": "set_access_token",
+    }
+    st.setdefault("rotations", []).append(
+        {
+            "at": utc_now(),
+            "platform": plat,
+            "action": "set",
+            "token_masked": mask(token),
+        }
+    )
+    st["rotations"] = st["rotations"][-50:]
+    save_state(st)
+    return {
+        "ok": True,
+        "platform": plat,
+        "env_file": str(path),
+        "token_key": TOKEN_KEYS[plat],
+        "token_masked": mask(token),
+        "user": user,
+        "shop_id": shop_id,
+        "checked_at": utc_now(),
+        "verdict": f"✅ Đã đổi access token {plat} → {path.name}",
+        "next": [
+            "python3 scripts/realtime_order_sync.py --once",
+            "python3 scripts/access_token_rotate.py status",
+        ],
+    }
+
+
+# —— refresh per platform ————————————————————
+
+
+def refresh_viettelpost(env: dict[str, str] | None = None) -> dict:
+    """Login owned USER/PASSWORD → lấy token mới → ghi env."""
+    env = env or load_env()
+    user = (env.get("VIETTELPOST_USER") or "").strip()
+    password = (env.get("VIETTELPOST_PASSWORD") or "").strip()
+    if not user or not password:
+        return {
+            "ok": False,
+            "platform": "ViettelPost",
+            "error": "Thiếu VIETTELPOST_USER + VIETTELPOST_PASSWORD sở hữu",
+            "hint": "Điền secrets/backend_pipes.env rồi chạy lại refresh",
+        }
+
+    # 1) Login → token tạm
+    code, body = http_json(
+        "https://partner.viettelpost.vn/v2/user/Login",
+        method="POST",
+        headers={"Content-Type": "application/json"},
+        body=json.dumps({"USERNAME": user, "PASSWORD": password}).encode(),
+    )
+    token = extract_token_from_body(body)
+    if code not in (200, 201) or not token:
+        return {
+            "ok": False,
+            "platform": "ViettelPost",
+            "step": "Login",
+            "http": code,
+            "error": "Login không trả token",
+            "body_keys": list(body.keys()) if isinstance(body, dict) else type(body).__name__,
+        }
+
+    # 2) ownerconnect → token dài hạn (nếu API hỗ trợ)
+    code2, body2 = http_json(
+        "https://partner.viettelpost.vn/v2/user/ownerconnect",
+        method="POST",
+        headers={"Content-Type": "application/json", "Token": token},
+        body=json.dumps({"USERNAME": user, "PASSWORD": password}).encode(),
+    )
+    long_token = extract_token_from_body(body2) or token
+    used_step = "ownerconnect" if extract_token_from_body(body2) else "Login"
+
+    result = set_access_token("ViettelPost", long_token, user=user)
+    result["refresh"] = {
+        "login_http": code,
+        "ownerconnect_http": code2,
+        "step_used": used_step,
+        "token_masked": mask(long_token),
+    }
+    result["verdict"] = f"✅ Refresh ViettelPost token via {used_step}"
+    return result
+
+
+def probe_token(platform: str, env: dict[str, str] | None = None) -> dict:
+    """Probe nhẹ token hiện tại (không đổi)."""
+    env = env or load_env()
+    plat = normalize_platform(platform)
+    if plat == "GHN":
+        token = (env.get("GHN_API_TOKEN") or "").strip()
+        if not token:
+            return {"ok": False, "platform": plat, "status": "missing_cred"}
+        code, _ = http_json(
+            "https://online-gateway.ghn.vn/shiip/public-api/v2/shipping-order/available-services",
+            method="POST",
+            headers={"Token": token, "Content-Type": "application/json"},
+            body=b"{}",
+        )
+        status = "auth_fail" if code in (401, 403) else ("ok" if code else "error")
+        return {"ok": status == "ok", "platform": plat, "status": status, "http": code}
+    if plat == "ViettelPost":
+        token = (env.get("VIETTELPOST_TOKEN") or "").strip()
+        if not token:
+            return {"ok": False, "platform": plat, "status": "missing_cred"}
+        code, _ = http_json(
+            "https://partner.viettelpost.vn/v2/order/trackingOrder",
+            method="POST",
+            headers={"Token": token, "Content-Type": "application/json"},
+            body=json.dumps({"orderNumber": "OMS-PING"}).encode(),
+        )
+        status = "auth_fail" if code in (401, 403) else ("ok" if code else "error")
+        return {"ok": status == "ok", "platform": plat, "status": status, "http": code}
+    if plat == "Pancake":
+        from pancake_pos_client import auth_ready, fetch_shops, resolve_credentials
+
+        creds = resolve_credentials(
+            api_key=env.get("PANCAKE_POS_API_KEY") or "",
+            access_token=env.get("PANCAKE_POS_ACCESS_TOKEN") or "",
+        )
+        if not auth_ready(creds):
+            return {"ok": False, "platform": plat, "status": "missing_cred"}
+        try:
+            shops, base = fetch_shops(creds, timeout=15)
+            return {
+                "ok": True,
+                "platform": plat,
+                "status": "ok",
+                "shops": len(shops),
+                "base": base,
+            }
+        except Exception as e:  # noqa: BLE001
+            msg = str(e)
+            status = "auth_fail" if any(x in msg for x in ("401", "403", "Unauthorized")) else "error"
+            return {"ok": False, "platform": plat, "status": status, "error": msg[:160]}
+    if plat == "TPOS":
+        base = (env.get("TPOS_BASE_URL") or "").rstrip("/")
+        token = (env.get("TPOS_ACCESS_TOKEN") or "").strip()
+        if not base or not token:
+            return {"ok": False, "platform": plat, "status": "missing_cred"}
+        code, _ = http_json(f"{base}/odata", headers={"Authorization": f"Bearer {token}"})
+        status = "auth_fail" if code in (401, 403) else ("ok" if code else "error")
+        return {"ok": status == "ok", "platform": plat, "status": status, "http": code}
+    token_key = TOKEN_KEYS.get(plat)
+    has = bool(token_key and (env.get(token_key) or "").strip())
+    return {
+        "ok": has,
+        "platform": plat,
+        "status": "present" if has else "missing_cred",
+        "note": "Chưa có probe realtime — dùng set thủ công",
+    }
+
+
+def ensure_tokens(*, platforms: list[str] | None = None, auto_refresh_vtp: bool = True) -> dict:
+    """Đảm bảo token sẵn sàng trước khi sync realtime."""
+    env = load_env()
+    plats = platforms or ["Pancake", "GHN", "ViettelPost", "TPOS"]
+    results = []
+    refreshed = []
+    for p in plats:
+        plat = normalize_platform(p)
+        probe = probe_token(plat, env)
+        entry = {"platform": plat, "probe": probe}
+        if (
+            auto_refresh_vtp
+            and plat == "ViettelPost"
+            and probe.get("status") in {"auth_fail", "missing_cred"}
+            and (env.get("VIETTELPOST_USER") and env.get("VIETTELPOST_PASSWORD"))
+        ):
+            ref = refresh_viettelpost(env)
+            entry["refresh"] = {
+                "ok": ref.get("ok"),
+                "verdict": ref.get("verdict") or ref.get("error"),
+                "token_masked": (ref.get("refresh") or {}).get("token_masked") or ref.get("token_masked"),
+            }
+            if ref.get("ok"):
+                refreshed.append(plat)
+                env = load_env()  # reload
+                entry["probe_after"] = probe_token(plat, env)
+        results.append(entry)
+
+    ready = [
+        r["platform"]
+        for r in results
+        if (r.get("probe_after") or r.get("probe") or {}).get("ok")
+        or (r.get("probe_after") or r.get("probe") or {}).get("status") in {"ok", "present"}
+    ]
+    return {
+        "ok": True,
+        "checked_at": utc_now(),
+        "results": results,
+        "ready_platforms": ready,
+        "refreshed": refreshed,
+        "verdict": (
+            f"✅ Token sẵn sàng: {', '.join(ready) or '(chưa)'}"
+            + (f" · refreshed={refreshed}" if refreshed else "")
+        ),
+        "policy": {"owned_only": True, "no_dump_login": True},
+    }
+
+
+def apply_realtime(*, limit: int = 20, notify: bool = False) -> dict:
+    """ensure tokens → chạy realtime_order_sync một vòng."""
+    ensure = ensure_tokens()
+    from realtime_order_sync import load_env as sync_load_env, run_cycle
+
+    env = sync_load_env()
+    cycle = run_cycle(env, limit=limit, notify=notify, notify_new_only=False)
+    return {
+        "ok": bool(cycle.get("ok")),
+        "checked_at": utc_now(),
+        "ensure": ensure,
+        "cycle": {
+            "new_count": cycle.get("new_count"),
+            "owned": cycle.get("owned"),
+            "blocked": cycle.get("blocked"),
+            "backends": [
+                {
+                    "backend": b.get("backend"),
+                    "status": b.get("status"),
+                    "detail": (b.get("detail") or "")[:120],
+                }
+                for b in (cycle.get("backends") or [])
+            ],
+        },
+        "verdict": (
+            f"✅ apply-realtime · new={cycle.get('new_count')} · "
+            f"ready={ensure.get('ready_platforms')} · refreshed={ensure.get('refreshed')}"
+        ),
+    }
+
+
+def status() -> dict:
+    env = load_env()
+    st = load_state()
+    platforms = {}
+    for plat, key in TOKEN_KEYS.items():
+        tok = (env.get(key) or "").strip()
+        user = (env.get(USER_KEYS[plat]) or "").strip() or None
+        shop = (env.get(SHOP_KEYS[plat]) or "").strip() or None
+        platforms[plat] = {
+            "token_key": key,
+            "token_set": bool(tok),
+            "token_masked": mask(tok) if tok else None,
+            "user": user,
+            "shop_id": shop,
+            "state": (st.get("platforms") or {}).get(plat),
+        }
+    ready = [p for p, info in platforms.items() if info["token_set"]]
+    return {
+        "ok": True,
+        "module": "access_token_rotate",
+        "checked_at": utc_now(),
+        "env_file": str(ENV_PATH),
+        "platforms": platforms,
+        "recent_rotations": (st.get("rotations") or [])[-10:],
+        "verdict": (
+            f"✅ Có token: {', '.join(ready)}"
+            if ready
+            else "⚠ Chưa có access token — dùng set/refresh"
+        ),
+        "cli": {
+            "set": "python3 scripts/access_token_rotate.py set --platform GHN --token YOUR_TOKEN",
+            "refresh_vtp": "python3 scripts/access_token_rotate.py refresh --platform ViettelPost",
+            "ensure": "python3 scripts/access_token_rotate.py ensure",
+            "realtime": "python3 scripts/access_token_rotate.py apply-realtime",
+        },
+    }
+
+
+def format_text(report: dict) -> str:
+    lines: list[str] = []
+    L = lines.append
+    L("🔑 ACCESS TOKEN ROTATE · GỌI ĐƠN REALTIME")
+    L(f"Lúc: {report.get('checked_at') or utc_now()}")
+    L(report.get("verdict") or "")
+    if report.get("platform"):
+        L(f"platform={report.get('platform')} token={report.get('token_masked')}")
+    if report.get("env_file"):
+        L(f"env: {report.get('env_file')}")
+    if report.get("platforms"):
+        L("")
+        for plat, info in report["platforms"].items():
+            mark = "✅" if info.get("token_set") else "·"
+            L(
+                f"{mark} {plat}: token={info.get('token_masked')} "
+                f"user={info.get('user')} shop={info.get('shop_id')}"
+            )
+    if report.get("results"):
+        L("")
+        for r in report["results"]:
+            probe = r.get("probe_after") or r.get("probe") or {}
+            L(f"· {r.get('platform')}: status={probe.get('status')} http={probe.get('http')}")
+            if r.get("refresh"):
+                L(f"  refresh: {r['refresh']}")
+    if report.get("cycle"):
+        c = report["cycle"]
+        L("")
+        L(f"realtime new={c.get('new_count')} blocked={c.get('blocked')}")
+        for b in c.get("backends") or []:
+            L(f"  - {b.get('backend')}: {b.get('status')} · {b.get('detail')}")
+    if report.get("cli"):
+        L("")
+        L("CLI:")
+        for k, v in report["cli"].items():
+            L(f"· {k}: {v}")
+    if report.get("next"):
+        for n in report["next"]:
+            L(f"· {n}")
+    L("")
+    L("Safety: owned-only · no dump-login · secrets gitignored")
+    return "\n".join(lines)
+
+
+def write_outputs(report: dict) -> dict[str, Path]:
+    REPORTS.mkdir(parents=True, exist_ok=True)
+    paths = {
+        "json": REPORTS / "access_token_rotate.json",
+        "txt": REPORTS / "access_token_rotate.txt",
+    }
+    paths["json"].write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    paths["txt"].write_text(format_text(report), encoding="utf-8")
+    return paths
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="Đổi/refresh access token gọi đơn realtime")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p_set = sub.add_parser("set", help="Ghi access token sở hữu vào env")
+    p_set.add_argument("--platform", required=True)
+    p_set.add_argument("--token", required=True)
+    p_set.add_argument("--user", default="")
+    p_set.add_argument("--shop-id", default="")
+    p_set.add_argument("--as-api-key", action="store_true", help="Pancake: lưu vào PANCAKE_POS_API_KEY")
+
+    p_ref = sub.add_parser("refresh", help="Refresh token (ViettelPost Login owned)")
+    p_ref.add_argument("--platform", default="ViettelPost")
+
+    sub.add_parser("ensure", help="Probe + auto-refresh VTP nếu cần")
+    sub.add_parser("status", help="Trạng thái token trong env")
+
+    p_rt = sub.add_parser("apply-realtime", help="ensure → sync đơn realtime")
+    p_rt.add_argument("--limit", type=int, default=20)
+    p_rt.add_argument("--notify", action="store_true")
+
+    p_probe = sub.add_parser("probe", help="Probe một platform")
+    p_probe.add_argument("--platform", required=True)
+
+    ap.add_argument("--json", action="store_true")
+    args = ap.parse_args(argv)
+
+    if args.cmd == "set":
+        report = set_access_token(
+            args.platform,
+            args.token,
+            user=args.user or None,
+            shop_id=args.shop_id or None,
+            as_api_key=args.as_api_key,
+        )
+    elif args.cmd == "refresh":
+        plat = normalize_platform(args.platform)
+        if plat != "ViettelPost":
+            report = {
+                "ok": False,
+                "error": f"refresh tự động hiện hỗ trợ ViettelPost; {plat} dùng: set --token",
+                "checked_at": utc_now(),
+            }
+        else:
+            report = refresh_viettelpost()
+    elif args.cmd == "ensure":
+        report = ensure_tokens()
+    elif args.cmd == "apply-realtime":
+        report = apply_realtime(limit=args.limit, notify=args.notify)
+    elif args.cmd == "probe":
+        report = probe_token(args.platform)
+        report["checked_at"] = utc_now()
+        report["verdict"] = f"probe {report.get('platform')}: {report.get('status')}"
+    else:
+        report = status()
+
+    write_outputs(report)
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+    else:
+        print(format_text(report))
+    return 0 if report.get("ok", True) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

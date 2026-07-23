@@ -495,6 +495,12 @@ def format_cycle(cycle: dict) -> str:
         lines.append(f"Owned env: {owned.get('verdict')}")
         lines.append(f"ready_platforms={owned.get('ready_platforms')} accounts={owned.get('total_accounts')}")
         lines.append("")
+    te = cycle.get("token_ensure") or {}
+    if te:
+        lines.append(f"Access token: {te.get('verdict')}")
+        if te.get("refreshed"):
+            lines.append(f"refreshed={te.get('refreshed')}")
+        lines.append("")
     for b in cycle.get("backends") or []:
         lines.append(
             f"· {b['backend']}: {b.get('status')} · new={len(b.get('new_orders') or [])} · {b.get('detail','')[:100]}"
@@ -516,6 +522,16 @@ def format_cycle(cycle: dict) -> str:
 
 
 def run_cycle(env: dict[str, str], limit: int, notify: bool, notify_new_only: bool) -> dict:
+    token_ensure: dict = {"ok": False, "skipped": True}
+    try:
+        from access_token_rotate import ensure_tokens
+
+        # Probe + auto-refresh ViettelPost khi auth_fail/missing (owned USER/PASSWORD).
+        token_ensure = ensure_tokens(auto_refresh_vtp=True)
+        env = load_env()  # reload sau refresh
+    except Exception as e:  # noqa: BLE001
+        token_ensure = {"ok": False, "error": str(e)[:160]}
+
     try:
         from owned_credentials import apply_owned_mapping, mapping_summary
 
@@ -563,6 +579,11 @@ def run_cycle(env: dict[str, str], limit: int, notify: bool, notify_new_only: bo
     cycle = {
         "ok": True,
         "checked_at": utc_now(),
+        "token_ensure": {
+            "ready_platforms": token_ensure.get("ready_platforms") or [],
+            "refreshed": token_ensure.get("refreshed") or [],
+            "verdict": token_ensure.get("verdict") or token_ensure.get("error"),
+        },
         "owned": {
             "ready_platforms": owned.get("ready_platforms") or [],
             "total_accounts": owned.get("total_accounts"),
