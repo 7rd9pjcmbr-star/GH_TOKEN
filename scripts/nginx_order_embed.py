@@ -431,6 +431,9 @@ class NginxOrderEmbed:
             payload["platforms"] = platforms
         return self.call_json("/v1/token/ensure", method="POST", payload=payload, ensure=ensure)
 
+    def owned_fill(self, payload: dict[str, Any], *, ensure: bool = True) -> dict:
+        return self.call_json("/v1/owned/fill", method="POST", payload=payload, ensure=ensure)
+
     def orders_realtime(self, *, limit: int = 20, notify: bool = False, ensure: bool = True) -> dict:
         """Pipeline: nginx → access_token_rotate → danh sách đơn realtime."""
         return self.call_json(

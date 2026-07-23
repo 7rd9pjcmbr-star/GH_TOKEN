@@ -185,6 +185,75 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200 if report.get("ok") else 400, report)
             return
 
+        if path == "/v1/owned/fill":
+            # Nhúng shop_id / user / extras / token sở hữu → secrets (owned-only)
+            from access_token_rotate import (
+                SHOP_KEYS,
+                TOKEN_KEYS,
+                USER_KEYS,
+                normalize_platform,
+                set_access_token,
+                upsert_env_values,
+            )
+
+            plat = normalize_platform(str(payload.get("platform") or ""))
+            updates: dict[str, str] = {}
+            extras = payload.get("extras") if isinstance(payload.get("extras"), dict) else {}
+            for k, v in extras.items():
+                if not isinstance(k, str):
+                    continue
+                key = k.strip().upper()
+                if not key or not isinstance(v, (str, int)):
+                    continue
+                # chặn password-like keys
+                if any(x in key for x in ("PASS", "SECRET", "COOKIE", "PRIVATE")):
+                    continue
+                updates[key] = str(v).strip()
+
+            user = str(payload["user"]).strip() if payload.get("user") else None
+            shop_id = str(payload["shop_id"]).strip() if payload.get("shop_id") else None
+            token = str(payload["token"]).strip() if payload.get("token") else None
+
+            if plat and plat in USER_KEYS and user:
+                updates[USER_KEYS[plat]] = user
+            if plat and plat in SHOP_KEYS and shop_id:
+                updates[SHOP_KEYS[plat]] = shop_id
+
+            token_result = None
+            if plat and token and plat in TOKEN_KEYS:
+                token_result = set_access_token(
+                    plat,
+                    token,
+                    user=user,
+                    shop_id=shop_id,
+                    as_api_key=bool(payload.get("as_api_key")),
+                )
+            elif updates:
+                path_env = upsert_env_values(updates)
+                token_result = {
+                    "ok": True,
+                    "env_file": str(path_env),
+                    "updates": sorted(updates.keys()),
+                    "platform": plat or None,
+                }
+            else:
+                token_result = {"ok": False, "error": "không có field owned để fill"}
+
+            report = {
+                "ok": bool(token_result.get("ok")),
+                "via": "nginx→upstream→owned.fill→secrets",
+                "platform": plat or None,
+                "filled_keys": sorted(updates.keys())
+                + ([TOKEN_KEYS[plat]] if plat and token and plat in TOKEN_KEYS else []),
+                "shop_id": shop_id,
+                "user": user,
+                "token_set": bool(token),
+                "result": token_result,
+                "policy": {"owned_only": True, "no_dump_login": True},
+            }
+            self._send(200 if report["ok"] else 400, report)
+            return
+
         if path == "/v1/token/refresh":
             from access_token_rotate import normalize_platform, refresh_viettelpost
 

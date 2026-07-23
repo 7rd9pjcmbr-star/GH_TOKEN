@@ -176,6 +176,7 @@ def panel_keyboard() -> dict:
             [
                 {"text": "🔐 Owned·env map", "callback_data": "q:owned_env"},
                 {"text": "🔑 Token·realtime", "callback_data": "q:token_rotate"},
+                {"text": "📥 Embed·fill secrets", "callback_data": "q:embed_fill"},
             ],
             [
                 {"text": "🔎 Audit·token inbox", "callback_data": "q:secrets_audit"},
@@ -690,6 +691,23 @@ def fmt_token_rotate(_a: dict | None = None) -> str:
         )
 
 
+def fmt_embed_fill(_a: dict | None = None) -> str:
+    try:
+        from nginx_embed_order_secrets_fill import format_text, run_pipeline, write_outputs
+
+        report = run_pipeline(rescan_audit=True, keep=False)
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "nginx_embed_order_secrets_fill.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Embed fill secrets lỗi: {e}\n"
+            "Chạy: python3 scripts/nginx_embed_order_secrets_fill.py"
+        )
+
+
 def fmt_urls(_a: dict | None = None) -> str:
     path = ROOT / "reports" / "telegram-classify" / "url_paths_expanded.txt"
     alt = ROOT / "reports" / "telegram-classify" / "url_paths_expanded.json"
@@ -791,6 +809,7 @@ HANDLERS = {
     "q:ngx_order": fmt_ngx_order,
     "q:owned_env": fmt_owned_env,
     "q:token_rotate": fmt_token_rotate,
+    "q:embed_fill": fmt_embed_fill,
     "q:secrets_audit": fmt_secrets_audit,
 }
 
@@ -867,6 +886,7 @@ def main() -> int:
         "q:ngx_order",
         "q:owned_env",
         "q:token_rotate",
+        "q:embed_fill",
         "q:secrets_audit",
     ]:
         send(
@@ -902,6 +922,7 @@ def main() -> int:
                 "q:ngx_order",
                 "q:owned_env",
                 "q:token_rotate",
+                "q:embed_fill",
                 "q:secrets_audit",
             }
             else None,
