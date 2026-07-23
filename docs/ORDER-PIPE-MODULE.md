@@ -79,6 +79,10 @@ report = rf.pipeline.run(
 # Toàn pipeline (offline an toàn)
 python3 -m order_pipe --run
 
+# Lấy đơn + hỗ trợ unmask
+python3 -m order_pipe --fetch-orders --limit 80
+python3 -m order_pipe --unmask-assist --sample-limit 20
+
 # Chỉ đóng sổ + PATH-WAIT
 python3 -m order_pipe --stages close --apply
 

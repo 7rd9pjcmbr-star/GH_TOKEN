@@ -136,6 +136,10 @@ python3 -m order_pipe --run
 # hoặc
 python3 scripts/order_pipe_module.py --stages seed,close
 
+# lấy đơn + hỗ trợ unmask (owned secrets)
+PYTHONPATH=scripts python3 -m order_pipe --fetch-orders --limit 80
+PYTHONPATH=scripts python3 -m order_pipe --unmask-assist --sample-limit 20
+
 # live enrich (owned key)
 python3 -m order_pipe --stages enrich,waiting --live --apply --limit 40
 
