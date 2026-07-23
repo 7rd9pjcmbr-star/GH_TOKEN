@@ -130,7 +130,10 @@ def panel_keyboard() -> dict:
                 {"text": "🔌 Pipe backend", "callback_data": "q:pipes"},
                 {"text": "⏱ Realtime đơn", "callback_data": "q:realtime"},
             ],
-            [{"text": "🔁 Làm mới phân tích", "callback_data": "q:refresh"}],
+            [
+                {"text": "🌐 URL mở rộng", "callback_data": "q:urls"},
+                {"text": "🔁 Làm mới phân tích", "callback_data": "q:refresh"},
+            ],
         ]
     }
 
@@ -286,6 +289,28 @@ def fmt_realtime(_a: dict | None = None) -> str:
         return f"Realtime lỗi: {e}\nChạy: python3 scripts/realtime_order_sync.py --once --notify"
 
 
+def fmt_urls(_a: dict | None = None) -> str:
+    path = ROOT / "reports" / "telegram-classify" / "url_paths_expanded.txt"
+    alt = ROOT / "reports" / "telegram-classify" / "url_paths_expanded.json"
+    if path.is_file():
+        text = path.read_text(encoding="utf-8")
+        return text[:3800]
+    if alt.is_file():
+        data = json.loads(alt.read_text(encoding="utf-8"))
+        lines = [
+            "🌐 URL MỞ RỘNG",
+            f"Tổng mention: {data.get('totals', {}).get('url_mentions')}",
+            "",
+        ]
+        for b, n in (data.get("totals", {}).get("by_backend") or {}).items():
+            lines.append(f"· {b}: {n}")
+        lines.append("")
+        for item in (data.get("observed_ranked_top") or [])[:20]:
+            lines.append(f"· [{item['count']}] {item['backend']} · {item['url_path']}")
+        return "\n".join(lines)
+    return "Chưa có báo cáo URL. Chạy lại truy vấn mở rộng URL trên agent."
+
+
 HANDLERS = {
     "q:overview": fmt_overview,
     "q:source": fmt_source,
@@ -295,6 +320,7 @@ HANDLERS = {
     "q:paths": fmt_paths,
     "q:pipes": fmt_pipes,
     "q:realtime": fmt_realtime,
+    "q:urls": fmt_urls,
 }
 
 
