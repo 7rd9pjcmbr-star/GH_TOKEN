@@ -55,15 +55,21 @@ Python parity + AEAD decrypt (owned key):
 ```bash
 python3 scripts/crypto_decode_assist.py
 python3 scripts/crypto_decode_assist.py --text 'MDk3OTI2MzQ2Mw=='
+# Hỗ trợ giải mã unmask (phân loại MASK/ENCODING/AEAD + atlas + ASUNMEE):
+python3 scripts/crypto_decode_assist.py --unmask
+python3 scripts/crypto_decode_assist.py --unmask --text '+84335****64' --text 'MDk3OTI2MzQ2Mw=='
 # AES-GCM khi có key owned:
 python3 scripts/crypto_decode_assist.py --aes-gcm KEY_B64 NONCE_B64 CT_B64 --aad oms:customer_phone
+python3 scripts/crypto_decode_assist.py --unmask --aes-gcm KEY_B64 NONCE_B64 CT_B64
 # Frida a11y offline AES (mapper-icon-aes-v1):
 python3 scripts/crypto_decode_assist.py --frida-aes path/to/frida-a11y-offline-aes-*.json --key-b64 KEY_B64
 # hoặc điền MAPPER_ICON_AES_KEY_B64 vào secrets/backend_pipes.env rồi:
 python3 scripts/crypto_decode_assist.py --frida-aes path/to/bundle.json
+# ASUNMEE mask assist:
+python3 scripts/crypto_decode_assist.py --asunmee --live
 ```
 
-Panel: **Hỗ trợ giải mã**. Báo cáo: `reports/telegram-classify/crypto_decode_assist.txt`.
+Panel: **Hỗ trợ giải mã** (`--unmask`). Báo cáo: `reports/telegram-classify/unmask_decode_assist.txt`.
 Plaintext Frida (khi có key): `reports/telegram-classify/frida_a11y_aes_plaintext.json`.
 
 ### Ánh xạ giải mã × icon · mọi kho + bưu cục

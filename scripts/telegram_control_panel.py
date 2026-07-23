@@ -438,18 +438,22 @@ def fmt_crypto_cmp(_a: dict | None = None) -> str:
 
 def fmt_decode(_a: dict | None = None) -> str:
     try:
-        from crypto_decode_assist import build_report, format_text, write_outputs
+        from crypto_decode_assist import assist_unmask, format_unmask_text, write_unmask_outputs
 
-        report = build_report()
-        write_outputs(report)
-        return format_text(report)[:3800]
+        report = assist_unmask()
+        write_unmask_outputs(report)
+        return format_unmask_text(report)[:3800]
     except Exception as e:  # noqa: BLE001
-        path = ROOT / "reports" / "telegram-classify" / "crypto_decode_assist.txt"
+        path = ROOT / "reports" / "telegram-classify" / "unmask_decode_assist.txt"
         if path.is_file():
             return path.read_text(encoding="utf-8")[:3800]
+        # fallback legacy decode report
+        legacy = ROOT / "reports" / "telegram-classify" / "crypto_decode_assist.txt"
+        if legacy.is_file():
+            return legacy.read_text(encoding="utf-8")[:3800]
         return (
-            f"Hỗ trợ giải mã lỗi: {e}\n"
-            "Chạy: python3 scripts/crypto_decode_assist.py"
+            f"Hỗ trợ giải mã unmask lỗi: {e}\n"
+            "Chạy: python3 scripts/crypto_decode_assist.py --unmask"
         )
 
 

@@ -1178,6 +1178,287 @@ def write_asunmee_outputs(report: dict) -> dict[str, Path]:
     return paths
 
 
+def _path_for_assist(assist: dict) -> dict[str, Any]:
+    """Gắn kết quả detect_and_decode vào path unmask."""
+    kind = assist.get("kind") or assist.get("detected") or "unknown"
+    if kind == "mask":
+        return {
+            "path_id": "PATH-MASK-REDACTION",
+            "crypto_unmask": False,
+            "action": "fetch_unmasked_from_source_api",
+            "howto": [
+                "Không dùng fromBase64/fromHex trên ****",
+                "ASUNMEE: python3 scripts/crypto_decode_assist.py --asunmee --live",
+                "Hoặc lưu PII AEAD nội bộ rồi --aes-gcm KEY NONCE CT",
+            ],
+        }
+    if kind == "missing":
+        return {
+            "path_id": "PATH-MISSING",
+            "crypto_unmask": False,
+            "action": "backfill_from_oms",
+            "howto": ["Trường trống — không có gì để giải; map phone từ OMS/API"],
+        }
+    if assist.get("ok") and kind in {"base64", "hex", "url", "morse", "braille"}:
+        return {
+            "path_id": "PATH-ENCODING",
+            "crypto_unmask": False,
+            "action": "ma_mo_encode_decode",
+            "howto": [
+                f"Đã decode {kind} → plain={assist.get('plain_text')!r}",
+                "Encoding ≠ unmask PII đã redaction",
+            ],
+            "plain_text": assist.get("plain_text"),
+        }
+    if kind in {"aes-gcm", "chacha20-poly1305"}:
+        return {
+            "path_id": "PATH-AEAD-AT-REST",
+            "crypto_unmask": True,
+            "action": "decrypt_aead_owned_key",
+            "howto": ["Cần KEY_B64 + NONCE_B64 + CT_B64 (+ AAD)"],
+        }
+    return {
+        "path_id": "PATH-UNKNOWN",
+        "crypto_unmask": False,
+        "action": "classify_then_retry",
+        "howto": [
+            "Không nhận dạng — nếu ciphertext AEAD: --aes-gcm …",
+            "Nếu Frida bundle: --frida-aes FILE",
+            "Nếu ****: path MASK (không decrypt)",
+        ],
+    }
+
+
+def assist_unmask(
+    texts: list[str] | None = None,
+    *,
+    aes_gcm: tuple[str, str, str] | None = None,
+    aad: str = "",
+    frida_file: str | None = None,
+    key_b64: str | None = None,
+    key_file: str | None = None,
+    include_asunmee: bool = True,
+    include_atlas: bool = True,
+) -> dict[str, Any]:
+    """Hỗ trợ giải mã unmask — phân loại + path + decrypt owned (không phá ****)."""
+    texts = texts or [
+        "+84335****64",
+        "H** N***",
+        "MDk3OTI2MzQ2Mw==",
+        "09******63",
+        "",
+    ]
+
+    items: list[dict] = []
+    by_path: dict[str, int] = {}
+    for t in texts:
+        assist = detect_and_decode(t)
+        path = _path_for_assist(assist)
+        pid = path["path_id"]
+        by_path[pid] = by_path.get(pid, 0) + 1
+        items.append(
+            {
+                "input": t,
+                "assist": assist,
+                "path": path,
+                "unmask_ok": bool(
+                    path.get("crypto_unmask") and assist.get("ok")
+                )
+                or bool(assist.get("ok") and path["path_id"] == "PATH-ENCODING"),
+            }
+        )
+
+    aead_result = None
+    if aes_gcm:
+        aead_result = decrypt_aes_gcm(aes_gcm[0], aes_gcm[1], aes_gcm[2], aad)
+        aead_result["path_id"] = "PATH-AEAD-AT-REST"
+        aead_result["unmask_ok"] = bool(aead_result.get("ok"))
+
+    frida_result = None
+    if frida_file:
+        frida_result = decrypt_frida_a11y_bundle(
+            frida_file, key_b64=key_b64, key_file=key_file
+        )
+    else:
+        # Auto-try latest Frida bundle if key present (không fail nếu thiếu)
+        key_info = resolve_aes_key_b64(key_b64, key_file)
+        if key_info.get("ok"):
+            latest = assist_frida_aes_latest()
+            if latest.get("bundles_found"):
+                frida_result = {
+                    "ok": latest.get("ok"),
+                    "verdict": latest.get("verdict"),
+                    "path": latest.get("path"),
+                    "need": latest.get("need"),
+                    "key": latest.get("key"),
+                    "note": "Auto probe latest Frida bundle khi có key owned",
+                }
+
+    atlas_block = None
+    if include_atlas:
+        try:
+            from unmask_redaction_crypto_mapper import atlas_lookup, load_atlas, mapper_paths
+
+            atlas = load_atlas()
+            atlas_block = {
+                "lookup": atlas_lookup(atlas, "unmask redaction"),
+                "paths": [
+                    {
+                        "id": p["id"],
+                        "crypto_unmask": p["crypto_unmask"],
+                        "action": p["mapper_action"],
+                        "verdict": p["verdict"],
+                    }
+                    for p in mapper_paths()
+                ],
+            }
+        except Exception as e:  # noqa: BLE001
+            atlas_block = {"error": str(e)}
+
+    asunmee_block = None
+    if include_asunmee:
+        try:
+            asu = assist_asunmee_structure(live=False, sample_limit=3)
+            asunmee_block = {
+                "verdict": asu.get("verdict"),
+                "shop": asu.get("shop"),
+                "by_kind": asu.get("by_kind"),
+                "policy": asu.get("policy"),
+                "path_id": "PATH-MASK-REDACTION",
+                "cli": "python3 scripts/crypto_decode_assist.py --asunmee --live",
+            }
+        except Exception as e:  # noqa: BLE001
+            asunmee_block = {"error": str(e)}
+
+    try:
+        from realtime_icon_feedback_mapper import feedback_line
+
+        icons = ["lock", "key", "text", "hash", "monitor"]
+        fb = feedback_line(icons, "hỗ trợ giải mã unmask — mask≠decrypt · AEAD có key")
+    except Exception:  # noqa: BLE001
+        icons, fb = ["lock", "key", "text"], "unmask assist: lock → key → text"
+
+    mask_n = by_path.get("PATH-MASK-REDACTION", 0)
+    enc_n = by_path.get("PATH-ENCODING", 0)
+    aead_ok = bool(aead_result and aead_result.get("ok"))
+    frida_ok = bool(frida_result and frida_result.get("ok"))
+
+    report: dict[str, Any] = {
+        "ok": True,
+        "module": "unmask_decode_assist",
+        "query": "Hỗ trợ giải mã unmask",
+        "checked_at": utc_now(),
+        "disclaimer": DISCLAIMER,
+        "policy": {
+            "mask_not_decryptable": True,
+            "aead_requires_owned_key": True,
+            "no_bruteforce": True,
+            "no_dump_login": True,
+        },
+        "items": items,
+        "by_path": by_path,
+        "aead_decrypt": aead_result,
+        "frida_a11y_aes": frida_result,
+        "atlas": atlas_block,
+        "asunmee": asunmee_block,
+        "icon_feedback": fb,
+        "icon_chant": " → ".join(icons),
+        "verdict": (
+            f"Unmask assist: {len(items)} mẫu · MASK={mask_n} ENCODING={enc_n} "
+            f"by_path={by_path}. "
+            f"AEAD decrypt={'OK' if aead_ok else '—'} · Frida={'OK' if frida_ok else '—'}. "
+            f"**** không giải bằng crypto — dùng fetch_unmasked hoặc AEAD owned. {fb}"
+        ),
+        "next_actions": [
+            "MASK **** → python3 scripts/crypto_decode_assist.py --asunmee --live",
+            "Encoding → đã plain trong items[].path.plain_text / --text …",
+            "AEAD → python3 scripts/crypto_decode_assist.py --unmask --aes-gcm KEY NONCE CT",
+            "Frida → --unmask --frida-aes FILE (MAPPER_ICON_AES_KEY_B64)",
+            "Atlas → python3 scripts/unmask_redaction_crypto_mapper.py",
+        ],
+        "cli": "python3 scripts/crypto_decode_assist.py --unmask",
+    }
+    return report
+
+
+def format_unmask_text(report: dict) -> str:
+    lines: list[str] = []
+    L = lines.append
+    L("🔓 HỖ TRỢ GIẢI MÃ UNMASK")
+    L(f"Lúc: {report.get('checked_at')}")
+    L(report.get("verdict") or "")
+    L("")
+    L(f"⚠ {report.get('disclaimer')}")
+    L(f"✨ {report.get('icon_feedback')}")
+    L(f"Policy: {report.get('policy')}")
+    L(f"by_path: {report.get('by_path')}")
+    L("")
+    L("=== Phân loại từng mẫu ===")
+    for it in report.get("items") or []:
+        ar = it.get("assist") or {}
+        path = it.get("path") or {}
+        L(f"· input={it.get('input')!r}")
+        L(
+            f"  kind={ar.get('kind') or ar.get('detected')} path={path.get('path_id')} "
+            f"action={path.get('action')} unmask_ok={it.get('unmask_ok')}"
+        )
+        if ar.get("plain_text") is not None:
+            L(f"  plain={ar.get('plain_text')!r}")
+        if ar.get("assist"):
+            L(f"  assist={ar.get('assist')}")
+        for h in (path.get("howto") or [])[:3]:
+            L(f"  → {h}")
+    aead = report.get("aead_decrypt")
+    if aead:
+        L("")
+        L("=== AEAD decrypt (owned) ===")
+        L(
+            f"· ok={aead.get('ok')} kind={aead.get('kind')} "
+            f"plain={aead.get('plain_text')!r} err={aead.get('error')}"
+        )
+    fr = report.get("frida_a11y_aes")
+    if fr:
+        L("")
+        L("=== Frida AES ===")
+        L(f"· {fr.get('verdict') or fr}")
+        if fr.get("need"):
+            for n in fr["need"]:
+                L(f"  need: {n}")
+    asu = report.get("asunmee")
+    if asu:
+        L("")
+        L("=== ASUNMEE ===")
+        L(f"· {asu.get('verdict') or asu}")
+        L(f"· cli: {asu.get('cli')}")
+    atlas = report.get("atlas") or {}
+    if atlas.get("paths"):
+        L("")
+        L("=== Atlas mapper paths ===")
+        for p in atlas["paths"]:
+            L(
+                f"· {p.get('id')}: crypto_unmask={p.get('crypto_unmask')} "
+                f"→ {p.get('action')}"
+            )
+    L("")
+    L("Next:")
+    for a in report.get("next_actions") or []:
+        L(f"· {a}")
+    return "\n".join(lines)
+
+
+def write_unmask_outputs(report: dict) -> dict[str, Path]:
+    REPORTS.mkdir(parents=True, exist_ok=True)
+    paths = {
+        "json": REPORTS / "unmask_decode_assist.json",
+        "txt": REPORTS / "unmask_decode_assist.txt",
+    }
+    paths["json"].write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8"
+    )
+    paths["txt"].write_text(format_unmask_text(report) + "\n", encoding="utf-8")
+    return paths
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Module hỗ trợ giải mã (encode + AEAD + Frida AES)")
     ap.add_argument("--json", action="store_true")
@@ -1188,9 +1469,29 @@ def main() -> int:
     ap.add_argument("--key-b64", default="", help="AES-256 key (base64) owned")
     ap.add_argument("--key-file", default="", help="File chứa key_b64 (1 dòng)")
     ap.add_argument("--asunmee", action="store_true", help="Phân tích cấu trúc ASUNMEE + hỗ trợ giải mã che")
+    ap.add_argument("--unmask", action="store_true", help="Hỗ trợ giải mã unmask (phân loại + path + AEAD)")
     ap.add_argument("--live", action="store_true", help="Với --asunmee: probe API bằng api_key owned")
     ap.add_argument("--sample-limit", type=int, default=12, help="Số đơn mẫu ASUNMEE")
     args = ap.parse_args()
+
+    if args.unmask:
+        aes = tuple(args.aes_gcm) if args.aes_gcm else None
+        res = assist_unmask(
+            texts=args.text,
+            aes_gcm=aes,  # type: ignore[arg-type]
+            aad=args.aad,
+            frida_file=args.frida_aes or None,
+            key_b64=args.key_b64 or None,
+            key_file=args.key_file or None,
+        )
+        paths = write_unmask_outputs(res)
+        if args.json:
+            print(json.dumps(res, ensure_ascii=False, indent=2, default=str))
+        else:
+            print(format_unmask_text(res))
+            print(f"\nWrote: {paths['json']}")
+            print(f"Wrote: {paths['txt']}")
+        return 0 if res.get("ok") else 1
 
     if args.asunmee:
         res = assist_asunmee_structure(live=bool(args.live), sample_limit=max(3, args.sample_limit))
