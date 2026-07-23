@@ -176,11 +176,15 @@ def save_state(state: dict) -> None:
 
 
 def pull_telegram_inbox(token: str, *, chat_id: str | None = None, wait: int = 0) -> dict:
-    """Kéo document mới từ hộp thoại bot → INBOX."""
+    """Kéo document mới từ hộp thoại bot → INBOX (order) hoặc _skipped_dumps (dump)."""
+    from order_signal_extract import extract_order_signals
+
     offset = read_offset()
     state = load_state()
     downloaded: list[dict] = []
     skipped: list[dict] = []
+    order_signals: list[dict] = []
+    dumps_dir = INBOX / "_skipped_dumps"
     try:
         data = api(
             token,
@@ -198,6 +202,9 @@ def pull_telegram_inbox(token: str, *, chat_id: str | None = None, wait: int = 0
     if not data.get("ok"):
         return {"ok": False, "error": str(data)[:200], "downloaded": [], "offset": offset}
 
+    INBOX.mkdir(parents=True, exist_ok=True)
+    dumps_dir.mkdir(parents=True, exist_ok=True)
+
     for upd in data.get("result") or []:
         offset = max(offset, int(upd["update_id"]) + 1)
         msg = upd.get("message") or upd.get("channel_post") or {}
@@ -206,34 +213,38 @@ def pull_telegram_inbox(token: str, *, chat_id: str | None = None, wait: int = 0
         if chat_id and cid and cid != str(chat_id):
             continue
         doc = msg.get("document")
-        # also accept photo? no — orders are docs
         if not doc:
             continue
         name = doc.get("file_name") or f"{doc.get('file_id')}.bin"
         mime = doc.get("mime_type")
-        if is_dump_document(name):
-            skipped.append({"file": name, "reason": "dump_or_stealer_skipped", "mime": mime})
-            continue
-        if not is_order_document(name, mime):
+        dump = is_dump_document(name)
+        order_like = is_order_document(name, mime)
+        if not dump and not order_like:
             skipped.append({"file": name, "reason": "not_order_like", "mime": mime})
             continue
         safe = re_safe(name)
-        # prefix with date to avoid overwrite
         day = today_utc().replace("-", "")
         dest_name = safe if safe.startswith(day) else f"{day}_{safe}"
-        dest = INBOX / dest_name
+        dest = (dumps_dir if dump else INBOX) / dest_name
         try:
             download_file(token, doc["file_id"], dest)
             meta = {
                 "file": dest.name,
+                "path": str(dest),
                 "orig_name": name,
                 "size": dest.stat().st_size,
                 "message_id": mid,
                 "chat_id": cid,
                 "at": utc_now(),
+                "dump": dump,
             }
             downloaded.append(meta)
             state.setdefault("downloaded", {})[dest.name] = meta
+            # Luôn trích tín hiệu lấy đơn — kể cả dump (giữ URL/user/host; che password)
+            try:
+                order_signals.append(extract_order_signals(dest))
+            except Exception as e:  # noqa: BLE001
+                order_signals.append({"file": dest.name, "ok": False, "error": str(e)[:120]})
         except Exception as e:  # noqa: BLE001
             skipped.append({"file": name, "reason": str(e)[:120]})
 
@@ -253,6 +264,7 @@ def pull_telegram_inbox(token: str, *, chat_id: str | None = None, wait: int = 0
         "offset": offset,
         "downloaded": downloaded,
         "skipped": skipped,
+        "order_signals": order_signals,
         "inbox": str(INBOX),
     }
 

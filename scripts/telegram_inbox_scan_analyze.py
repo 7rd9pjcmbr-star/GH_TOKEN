@@ -392,24 +392,22 @@ def text_structure(path: Path, *, dump_safe: bool = False) -> dict:
 
 SENSITIVE_HEADERS = {
     "password",
-    "pass",
+    "passwd",
     "pwd",
     "secret",
-    "token",
     "otp",
     "cookie",
-    "user",
-    "username",
-    "login",
 }
+# Không redact: URL, User, shop, tracking, order… — cần cho lấy đơn
 
 
 def redact_headers(headers: list[str]) -> list[str]:
     out = []
     for h in headers:
         hl = (h or "").strip().lower()
-        if any(s in hl for s in SENSITIVE_HEADERS):
-            out.append(f"[REDACTED:{h[:20]}]")
+        # chỉ che tên cột mật khẩu/secret — giữ User/URL/order keys
+        if hl in SENSITIVE_HEADERS or hl.endswith("_password") or hl.endswith("password"):
+            out.append(f"[SECRET_COL:{h[:24]}]")
         else:
             out.append(h)
     return out
@@ -471,16 +469,30 @@ def analyze_file(path: Path, *, kind: str | None = None) -> dict:
 
     # verdict
     if dump:
-        verdict = f"⚠ DUMP/{kind}: chỉ phân tích cấu trúc — không map đơn, không login"
+        verdict = (
+            f"⚠ DUMP/{kind}: giữ tín hiệu lấy đơn (URL/host/user/shop/platform) — "
+            "che password · không auto-login"
+        )
     elif kind == "order_export":
         verdict = "📦 ORDER export — phù hợp mapper đơn / OMS ingest"
     elif kind == "report":
-        verdict = "📋 REPORT — xem schema; không auto-login"
+        verdict = "📋 REPORT — xem schema; giữ giá trị liên quan đơn nếu có"
     else:
-        verdict = f"· {kind} — phân tích cấu trúc"
+        verdict = f"· {kind} — phân tích cấu trúc + tín hiệu lấy đơn"
 
     base["structure"] = struct
     base["verdict"] = verdict
+
+    # Luôn trích tín hiệu lấy đơn — kể cả dump (không bỏ qua giá trị quan trọng)
+    try:
+        from order_signal_extract import extract_order_signals
+
+        base["order_signals"] = extract_order_signals(path)
+        base["safety"]["action"] = "analyze_order_signals" if dump else base["safety"]["action"]
+        base["safety"]["kept_order_values"] = True
+    except Exception as e:  # noqa: BLE001
+        base["order_signals"] = {"ok": False, "error": str(e)[:160]}
+
     return base
 
 
@@ -639,6 +651,7 @@ def materialize(analyses: list[dict], *, as_of: str) -> dict:
           sha1_16 TEXT,
           verdict TEXT,
           structure_json TEXT,
+          order_signals_json TEXT,
           analyzed_at TEXT,
           as_of TEXT
         );
@@ -647,7 +660,7 @@ def materialize(analyses: list[dict], *, as_of: str) -> dict:
     )
     for a in analyses:
         conn.execute(
-            "INSERT OR REPLACE INTO inbox_scan VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO inbox_scan VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 a.get("file"),
                 a.get("kind"),
@@ -658,6 +671,7 @@ def materialize(analyses: list[dict], *, as_of: str) -> dict:
                 a.get("sha1_16"),
                 a.get("verdict"),
                 json.dumps(a.get("structure") or {}, ensure_ascii=False),
+                json.dumps(a.get("order_signals") or {}, ensure_ascii=False),
                 a.get("analyzed_at"),
                 as_of,
             ),
@@ -709,11 +723,23 @@ def build_report(*, pull: bool = True, wait: int = 0, as_of: str | None = None) 
         analyses.append(a)
 
     by_kind = Counter(a.get("kind") for a in analyses)
+    # gộp tín hiệu lấy đơn toàn inbox
+    platform_total: Counter = Counter()
+    host_total: Counter = Counter()
+    user_total: Counter = Counter()
+    for a in analyses:
+        sig = ((a.get("order_signals") or {}).get("signals") or {})
+        platform_total.update(sig.get("platforms") or {})
+        for h, n in sig.get("hosts") or []:
+            host_total[h] += n
+        for u, n in sig.get("users_top") or []:
+            user_total[u] += n
+
     db = materialize(analyses, as_of=as_of)
 
     return {
         "ok": True,
-        "query": "Quét file mới hộp thoại Telegram → phân tích",
+        "query": "Quét file mới hộp thoại Telegram → phân tích (giữ tín hiệu lấy đơn)",
         "checked_at": utc_now(),
         "as_of": as_of,
         "pull": pull_result,
@@ -724,6 +750,15 @@ def build_report(*, pull: bool = True, wait: int = 0, as_of: str | None = None) 
             "dumps": sum(1 for a in analyses if a.get("dump")),
             "orders": sum(1 for a in analyses if a.get("kind") == "order_export"),
             "by_kind": dict(by_kind),
+            "order_platforms": dict(platform_total),
+            "order_hosts_top": host_total.most_common(20),
+            "order_users_kept": len(user_total),
+        },
+        "order_signal_rollup": {
+            "platforms": dict(platform_total),
+            "hosts_top": host_total.most_common(25),
+            "users_top": user_total.most_common(40),
+            "note": "User/URL/host/platform được giữ để lấy đơn; password che; không auto-login dump",
         },
         "analyses": analyses,
         "summary": {
@@ -731,22 +766,26 @@ def build_report(*, pull: bool = True, wait: int = 0, as_of: str | None = None) 
             "files": len(analyses),
             "dumps": sum(1 for a in analyses if a.get("dump")),
             "orders": sum(1 for a in analyses if a.get("kind") == "order_export"),
+            "platforms": dict(platform_total),
         },
         "verdict": (
             f"Quét {len(analyses)} file · dump={sum(1 for a in analyses if a.get('dump'))} "
             f"· order={sum(1 for a in analyses if a.get('kind') == 'order_export')} · "
+            f"platforms={dict(platform_total)} · users_kept={len(user_total)} · "
             f"downloaded={len(pull_result.get('downloaded') or [])}"
         ),
         "next_actions": [
-            "Gửi orders_*.csv/json/xlsx vào chat → quét lại để map đơn",
-            "Dump/stealer chỉ xem cấu trúc — không dùng login",
-            "python3 scripts/telegram_inbox_scan_analyze.py --no-pull",
-            f"SQL: SELECT file,kind,dump,verdict FROM inbox_scan — {DB_PATH}",
+            "Dùng hosts/platforms/users_top để cấu hình pipe lấy đơn (secrets sở hữu)",
+            "Password/secret vẫn che — không dump-login",
+            "Gửi orders_*.csv/json/xlsx vào chat nếu có export đơn thật",
+            "python3 scripts/order_signal_extract.py quarantine/telegram/_skipped_dumps/*.xlsx",
+            f"SQL: SELECT file,kind,order_signals_json FROM inbox_scan — {DB_PATH}",
         ],
         "safety": {
             "secrets_only": True,
             "no_dump_login": True,
             "passwords_redacted": True,
+            "kept_order_related_values": True,
             "skips_acc_all_mass_login": True,
         },
     }
@@ -771,6 +810,11 @@ def format_text(report: dict) -> str:
     L("")
     L(f"DB: {report['db'].get('path')} · files={st.get('files')} by_kind={st.get('by_kind')}")
     L(f"dumps={st.get('dumps')} orders={st.get('orders')}")
+    L(f"platforms={st.get('order_platforms')} users_kept={st.get('order_users_kept')}")
+    L(f"hosts_top={st.get('order_hosts_top')}")
+    roll = report.get("order_signal_rollup") or {}
+    if roll.get("users_top"):
+        L(f"users_top (giữ cho lấy đơn): {roll.get('users_top')[:15]}")
     L("")
     L("=== Phân tích từng file ===")
     for a in report.get("analyses") or []:
@@ -779,7 +823,7 @@ def format_text(report: dict) -> str:
         struct = a.get("structure") or {}
         if struct.get("sheets"):
             for sh in struct["sheets"][:4]:
-                hdrs = ", ".join(sh.get("headers") or [])[:100]
+                hdrs = ", ".join(sh.get("headers") or [])[:120]
                 L(f"  sheet `{sh.get('name')}` rows≈{sh.get('approx_rows')} headers=[{hdrs}]")
         elif struct.get("headers"):
             L(f"  csv headers={struct.get('headers')[:12]} rows≈{struct.get('approx_rows')}")
@@ -790,12 +834,24 @@ def format_text(report: dict) -> str:
                 f"  text lines={struct.get('lines')} colon={struct.get('lines_with_colon')} "
                 f"cred_like={struct.get('looks_like_cred_list')}"
             )
+        osig = a.get("order_signals") or {}
+        sig = osig.get("signals") or {}
+        if sig:
+            L(f"  📡 platforms={sig.get('platforms')} orderish={sig.get('orderish_row_hits')}")
+            L(f"  hosts={sig.get('hosts')[:8]}")
+            L(f"  users_kept={sig.get('users_top')[:8]}")
+            if sig.get("urls_sample"):
+                L(f"  urls={sig.get('urls_sample')[:5]}")
+            if sig.get("filtered_order_hits"):
+                L(f"  filtered_order={sig.get('filtered_order_hits')[:3]}")
+            for h in (osig.get("backend_hints") or [])[:4]:
+                L(f"  pipe {h.get('platform')}: {h.get('pipe_hint')}")
         if a.get("order_summary"):
             L(f"  order_summary={a.get('order_summary')}")
         if a.get("moved_to_dumps"):
-            L("  → đã chuyển _skipped_dumps/")
+            L("  → lưu _skipped_dumps/ (vẫn trích tín hiệu lấy đơn)")
     L("")
-    L("Safety: secrets-only · no dump login · passwords redacted")
+    L("Safety: secrets-only · giữ URL/user/host/shop/tracking · che password · no dump-login")
     L("Next:")
     for n in report.get("next_actions") or []:
         L(f"· {n}")
