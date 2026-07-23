@@ -89,8 +89,13 @@ Từ chối `hjSession*`, `_ga*`, analytics (không phải Token API).
 
 ```bash
 python3 scripts/ghn_cookie_ingest.py --raw 'https://online-gateway.ghn.vn/a5/public-api/printA5?token=<uuid>'
+# hoặc drop file owned rồi ensure
+printf '%s\n' 'https://online-gateway.ghn.vn/a5/public-api/printA5?token=<uuid>' > secrets/ghn_session.raw
+python3 scripts/ghn_cookie_ingest.py ensure
 python3 scripts/nginx_order_embed.py ghn-ingest --raw-file FILE --keep
 python3 scripts/order_session_env.py ensure
 ```
+
+`token_session_maintain` gọi `ghn ensure` mỗi vòng (probe + re-ingest pending).
 
 Chỉ ghi `GHN_API_TOKEN` khi probe `master-data/province` = 200.

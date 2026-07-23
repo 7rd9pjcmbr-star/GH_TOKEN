@@ -237,6 +237,17 @@ def maintain_once(
 
     ensure = ensure_tokens(auto_refresh_vtp=auto_refresh_vtp)
 
+    # GHN: probe / re-ingest từ secrets/ghn_session.raw nếu có
+    ghn_maintain: dict[str, Any] = {"skipped": True}
+    try:
+        from ghn_cookie_ingest import ensure_ghn_session
+
+        ghn_maintain = ensure_ghn_session(try_pending=True)
+        if ghn_maintain.get("reingested"):
+            env = load_env()
+    except Exception as e:  # noqa: BLE001
+        ghn_maintain = {"ok": False, "alive": False, "error": str(e)[:160], "verdict": f"GHN ensure lỗi: {e}"}
+
     risks: list[dict[str, Any]] = []
     for label, ttl, alive in (
         ("pancake_primary", ttl_primary, (heartbeat.get("primary") or {}).get("alive")),
@@ -259,8 +270,17 @@ def maintain_once(
                 }
             )
 
-    if not (env.get("GHN_API_TOKEN") or "").strip():
-        risks.append({"key": "ghn", "level": "missing", "need": "GHN_API_TOKEN owned"})
+    ghn_alive = bool(ghn_maintain.get("alive"))
+    if not ghn_alive:
+        risks.append(
+            {
+                "key": "ghn",
+                "level": "auth_fail" if (env.get("GHN_API_TOKEN") or "").strip() else "missing",
+                "need": ghn_maintain.get("need")
+                or "GHN_API_TOKEN owned / secrets/ghn_session.raw (printA5 hoặc cookie token)",
+                "verdict": ghn_maintain.get("verdict"),
+            }
+        )
     if not (env.get("VIETTELPOST_TOKEN") or "").strip() and not (
         (env.get("VIETTELPOST_USER") or "").strip() and (env.get("VIETTELPOST_PASSWORD") or "").strip()
     ):
@@ -301,6 +321,16 @@ def maintain_once(
             "api_key_shops": (heartbeat.get("api_key") or {}).get("shops_n"),
             "primary_shops": (heartbeat.get("primary") or {}).get("shops_n"),
         },
+        "ghn": {
+            "ok": ghn_maintain.get("ok"),
+            "alive": ghn_alive,
+            "reingested": ghn_maintain.get("reingested"),
+            "token_masked": ghn_maintain.get("token_masked"),
+            "probe": ghn_maintain.get("probe"),
+            "pending_tried": ghn_maintain.get("pending_tried"),
+            "verdict": ghn_maintain.get("verdict"),
+            "need": ghn_maintain.get("need"),
+        },
         "ensure": {
             "ok": ensure.get("ok"),
             "ready": ensure.get("ready_platforms"),
@@ -308,27 +338,32 @@ def maintain_once(
             "verdict": ensure.get("verdict"),
         },
         "order_ready": order_ready,
+        "ghn_ready": ghn_alive,
         "risks": risks,
         "policy": {"owned_only": True, "no_dump_login": True},
     }
 
+    ghn_note = f" · GHN={'OK' if ghn_alive else 'NO'}"
     if order_ready and not risks:
         report["verdict"] = (
             f"✅ Phiên ổn · primary={ttl_primary.get('days_left')}d · "
             f"secondary={ttl_secondary.get('days_left')}d · api_key={'OK' if api_alive else '—'}"
+            f"{ghn_note}"
         )
     elif order_ready:
         report["verdict"] = (
             f"⚠ Duy trì OK lấy đơn (api_key/bearer) · risks={len(risks)} · "
             f"primary={ttl_primary.get('days_left')}d · secondary={ttl_secondary.get('days_left')}d"
+            f"{ghn_note}"
         )
         report["ok"] = True  # still can fetch via api_key
     else:
-        report["verdict"] = f"❌ Phiên rủi ro — không lấy đơn được · risks={len(risks)}"
+        report["verdict"] = f"❌ Phiên rủi ro — không lấy đơn được · risks={len(risks)}{ghn_note}"
 
     # next actions for near-expiry
     next_actions = [
         "python3 scripts/token_session_maintain.py once",
+        "python3 scripts/ghn_cookie_ingest.py ensure",
         "python3 scripts/token_session_maintain.py --loop --interval 1800 --notify-on-risk",
         "python3 scripts/order_session_env.py ensure",
     ]
@@ -336,6 +371,11 @@ def maintain_once(
         next_actions.insert(
             0,
             "python3 scripts/pancake_cookie_ingest.py --raw-file <pos_jwt_con_han> --no-scan",
+        )
+    if not ghn_alive:
+        next_actions.insert(
+            0,
+            "printf '%s' 'printA5?token=…' > secrets/ghn_session.raw && python3 scripts/ghn_cookie_ingest.py ensure",
         )
     report["next_actions"] = next_actions
 
@@ -354,6 +394,8 @@ def _save_state(report: dict[str, Any]) -> None:
         "updated_at": report.get("checked_at"),
         "ttl": report.get("ttl"),
         "order_ready": report.get("order_ready"),
+        "ghn_ready": report.get("ghn_ready"),
+        "ghn": report.get("ghn"),
         "risks": report.get("risks"),
         "renewals": (report.get("heartbeat") or {}).get("renewals"),
         "verdict": report.get("verdict"),
@@ -411,6 +453,12 @@ def format_text(report: dict[str, Any]) -> str:
         f"Heartbeat: api_key={hb.get('api_key_alive')} shops={hb.get('api_key_shops')} · "
         f"renewed_primary={hb.get('primary_renewed')} secondary={hb.get('secondary_renewed')}"
     )
+    ghn = report.get("ghn") or {}
+    if ghn:
+        lines.append(
+            f"GHN: alive={ghn.get('alive')} reingest={ghn.get('reingested')} "
+            f"token={ghn.get('token_masked')} · {ghn.get('verdict')}"
+        )
     ens = report.get("ensure") or {}
     if ens:
         lines.append(f"Ensure: {ens.get('verdict')} · refreshed={ens.get('refreshed')}")
