@@ -5069,12 +5069,6 @@ def main() -> int:
         hop6_live = False
     if args.hop7_offline:
         hop7_live = False
-    # hop9-apply không live → chỉ district hints; --hop9-live bật detail
-    if hop9_apply and not hop9_live and args.hop9_live is False:
-        pass
-    if hop9_apply and not args.hop9_live:
-        # apply district offline ok; live optional
-        hop9_live = bool(args.hop9_live)
 
     report = build_report(
         van_tay=args.van_tay,
