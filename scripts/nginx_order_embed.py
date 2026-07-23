@@ -488,7 +488,7 @@ class NginxOrderEmbed:
                 "notify": notify,
                 "force": force,
             },
-            timeout=180.0,
+            timeout=360.0,
             ensure=ensure,
         )
 
