@@ -126,7 +126,10 @@ def panel_keyboard() -> dict:
                 {"text": "🛠 Todo khắc phục", "callback_data": "q:todo"},
                 {"text": "🗺 Đường dẫn nóng", "callback_data": "q:paths"},
             ],
-            [{"text": "🔁 Làm mới phân tích", "callback_data": "q:refresh"}],
+            [
+                {"text": "🔌 Pipe backend", "callback_data": "q:pipes"},
+                {"text": "🔁 Làm mới phân tích", "callback_data": "q:refresh"},
+            ],
         ]
     }
 
@@ -244,6 +247,34 @@ def fmt_paths(a: dict) -> str:
     return "\n".join(lines)
 
 
+def fmt_pipes(_a: dict | None = None) -> str:
+    """Đấu nối ống dẫn backend + chống logout (secrets-only)."""
+    try:
+        from backend_pipe_keepalive import format_report, load_env, load_state, run_once
+
+        env = load_env()
+        run_once(env, notify=False)
+        state = load_state()
+        from backend_pipe_keepalive import PipeResult
+
+        pipes = state.get("pipes") or {}
+        results = [
+            PipeResult(
+                backend=k,
+                channel=v.get("channel") or "?",
+                status=v.get("status") or "?",
+                http=v.get("http"),
+                detail=v.get("detail") or "",
+                session_risk=bool(v.get("session_risk")),
+                checked_at=v.get("checked_at") or "",
+            )
+            for k, v in pipes.items()
+        ]
+        return format_report(results, state)
+    except Exception as e:  # noqa: BLE001
+        return f"Pipe backend lỗi: {e}\nChạy: python3 scripts/backend_pipe_keepalive.py --once --notify"
+
+
 HANDLERS = {
     "q:overview": fmt_overview,
     "q:source": fmt_source,
@@ -251,6 +282,7 @@ HANDLERS = {
     "q:missing": fmt_missing,
     "q:todo": fmt_todo,
     "q:paths": fmt_paths,
+    "q:pipes": fmt_pipes,
 }
 
 
@@ -294,8 +326,13 @@ def main() -> int:
 
     # Always open panel + push full query pack so nguyên nhân rõ ngay
     open_panel(token, chat, analysis)
-    for key in ["q:overview", "q:source", "q:masked", "q:missing", "q:todo", "q:paths"]:
-        send(token, chat, HANDLERS[key](analysis), panel_keyboard() if key == "q:paths" else None)
+    for key in ["q:overview", "q:source", "q:masked", "q:missing", "q:todo", "q:paths", "q:pipes"]:
+        send(
+            token,
+            chat,
+            HANDLERS[key](analysis),
+            panel_keyboard() if key in {"q:paths", "q:pipes"} else None,
+        )
 
     once = "--once" in sys.argv
     wait = 0 if once else 25

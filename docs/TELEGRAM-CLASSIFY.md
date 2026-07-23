@@ -35,8 +35,24 @@ python3 scripts/telegram_control_panel.py          # gửi panel + trả lời �
 python3 scripts/telegram_control_panel.py --listen # giữ listener nhận bấm nút (~2 phút nếu không truyền thêm)
 ```
 
-Nút: Tổng quan · Theo nguồn · SĐT masked · SĐT thiếu · Todo khắc phục · Đường dẫn nóng.
+Nút: Tổng quan · Theo nguồn · SĐT masked · SĐT thiếu · Todo khắc phục · Đường dẫn nóng · Pipe backend.
 Gõ `/panel` trong chat để mở lại menu.
+
+## Ống dẫn backend (chống logout)
+
+Đấu nối pipe theo từng backend; heartbeat cảnh báo trước khi session/key chết.
+Chỉ đọc `secrets/` — không dump, không auto-login mật khẩu.
+
+```bash
+# một vòng + gửi Telegram
+python3 scripts/backend_pipe_keepalive.py --once --notify
+
+# duy trì liên tục (mặc định 300s)
+python3 scripts/backend_pipe_keepalive.py --loop --interval 300 --notify-on-risk
+```
+
+Điền `PANCAKE_POS_API_KEY` / `GHN_API_TOKEN` / `TPOS_*` vào `secrets/backend_pipes.env` (gitignored).
+State: `secrets/backend_pipes.state.json` · báo cáo: `reports/telegram-classify/backend_pipe_keepalive.json`.
 
 ```bash
 python3 scripts/fix_order_phones.py quarantine/telegram/orders_detailed_*.csv \
