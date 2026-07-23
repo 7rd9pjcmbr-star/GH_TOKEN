@@ -594,8 +594,183 @@ def reverse_chain_asumee(
 
     if hop2:
         results.extend(reverse_chain_asumee_hop2(conn, wid))
+        results.extend(reverse_chain_asumee_hop3(conn, wid))
 
     return results
+
+
+def reverse_chain_asumee_hop3(conn: sqlite3.Connection, wid: str) -> list[dict]:
+    """Hop-3 ngược dòng: Huế sâu, SĐT OK hiếm, returning/new, cluster mask trùng."""
+    out: list[dict] = []
+
+    # Huế — từ geo_recover
+    out.append(reverse_by_province(conn, "Huế", limit=15))
+    out.append(reverse_by_address(conn, "Huế", limit=12))
+    out.append(reverse_by_address(conn, "A Lưới", limit=8))
+    hue_wards = [
+        r[0]
+        for r in conn.execute(
+            """
+            SELECT ward FROM orders
+            WHERE warehouse_id = ?
+              AND (province LIKE '%Huế%' OR full_address LIKE '%Huế%' OR full_address LIKE '%Hue%')
+              AND ward IS NOT NULL AND ward != ''
+            GROUP BY ward ORDER BY COUNT(*) DESC LIMIT 5
+            """,
+            (wid,),
+        )
+    ]
+    for w in hue_wards:
+        out.append(reverse_by_ward_warehouse(conn, wid, w, limit=8))
+
+    # Status returning / new
+    for st in ("returning", "new"):
+        out.append(reverse_by_status_warehouse(conn, wid, st, limit=10))
+
+    # SĐT OK hiếm — contrast unmask (mask display in report)
+    out.append(reverse_ok_phone_contrast(conn, wid))
+    ok_rows = conn.execute(
+        """
+        SELECT van_tay, so_noi_bo FROM orders
+        WHERE warehouse_id = ?
+          AND receiver_phone IS NOT NULL AND receiver_phone != ''
+          AND instr(receiver_phone, '*') = 0
+        ORDER BY piped_at DESC LIMIT 5
+        """,
+        (wid,),
+    ).fetchall()
+    for vt, so in ok_rows:
+        if vt:
+            r = reverse_by_van_tay(conn, str(vt))
+            r["gap_cohort"] = "phone_ok_clear"
+            out.append(r)
+        if so:
+            r = reverse_by_so_noi_bo(conn, str(so))
+            r["gap_cohort"] = "phone_ok_clear"
+            out.append(r)
+
+    # Cluster mask trùng (cảnh báo: mask ngắn → collision giả)
+    out.append(reverse_mask_phone_clusters(conn, wid))
+    top_masks = [
+        r[0]
+        for r in conn.execute(
+            """
+            SELECT receiver_phone FROM orders
+            WHERE warehouse_id = ? AND receiver_phone LIKE '%*%'
+            GROUP BY receiver_phone HAVING COUNT(*) >= 5
+            ORDER BY COUNT(*) DESC LIMIT 3
+            """,
+            (wid,),
+        )
+    ]
+    for ph in top_masks:
+        # Không dùng phone làm address query — dùng so mẫu trong cluster
+        sos = conn.execute(
+            """
+            SELECT so_noi_bo, van_tay FROM orders
+            WHERE warehouse_id = ? AND receiver_phone = ?
+            ORDER BY piped_at DESC LIMIT 2
+            """,
+            (wid, ph),
+        ).fetchall()
+        for so, vt in sos:
+            if so:
+                r = reverse_by_so_noi_bo(conn, str(so))
+                r["gap_cohort"] = f"mask_cluster:{ph}"
+                out.append(r)
+            if vt:
+                r = reverse_by_van_tay(conn, str(vt))
+                r["gap_cohort"] = f"mask_cluster:{ph}"
+                out.append(r)
+
+    return out
+
+
+def reverse_ok_phone_contrast(conn: sqlite3.Connection, wid: str) -> dict:
+    """Đối chiếu đơn SĐT CLEAR (hiếm) vs MASK — hỗ trợ unmask path."""
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT van_tay, so_noi_bo, status, province, ward, receiver_name, receiver_phone,
+                   tracking_code, flow_path
+            FROM orders
+            WHERE warehouse_id = ?
+              AND receiver_phone IS NOT NULL AND receiver_phone != ''
+              AND instr(receiver_phone, '*') = 0
+            ORDER BY piped_at DESC LIMIT 20
+            """,
+            (wid,),
+        )
+    ]
+    samples = []
+    for r in rows:
+        samples.append(
+            {
+                **r,
+                "receiver_phone_masked_report": mask_phone(r.get("receiver_phone")),
+                "phone_class": "OK",
+                "kho": "ASUMEE",
+                "warehouse_id": wid,
+                "backend": "OMS-pipe-bus",
+                "buucuc": "Pancake",
+                # strip raw phone from panorama payload for safety in JSON samples list
+                "receiver_phone": mask_phone(r.get("receiver_phone")),
+            }
+        )
+    return _attach_flow(
+        {
+            "query_type": "phone_ok_contrast",
+            "query": wid,
+            "hit": bool(samples),
+            "count": len(samples),
+            "sample_orders": samples,
+            "unmask_map": {
+                "path_id": "PATH-CLEAR",
+                "note": "SĐT CLEAR hiếm trên ASUMEE api_key — phần lớn vẫn MASK; không lộ raw trong report",
+                "action": "use_clear_phone_for_ops_callback",
+            },
+            "path": f"phone_ok_contrast n={len(samples)} ← ASUMEE (PATH-CLEAR)",
+        }
+    )
+
+
+def reverse_mask_phone_clusters(conn: sqlite3.Connection, wid: str) -> dict:
+    """Cluster SĐT mask trùng — cảnh báo collision do redaction ngắn (0****01)."""
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT receiver_phone AS mask_display,
+                   COUNT(*) AS orders,
+                   COUNT(DISTINCT status) AS statuses,
+                   COUNT(DISTINCT province) AS provinces,
+                   COUNT(DISTINCT van_tay) AS fingerprints
+            FROM orders
+            WHERE warehouse_id = ? AND receiver_phone LIKE '%*%'
+            GROUP BY receiver_phone
+            HAVING COUNT(*) >= 4
+            ORDER BY orders DESC
+            LIMIT 15
+            """,
+            (wid,),
+        )
+    ]
+    return {
+        "query_type": "mask_phone_clusters",
+        "query": wid,
+        "hit": bool(rows),
+        "count": len(rows),
+        "clusters": rows,
+        "warning": (
+            "Mask ngắn (vd 0****01) tạo collision giả — không gộp khách theo mask_display"
+        ),
+        "unmask_map": {
+            "path_id": "PATH-MASK-REDACTION",
+            "action": "fetch_unmasked_from_source_api_before_dedupe",
+        },
+        "path": f"mask_clusters×{len(rows)} ← ASUMEE (collision risk)",
+    }
 
 
 def reverse_chain_asumee_hop2(conn: sqlite3.Connection, wid: str) -> list[dict]:
@@ -1567,6 +1742,13 @@ def format_text(report: dict) -> str:
         if r.get("by_hint_province"):
             for m in r["by_hint_province"][:8]:
                 L(f"  · geo_hint {m.get('hint')}: n={m.get('orders')}")
+        if r.get("clusters"):
+            L(f"  · warning={r.get('warning')}")
+            for c in r["clusters"][:8]:
+                L(
+                    f"  · cluster mask={c.get('mask_display')!r} n={c.get('orders')} "
+                    f"st={c.get('statuses')} tỉnh={c.get('provinces')} fp={c.get('fingerprints')}"
+                )
         if r.get("samples") and r.get("query_type") == "geo_recover":
             for s in r["samples"][:5]:
                 L(
@@ -1581,6 +1763,8 @@ def format_text(report: dict) -> str:
             "flow_gaps",
             "gap_cohort",
             "geo_recover",
+            "phone_ok_contrast",
+            "mask_phone_clusters",
         }:
             L(f"  · count={r.get('count')} status={r.get('status')}")
     if report.get("panorama_samples"):
