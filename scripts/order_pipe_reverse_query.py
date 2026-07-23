@@ -1803,6 +1803,27 @@ def reverse_batch_timeline_backfill(
         """,
         (wid,),
     ).fetchone()[0]
+    remain_hard = conn.execute(
+        """
+        SELECT COUNT(*) FROM orders
+        WHERE warehouse_id = ?
+          AND (
+            (status = 'delivered' AND (delivered_at IS NULL OR delivered_at = ''))
+            OR (status = 'shipped' AND (picked_at IS NULL OR picked_at = ''))
+          )
+        """,
+        (wid,),
+    ).fetchone()[0]
+    remain_soft_pick = conn.execute(
+        """
+        SELECT COUNT(*) FROM orders
+        WHERE warehouse_id = ?
+          AND status = 'delivered'
+          AND delivered_at IS NOT NULL AND delivered_at != ''
+          AND (picked_at IS NULL OR picked_at = '')
+        """,
+        (wid,),
+    ).fetchone()[0]
 
     return {
         "query_type": "batch_timeline_backfill",
@@ -1816,18 +1837,22 @@ def reverse_batch_timeline_backfill(
             {"partner": k, "n": v} for k, v in sorted(partners.items(), key=lambda x: -x[1])
         ],
         "remaining_timeline_gaps": remain,
+        "remain_hard": remain_hard,
+        "remain_soft_delivered_no_pick": remain_soft_pick,
         "samples": probes[:15],
         "path": (
             f"batch_timeline_backfill ok={ok_n}/{len(probes)} "
-            f"apply={apply} applied={applied} remain_gap={remain}"
+            f"apply={apply} applied={applied} remain_gap={remain} "
+            f"hard={remain_hard} soft_no_pick={remain_soft_pick}"
         ),
         "unmask_map": {
-            "note": "Batch owned detail; PII vẫn MASK; timeline từ extend_update",
+            "note": "Batch owned detail; PII vẫn MASK; timeline từ extend_update/histories",
             "path_id": "PATH-CLEAR" if ok_n else "PATH-MISSING",
         },
         "next": [
-            f"Còn {remain} shipped/delivered thiếu timeline — tăng --hop7-limit",
-            "python3 scripts/order_pipe_reverse_query.py --hop7-apply --hop7-limit 100",
+            f"Hard gap={remain_hard} (delivered∅del hoặc shipped∅pick) — SPX thường thiếu histories",
+            f"Soft gap={remain_soft_pick} delivered đã có del nhưng∅pick (không bịa pick)",
+            "python3 scripts/order_pipe_reverse_query.py --hop7-apply --hop7-limit 200",
         ],
     }
 
@@ -3836,6 +3861,7 @@ def format_text(report: dict) -> str:
                 L(
                     f"  · ok={r.get('ok')}/{r.get('count')} apply={r.get('apply')} "
                     f"applied={r.get('applied')} remain_gap={r.get('remaining_timeline_gaps')} "
+                    f"hard={r.get('remain_hard')} soft_no_pick={r.get('remain_soft_delivered_no_pick')} "
                     f"partners={r.get('partners')}"
                 )
                 for s in (r.get("samples") or [])[:8]:
