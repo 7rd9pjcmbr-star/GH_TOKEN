@@ -461,7 +461,7 @@ class NginxOrderEmbed:
             "/v1/buucuc/scan",
             method="POST",
             payload=payload,
-            timeout=180.0,
+            timeout=360.0,
             ensure=ensure,
         )
 
