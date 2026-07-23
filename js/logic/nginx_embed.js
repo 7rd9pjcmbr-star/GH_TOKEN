@@ -35,12 +35,14 @@
   function describe() {
     return {
       module: "nginx_embed",
-      title: "Nhúng gọi đơn qua nginx (on-demand)",
+      title: "Nhúng gọi đơn + token qua nginx (on-demand)",
       whenNeeded: true,
-      flow: "client → nginx:18080/orders → mock upstream:18081",
+      flow: "client → nginx:18080 /v1/token|/v1/orders/realtime|/orders → upstream → access_token_rotate",
       embeddedVars: EMBEDDED_VARS,
       cli: {
         once: "python3 scripts/nginx_order_embed.py once",
+        tokenRealtime: "python3 scripts/nginx_order_embed.py token-realtime",
+        applyRealtime: "python3 scripts/access_token_rotate.py apply-realtime",
         start: "python3 scripts/nginx_order_embed.py start",
         orders: "python3 scripts/nginx_order_embed.py orders",
         stop: "python3 scripts/nginx_order_embed.py stop",
@@ -49,6 +51,7 @@
       },
       python: {
         once: "from nginx_order_embed import run_when_needed; run_when_needed()",
+        pipeline: "NginxOrderEmbed().token_realtime_pipeline()",
         module: "NginxOrderEmbed().once() / .ensure_up() / .call_orders() / .stop()",
       },
       note: "Browser chỉ gọi được khi stack đã start trên máy; bật bằng CLI/panel khi cần.",

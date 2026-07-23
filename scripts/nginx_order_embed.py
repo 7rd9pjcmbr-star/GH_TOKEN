@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
-"""Module nhúng gọi đơn qua nginx — chạy khi cần (on-demand).
+"""Module nhúng gọi đơn + token qua nginx — chạy khi cần (on-demand).
 
 API:
   from nginx_order_embed import NginxOrderEmbed, run_when_needed
+  NginxOrderEmbed().token_realtime_pipeline()  # nginx→token→realtime orders
   NginxOrderEmbed().once()          # start → gọi /orders → stop
   NginxOrderEmbed().ensure_up()     # giữ sống nếu cần nhiều lần
   NginxOrderEmbed().call_orders()   # gọi qua proxy (cần đang up)
   NginxOrderEmbed().stop()
 
 CLI:
-  python3 scripts/nginx_order_embed.py once|start|stop|status|orders|test
+  python3 scripts/nginx_order_embed.py once|token-realtime|start|stop|status|orders|test
 
-Local mock only. Không dump-login / không gọi API đơn bên thứ ba.
+Owned-only. Không dump-login.
 """
 
 from __future__ import annotations
@@ -74,6 +75,37 @@ def http_get(url: str, timeout: float = 5.0) -> tuple[int, dict[str, str], bytes
     except urllib.error.HTTPError as e:
         headers = {k: v for k, v in (e.headers.items() if e.headers else [])}
         return e.code, headers, e.read() if e.fp else b""
+
+
+def http_json(
+    url: str,
+    *,
+    method: str = "GET",
+    payload: dict | None = None,
+    timeout: float = 90.0,
+) -> tuple[int, dict[str, str], Any]:
+    data = None
+    headers = {"Accept": "application/json"}
+    if payload is not None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            hdrs = {k: v for k, v in resp.headers.items()}
+            raw = resp.read()
+            code = resp.status
+    except urllib.error.HTTPError as e:
+        hdrs = {k: v for k, v in (e.headers.items() if e.headers else [])}
+        raw = e.read() if e.fp else b""
+        code = e.code
+    except Exception as e:  # noqa: BLE001
+        return 0, {}, {"error": str(e)[:200]}
+    try:
+        body = json.loads(raw.decode("utf-8", errors="replace") or "null")
+    except json.JSONDecodeError:
+        body = {"raw": raw[:300].decode("utf-8", errors="replace")}
+    return code, hdrs, body
 
 
 def header_get(headers: dict[str, str], name: str) -> str | None:
@@ -348,6 +380,110 @@ class NginxOrderEmbed:
     def call_order(self, order_id: str, *, ensure: bool = True) -> dict:
         return self.call(f"/order/{order_id}", ensure=ensure)
 
+    def call_json(
+        self,
+        path: str,
+        *,
+        method: str = "GET",
+        payload: dict | None = None,
+        ensure: bool = True,
+        timeout: float = 90.0,
+    ) -> dict:
+        """Gọi JSON qua nginx — nhúng $upstream_* trước khi vào module token/đơn."""
+        if ensure:
+            up = self.ensure_up()
+            if not up.get("ok"):
+                return {"ok": False, "error": "embed stack not up", "start": up, "via_nginx": False}
+        url = f"{self.base.rstrip('/')}{path}"
+        code, headers, body = http_json(url, method=method, payload=payload, timeout=timeout)
+        embedded = extract_upstream_headers(headers)
+        ok = 200 <= code < 300 and isinstance(body, dict) and body.get("ok", True) is not False
+        if code == 0:
+            ok = False
+        return {
+            "ok": ok,
+            "http": code,
+            "url": url,
+            "method": method,
+            "via": header_get(headers, "X-Order-Via"),
+            "pipeline": header_get(headers, "X-Pipeline"),
+            "via_nginx": True,
+            "embedded": embedded,
+            "payload": body,
+            "checked_at": utc_now(),
+        }
+
+    def token_status(self, *, ensure: bool = True) -> dict:
+        return self.call_json("/v1/token/status", method="GET", ensure=ensure)
+
+    def token_set(self, platform: str, token: str, *, ensure: bool = True, **extra: Any) -> dict:
+        payload = {"platform": platform, "token": token, **extra}
+        return self.call_json("/v1/token/set", method="POST", payload=payload, ensure=ensure)
+
+    def token_refresh(self, platform: str = "ViettelPost", *, ensure: bool = True) -> dict:
+        return self.call_json(
+            "/v1/token/refresh", method="POST", payload={"platform": platform}, ensure=ensure
+        )
+
+    def token_ensure(self, platforms: list[str] | None = None, *, ensure: bool = True) -> dict:
+        payload: dict[str, Any] = {}
+        if platforms:
+            payload["platforms"] = platforms
+        return self.call_json("/v1/token/ensure", method="POST", payload=payload, ensure=ensure)
+
+    def orders_realtime(self, *, limit: int = 20, notify: bool = False, ensure: bool = True) -> dict:
+        """Pipeline: nginx → access_token_rotate → danh sách đơn realtime."""
+        return self.call_json(
+            "/v1/orders/realtime",
+            method="POST",
+            payload={"limit": limit, "notify": notify},
+            timeout=120.0,
+            ensure=ensure,
+        )
+
+    def token_realtime_pipeline(self, *, limit: int = 20, notify: bool = False, auto_stop: bool | None = None) -> dict:
+        """Toàn bộ: bật nginx → nạp/ensure token module → gọi đơn RT → (optional) stop."""
+        stop = self.auto_stop if auto_stop is None else auto_stop
+        started = self.ensure_up()
+        if not started.get("ok"):
+            return {
+                "ok": False,
+                "checked_at": utc_now(),
+                "via_nginx": False,
+                "start": started,
+                "verdict": "❌ Không bật được nginx — không nạp token/gọi đơn RT",
+            }
+        try:
+            ensure = self.token_ensure(ensure=False)
+            realtime = self.orders_realtime(limit=limit, notify=notify, ensure=False)
+            status = self.token_status(ensure=False)
+            orders = self.call_orders(ensure=False)
+            ok = bool(realtime.get("ok")) and bool(ensure.get("ok") or (ensure.get("payload") or {}).get("ok"))
+            rt_payload = realtime.get("payload") if isinstance(realtime.get("payload"), dict) else {}
+            report = {
+                "ok": ok,
+                "checked_at": utc_now(),
+                "via_nginx": True,
+                "pipeline": "client→nginx→upstream→access_token_rotate→realtime",
+                "embedded": realtime.get("embedded") or ensure.get("embedded"),
+                "ensure": ensure.get("payload"),
+                "token_status": status.get("payload"),
+                "realtime": rt_payload,
+                "nginx_orders": (orders.get("payload") or {}).get("orders")
+                or (rt_payload.get("nginx_mock_orders") if isinstance(rt_payload, dict) else None),
+                "access_log_tail": self.last_access_log(5),
+                "verdict": (
+                    f"✅ Pipeline nginx→token→realtime · "
+                    f"new={(rt_payload.get('cycle') or {}).get('new_count')} · "
+                    f"upstream={(realtime.get('embedded') or {}).get('$upstream_addr')}"
+                ),
+                "policy": {"owned_only": True, "no_dump_login": True, "via_nginx_required": True},
+            }
+            return report
+        finally:
+            if stop:
+                self.stop()
+
     def last_access_log(self, limit: int = 5) -> list[dict]:
         if not LOG.is_file():
             return []
@@ -426,16 +562,20 @@ class NginxOrderEmbed:
         return {
             "ok": True,
             "module": "nginx_order_embed",
-            "title": "Nhúng gọi đơn qua nginx (on-demand)",
+            "title": "Nhúng gọi đơn + token qua nginx (on-demand)",
             "base": self.base,
             "upstream": self.upstream,
             "when_needed": [
                 "once — chạy một lần rồi tắt",
                 "start/ensure_up — bật khi cần nhiều lần",
-                "orders/call_orders — lấy danh sách đơn",
+                "token-realtime — nginx→access_token_rotate→danh sách đơn RT",
+                "orders/call_orders — lấy danh sách đơn mock",
                 "stop — tắt sau khi xong",
             ],
-            "flow": f"client → {self.base}/orders → upstream {self.upstream}",
+            "flow": (
+                f"client → {self.base}/v1/token/*|/v1/orders/realtime|/orders "
+                f"→ upstream {self.upstream} → access_token_rotate"
+            ),
             "embedded_vars": EMBEDDED_VARS,
             "paths": {
                 "conf": str(CONF),
@@ -444,7 +584,10 @@ class NginxOrderEmbed:
                 "state": str(STATE_FILE),
                 "reports": str(REPORTS),
             },
-            "cli": "python3 scripts/nginx_order_embed.py once|start|stop|status|orders|test",
+            "cli": (
+                "python3 scripts/nginx_order_embed.py "
+                "once|start|stop|status|orders|token-realtime|test"
+            ),
             "python": "from nginx_order_embed import NginxOrderEmbed, run_when_needed",
             "status": self.status(),
         }
@@ -477,22 +620,39 @@ def format_text(report: dict) -> str:
     L("🧩 NGINX ORDER EMBED MODULE")
     L(f"Lúc: {report.get('checked_at')}")
     L(report.get("verdict") or report.get("hint") or "")
+    if report.get("via_nginx") or report.get("pipeline"):
+        L(f"via_nginx={report.get('via_nginx')} pipeline={report.get('pipeline')}")
     if report.get("module") or report.get("query"):
         L(f"query: {report.get('query') or report.get('module')}")
     L(f"base={report.get('base')} upstream={report.get('upstream')}")
     L("")
+    emb = report.get("embedded") or {}
+    if emb:
+        L("nginx $upstream_*:")
+        for k, v in emb.items():
+            if v is not None:
+                L(f"  {k} = {v}")
     if "running" in (report.get("status") or {}):
         s = report["status"]
         L(f"status: running={s.get('running')} mock={s.get('mock_up')} nginx={s.get('nginx_up')}")
+    if report.get("ensure"):
+        L(f"ensure: {(report.get('ensure') or {}).get('verdict') or report.get('ensure')}")
+    rt = report.get("realtime") or {}
+    if isinstance(rt, dict) and (rt.get("cycle") or rt.get("verdict")):
+        L(f"realtime: {rt.get('verdict')}")
+        c = rt.get("cycle") or {}
+        L(f"  new={c.get('new_count')} blocked={c.get('blocked')}")
     orders = report.get("orders") or {}
     if orders:
         L(f"orders http={orders.get('http')} via={orders.get('via')} ok={orders.get('ok')}")
-        emb = orders.get("embedded") or report.get("embedded_headers") or {}
-        for k, v in emb.items():
+        emb2 = orders.get("embedded") or report.get("embedded_headers") or {}
+        for k, v in emb2.items():
             L(f"  {k} = {v}")
         payload = orders.get("payload") or {}
         for o in (payload.get("orders") or [])[:5]:
             L(f"  · {o.get('order_id')} · {o.get('tracking_code')} · {o.get('status')} · {o.get('backend')}")
+    for o in (report.get("nginx_orders") or [])[:5]:
+        L(f"  · {o.get('order_id')} · {o.get('tracking_code')} · {o.get('status')} · {o.get('backend')}")
     one = report.get("one") or {}
     if one:
         L(f"one: http={one.get('http')} ok={one.get('ok')}")
@@ -530,15 +690,26 @@ def write_outputs(report: dict) -> dict[str, Path]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Module nhúng gọi đơn qua nginx (on-demand)")
+    ap = argparse.ArgumentParser(description="Module nhúng gọi đơn+token qua nginx (on-demand)")
     ap.add_argument(
         "command",
         nargs="?",
         default="once",
-        choices=["once", "start", "stop", "status", "orders", "order", "test", "describe"],
+        choices=[
+            "once",
+            "start",
+            "stop",
+            "status",
+            "orders",
+            "order",
+            "token-realtime",
+            "test",
+            "describe",
+        ],
     )
     ap.add_argument("--id", default="OMS-NGX-001", help="order id cho lệnh order")
-    ap.add_argument("--keep", action="store_true", help="once nhưng không auto-stop")
+    ap.add_argument("--limit", type=int, default=20, help="limit đơn realtime")
+    ap.add_argument("--keep", action="store_true", help="once/token-realtime không auto-stop")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--base", default=DEFAULT_BASE)
     ap.add_argument("--upstream", default=DEFAULT_UPSTREAM)
@@ -549,6 +720,11 @@ def main(argv: list[str] | None = None) -> int:
     cmd = args.command
     if cmd == "once":
         report = mod.once(order_id=args.id)
+    elif cmd == "token-realtime":
+        report = mod.token_realtime_pipeline(limit=args.limit, auto_stop=not args.keep)
+        report.setdefault("base", mod.base)
+        report.setdefault("upstream", mod.upstream)
+        write_outputs(report)
     elif cmd == "test":
         report = mod.test()
     elif cmd == "start":

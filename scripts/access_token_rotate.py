@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Đổi / refresh access token để gọi đơn hàng realtime (owned-only).
 
+Luồng mặc định:
+  client → nginx:18080 ($upstream_*) → upstream → access_token_rotate → realtime orders
+
 Hỗ trợ:
-  - set: ghi token mới vào secrets/backend_pipes.env
-  - refresh: ViettelPost Login(+ownerconnect) bằng USER/PASSWORD sở hữu
-  - ensure: kiểm tra token; refresh khi auth_fail (VTP) rồi dùng cho sync
-  - apply-realtime: ensure → realtime_order_sync --once
+  - set / refresh / ensure / apply-realtime — mặc định qua nginx
+  - --direct: bỏ qua nginx (chỉ debug / upstream nội bộ)
 
 Không đọc Acc_all/stealer dumps. Không dump-login.
 """
@@ -448,8 +449,15 @@ def ensure_tokens(*, platforms: list[str] | None = None, auto_refresh_vtp: bool 
     }
 
 
-def apply_realtime(*, limit: int = 20, notify: bool = False) -> dict:
-    """ensure tokens → chạy realtime_order_sync một vòng."""
+def apply_realtime(*, limit: int = 20, notify: bool = False, via_nginx: bool = True) -> dict:
+    """ensure tokens → danh sách đơn realtime.
+
+    Mặc định BẮT BUỘC qua nginx ($upstream_*) rồi mới nạp module đổi token / gọi API.
+    Dùng via_nginx=False chỉ cho upstream nội bộ (tránh đệ quy).
+    """
+    if via_nginx:
+        return apply_realtime_via_nginx(limit=limit, notify=notify)
+
     ensure = ensure_tokens()
     from realtime_order_sync import load_env as sync_load_env, run_cycle
 
@@ -458,6 +466,7 @@ def apply_realtime(*, limit: int = 20, notify: bool = False) -> dict:
     return {
         "ok": bool(cycle.get("ok")),
         "checked_at": utc_now(),
+        "via_nginx": False,
         "ensure": ensure,
         "cycle": {
             "new_count": cycle.get("new_count"),
@@ -473,10 +482,106 @@ def apply_realtime(*, limit: int = 20, notify: bool = False) -> dict:
             ],
         },
         "verdict": (
-            f"✅ apply-realtime · new={cycle.get('new_count')} · "
+            f"✅ apply-realtime (direct) · new={cycle.get('new_count')} · "
             f"ready={ensure.get('ready_platforms')} · refreshed={ensure.get('refreshed')}"
         ),
     }
+
+
+def apply_realtime_via_nginx(*, limit: int = 20, notify: bool = False, keep: bool = False) -> dict:
+    """client → nginx → upstream → access_token_rotate → realtime order list."""
+    from nginx_order_embed import NginxOrderEmbed
+
+    mod = NginxOrderEmbed(auto_stop=not keep)
+    report = mod.token_realtime_pipeline(limit=limit, notify=notify, auto_stop=not keep)
+    # payload từ /v1/orders/realtime = apply_realtime(direct) + nginx_mock_orders
+    rt = report.get("realtime") if isinstance(report.get("realtime"), dict) else {}
+    ensure = report.get("ensure") if isinstance(report.get("ensure"), dict) else rt.get("ensure") or {}
+    cycle = rt.get("cycle") if isinstance(rt.get("cycle"), dict) else {}
+    report["ensure"] = ensure
+    report["cycle"] = cycle or {
+        "new_count": None,
+        "blocked": [],
+        "backends": [],
+    }
+    if rt.get("nginx_mock_orders") and not report.get("nginx_orders"):
+        report["nginx_orders"] = rt.get("nginx_mock_orders")
+    if not report.get("verdict"):
+        report["verdict"] = (
+            f"{'✅' if report.get('ok') else '❌'} nginx→token→realtime · "
+            f"new={(report.get('cycle') or {}).get('new_count')}"
+        )
+    return report
+
+
+def set_access_token_via_nginx(
+    platform: str,
+    token: str,
+    *,
+    user: str | None = None,
+    shop_id: str | None = None,
+    as_api_key: bool = False,
+    keep: bool = False,
+) -> dict:
+    """Đổi token: bắt buộc nhúng qua nginx rồi mới nạp module."""
+    from nginx_order_embed import NginxOrderEmbed
+
+    mod = NginxOrderEmbed(auto_stop=not keep)
+    extra: dict[str, Any] = {}
+    if user:
+        extra["user"] = user
+    if shop_id:
+        extra["shop_id"] = shop_id
+    if as_api_key:
+        extra["as_api_key"] = True
+    started = mod.ensure_up()
+    if not started.get("ok"):
+        return {
+            "ok": False,
+            "error": "nginx embed chưa up — không nạp token",
+            "start": started,
+            "via_nginx": False,
+            "checked_at": utc_now(),
+        }
+    try:
+        res = mod.token_set(platform, token, **extra)
+        payload = res.get("payload") if isinstance(res.get("payload"), dict) else {}
+        out = dict(payload) if payload else {"ok": res.get("ok"), "error": res.get("error")}
+        out["via_nginx"] = True
+        out["embedded"] = res.get("embedded")
+        out["pipeline"] = res.get("pipeline")
+        out["http"] = res.get("http")
+        out["checked_at"] = utc_now()
+        if res.get("ok") and not out.get("verdict"):
+            out["verdict"] = f"✅ Đã nạp token qua nginx → {platform}"
+        elif not res.get("ok"):
+            out["ok"] = False
+            out["verdict"] = f"❌ Nạp token qua nginx thất bại · http={res.get('http')}"
+        return out
+    finally:
+        if not keep:
+            mod.stop()
+
+
+def ensure_tokens_via_nginx(*, platforms: list[str] | None = None, keep: bool = False) -> dict:
+    from nginx_order_embed import NginxOrderEmbed
+
+    mod = NginxOrderEmbed(auto_stop=not keep)
+    started = mod.ensure_up()
+    if not started.get("ok"):
+        return {"ok": False, "error": "nginx embed chưa up", "start": started, "via_nginx": False}
+    try:
+        res = mod.token_ensure(platforms)
+        payload = res.get("payload") if isinstance(res.get("payload"), dict) else {}
+        out = dict(payload) if payload else {"ok": False, "error": res}
+        out["via_nginx"] = True
+        out["embedded"] = res.get("embedded")
+        out["pipeline"] = res.get("pipeline")
+        out["checked_at"] = utc_now()
+        return out
+    finally:
+        if not keep:
+            mod.stop()
 
 
 def status() -> dict:
@@ -513,7 +618,9 @@ def status() -> dict:
             "refresh_vtp": "python3 scripts/access_token_rotate.py refresh --platform ViettelPost",
             "ensure": "python3 scripts/access_token_rotate.py ensure",
             "realtime": "python3 scripts/access_token_rotate.py apply-realtime",
+            "pipeline": "client → nginx:18080 → upstream → access_token_rotate → realtime orders",
         },
+        "via_nginx_required": True,
     }
 
 
@@ -523,6 +630,14 @@ def format_text(report: dict) -> str:
     L("🔑 ACCESS TOKEN ROTATE · GỌI ĐƠN REALTIME")
     L(f"Lúc: {report.get('checked_at') or utc_now()}")
     L(report.get("verdict") or "")
+    if report.get("via_nginx") or report.get("pipeline"):
+        L(f"via_nginx={report.get('via_nginx')} pipeline={report.get('pipeline')}")
+    emb = report.get("embedded") or {}
+    if emb:
+        L("nginx $upstream_*:")
+        for k, v in emb.items():
+            if v is not None:
+                L(f"  {k} = {v}")
     if report.get("platform"):
         L(f"platform={report.get('platform')} token={report.get('token_masked')}")
     if report.get("env_file"):
@@ -542,12 +657,20 @@ def format_text(report: dict) -> str:
             L(f"· {r.get('platform')}: status={probe.get('status')} http={probe.get('http')}")
             if r.get("refresh"):
                 L(f"  refresh: {r['refresh']}")
+    if report.get("ensure") and isinstance(report["ensure"], dict):
+        L("")
+        L(f"ensure: {report['ensure'].get('verdict') or report['ensure']}")
     if report.get("cycle"):
         c = report["cycle"]
         L("")
         L(f"realtime new={c.get('new_count')} blocked={c.get('blocked')}")
         for b in c.get("backends") or []:
             L(f"  - {b.get('backend')}: {b.get('status')} · {b.get('detail')}")
+    if report.get("nginx_orders"):
+        L("")
+        L(f"nginx mock orders: {len(report['nginx_orders'])}")
+        for o in report["nginx_orders"][:5]:
+            L(f"  · {o.get('order_id')} · {o.get('tracking_code')} · {o.get('status')}")
     if report.get("cli"):
         L("")
         L("CLI:")
@@ -557,7 +680,7 @@ def format_text(report: dict) -> str:
         for n in report["next"]:
             L(f"· {n}")
     L("")
-    L("Safety: owned-only · no dump-login · secrets gitignored")
+    L("Safety: owned-only · no dump-login · via nginx · secrets gitignored")
     return "\n".join(lines)
 
 
@@ -573,25 +696,36 @@ def write_outputs(report: dict) -> dict[str, Path]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Đổi/refresh access token gọi đơn realtime")
+    ap = argparse.ArgumentParser(
+        description="Đổi/refresh access token gọi đơn realtime (mặc định qua nginx)"
+    )
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p_set = sub.add_parser("set", help="Ghi access token sở hữu vào env")
+    p_set = sub.add_parser("set", help="Nạp access token sở hữu (qua nginx)")
     p_set.add_argument("--platform", required=True)
     p_set.add_argument("--token", required=True)
     p_set.add_argument("--user", default="")
     p_set.add_argument("--shop-id", default="")
     p_set.add_argument("--as-api-key", action="store_true", help="Pancake: lưu vào PANCAKE_POS_API_KEY")
+    p_set.add_argument("--direct", action="store_true", help="Ghi env thẳng, không qua nginx")
+    p_set.add_argument("--keep", action="store_true", help="Giữ nginx sau khi set")
 
     p_ref = sub.add_parser("refresh", help="Refresh token (ViettelPost Login owned)")
     p_ref.add_argument("--platform", default="ViettelPost")
+    p_ref.add_argument("--direct", action="store_true")
+    p_ref.add_argument("--keep", action="store_true")
 
-    sub.add_parser("ensure", help="Probe + auto-refresh VTP nếu cần")
+    p_ens = sub.add_parser("ensure", help="Probe + auto-refresh VTP (qua nginx)")
+    p_ens.add_argument("--direct", action="store_true")
+    p_ens.add_argument("--keep", action="store_true")
+
     sub.add_parser("status", help="Trạng thái token trong env")
 
-    p_rt = sub.add_parser("apply-realtime", help="ensure → sync đơn realtime")
+    p_rt = sub.add_parser("apply-realtime", help="nginx → ensure → danh sách đơn realtime")
     p_rt.add_argument("--limit", type=int, default=20)
     p_rt.add_argument("--notify", action="store_true")
+    p_rt.add_argument("--direct", action="store_true", help="Bỏ qua nginx (debug)")
+    p_rt.add_argument("--keep", action="store_true", help="Giữ nginx sau pipeline")
 
     p_probe = sub.add_parser("probe", help="Probe một platform")
     p_probe.add_argument("--platform", required=True)
@@ -600,13 +734,24 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     if args.cmd == "set":
-        report = set_access_token(
-            args.platform,
-            args.token,
-            user=args.user or None,
-            shop_id=args.shop_id or None,
-            as_api_key=args.as_api_key,
-        )
+        if args.direct:
+            report = set_access_token(
+                args.platform,
+                args.token,
+                user=args.user or None,
+                shop_id=args.shop_id or None,
+                as_api_key=args.as_api_key,
+            )
+            report["via_nginx"] = False
+        else:
+            report = set_access_token_via_nginx(
+                args.platform,
+                args.token,
+                user=args.user or None,
+                shop_id=args.shop_id or None,
+                as_api_key=args.as_api_key,
+                keep=args.keep,
+            )
     elif args.cmd == "refresh":
         plat = normalize_platform(args.platform)
         if plat != "ViettelPost":
@@ -615,12 +760,39 @@ def main(argv: list[str] | None = None) -> int:
                 "error": f"refresh tự động hiện hỗ trợ ViettelPost; {plat} dùng: set --token",
                 "checked_at": utc_now(),
             }
-        else:
+        elif args.direct:
             report = refresh_viettelpost()
+            report["via_nginx"] = False
+        else:
+            from nginx_order_embed import NginxOrderEmbed
+
+            mod = NginxOrderEmbed(auto_stop=not args.keep)
+            started = mod.ensure_up()
+            if not started.get("ok"):
+                report = {"ok": False, "error": "nginx embed chưa up", "start": started}
+            else:
+                try:
+                    res = mod.token_refresh(plat)
+                    payload = res.get("payload") if isinstance(res.get("payload"), dict) else {}
+                    report = dict(payload) if payload else {"ok": False, "error": res}
+                    report["via_nginx"] = True
+                    report["embedded"] = res.get("embedded")
+                    report["pipeline"] = res.get("pipeline")
+                    report["checked_at"] = utc_now()
+                finally:
+                    if not args.keep:
+                        mod.stop()
     elif args.cmd == "ensure":
-        report = ensure_tokens()
+        if args.direct:
+            report = ensure_tokens()
+            report["via_nginx"] = False
+        else:
+            report = ensure_tokens_via_nginx(keep=args.keep)
     elif args.cmd == "apply-realtime":
-        report = apply_realtime(limit=args.limit, notify=args.notify)
+        if args.direct:
+            report = apply_realtime(limit=args.limit, notify=args.notify, via_nginx=False)
+        else:
+            report = apply_realtime_via_nginx(limit=args.limit, notify=args.notify, keep=args.keep)
     elif args.cmd == "probe":
         report = probe_token(args.platform)
         report["checked_at"] = utc_now()
