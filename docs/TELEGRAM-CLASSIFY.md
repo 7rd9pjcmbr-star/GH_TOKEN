@@ -54,6 +54,18 @@ python3 scripts/backend_pipe_keepalive.py --loop --interval 300 --notify-on-risk
 Điền `PANCAKE_POS_API_KEY` / `GHN_API_TOKEN` / `TPOS_*` vào `secrets/backend_pipes.env` (gitignored).
 State: `secrets/backend_pipes.state.json` · báo cáo: `reports/telegram-classify/backend_pipe_keepalive.json`.
 
+## Backend bưu cục · truy vấn DB
+
+Materialize OMS ingest → SQLite, probe pipe bưu cục/3PL (secrets-only), SQL read-only:
+
+```bash
+python3 scripts/buucuc_backend_db_query.py
+python3 scripts/buucuc_backend_db_query.py --sql "SELECT backend, buucuc, COUNT(*) FROM orders GROUP BY 1,2"
+sqlite3 reports/telegram-classify/buucuc_backend.db "SELECT * FROM backends;"
+```
+
+Panel: **🗄 Backend BC·DB**. DB: `reports/telegram-classify/buucuc_backend.db`.
+
 ## Realtime đơn hàng theo backend
 
 ```bash
