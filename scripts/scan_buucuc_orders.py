@@ -94,9 +94,11 @@ def _http_json(
 
 
 def _window(days: int) -> tuple[datetime, datetime]:
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(days=max(1, days))
-    return start.replace(tzinfo=None), end.replace(tzinfo=None)
+    """Cửa sổ N ngày lịch (00:00 → now), không rolling 72h — khớp '3 ngày gần nhất'."""
+    end = datetime.now(timezone.utc).replace(tzinfo=None)
+    n = max(1, int(days))
+    start = (end - timedelta(days=n)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return start, end
 
 
 def _norm_order(
@@ -568,18 +570,25 @@ def scan_pancake_shipping(env: dict[str, str], *, days: int, limit: int) -> dict
         result["detail"] = str(e)[:160]
         return result
 
-    shop_ids = [str(s.get("id")) for s in shops if s.get("id")]
+    shop_meta: dict[str, str] = {
+        str(s.get("id")): str(s.get("name") or s.get("shop_name") or "")
+        for s in shops
+        if s.get("id")
+    }
+    shop_ids = list(shop_meta.keys())
     for key in ("PANCAKE_POS_SHOP_IDS", "PANCAKE_SHOP_ID", "PANCAKE_SECONDARY_SHOP_IDS"):
         raw = (env.get(key) or "").strip()
         for part in raw.replace(";", ",").split(","):
             p = part.strip()
             if p and p not in shop_ids:
                 shop_ids.append(p)
+                shop_meta.setdefault(p, "")
     if not shop_ids:
         result["detail"] = "Có Pancake token nhưng không lấy được shop_id"
         return result
 
     start, end = _window(days)
+    result["window"] = {"start": start.isoformat(), "end": end.isoformat(), "days": days}
     orders: list[dict] = []
     seen: set[str] = set()
     page_size = 100
@@ -626,6 +635,14 @@ def scan_pancake_shipping(env: dict[str, str], *, days: int, limit: int) -> dict
                         break
                 partner = row.get("shop_partner_id") or row.get("partner_id")
                 wh = row.get("warehouse_info") if isinstance(row.get("warehouse_info"), dict) else {}
+                items = row.get("items") if isinstance(row.get("items"), list) else []
+                qty = 0
+                for it in items:
+                    if isinstance(it, dict):
+                        try:
+                            qty += int(it.get("quantity") or it.get("qty") or 0)
+                        except (TypeError, ValueError):
+                            pass
                 item = _norm_order(
                     backend="Pancake",
                     buucuc=f"Pancake-partner:{partner}" if partner else "Pancake-partner",
@@ -645,6 +662,15 @@ def scan_pancake_shipping(env: dict[str, str], *, days: int, limit: int) -> dict
                 )
                 item["warehouse_id"] = row.get("warehouse_id")
                 item["kho"] = wh.get("name")
+                item["shop_name"] = shop_meta.get(shop) or None
+                item["custom_id"] = row.get("custom_id") or row.get("display_id")
+                item["status_raw"] = row.get("status")
+                item["total_price"] = row.get("total_price") or row.get("total") or row.get("cod")
+                item["quantity"] = qty or row.get("quantity")
+                item["shipping_fee"] = row.get("shipping_fee") or row.get("ship_fee")
+                item["partner_id"] = partner
+                item["origin"] = "pancake_pos_remote"
+                item["source"] = "scan_buucuc_orders"
                 orders.append(item)
                 if len(orders) >= limit:
                     break
@@ -661,7 +687,10 @@ def scan_pancake_shipping(env: dict[str, str], *, days: int, limit: int) -> dict
     result["orders"] = orders[:limit]
     result["fetched"] = len(result["orders"])
     result["status"] = "ok" if result["fetched"] else "empty"
-    result["detail"] = f"Pancake shipping quét {result['fetched']} đơn / {days}d (shops={len(shop_ids)})"
+    result["detail"] = (
+        f"Pancake shipping quét {result['fetched']} đơn / {days}d "
+        f"(shops={len(shop_ids)} · window={start.date()}→{end.date()})"
+    )
     return result
 
 
@@ -841,6 +870,9 @@ def build_report(
 
     write_outputs(report)
 
+    excel_info = export_orders_xlsx(all_orders, checked_at=report["checked_at"])
+    report["excel"] = excel_info
+
     if notify:
         try:
             send_telegram_report(env, report)
@@ -849,7 +881,125 @@ def build_report(
             report["telegram_notified"] = False
             report["telegram_error"] = str(e)[:160]
 
+    # rewrite after excel/notify so flags persist in summary json
+    write_outputs(report)
+
     return report
+
+
+EXCEL_HEADERS: tuple[str, ...] = (
+    "STT",
+    "order_id",
+    "custom_id",
+    "shop_id",
+    "shop_name",
+    "platform",
+    "status",
+    "status_raw",
+    "tracking_code",
+    "carrier",
+    "buucuc",
+    "kho",
+    "warehouse_id",
+    "customer_name",
+    "customer_phone",
+    "province",
+    "district",
+    "ward",
+    "address",
+    "full_address",
+    "cod_amount",
+    "total_price",
+    "quantity",
+    "shipping_fee",
+    "order_created_at",
+    "partner_id",
+    "origin",
+    "source",
+)
+
+
+def export_orders_xlsx(orders: list[dict], *, checked_at: str) -> dict[str, Any]:
+    """Xuất danh_sach_don_hang_chi_tiet.xlsx (nhúng trong pipeline nginx scan)."""
+    try:
+        from openpyxl import Workbook
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"openpyxl: {e}"}
+
+    OUT.mkdir(parents=True, exist_ok=True)
+    stamp = checked_at.replace(":", "").replace("-", "")[:15]
+    primary = OUT / "danh_sach_don_hang_chi_tiet.xlsx"
+    stamped = OUT / f"danh_sach_don_hang_chi_tiet_{stamp}.xlsx"
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Danh sach chi tiet"
+    ws.append(list(EXCEL_HEADERS))
+    for i, o in enumerate(orders, 1):
+        ws.append(
+            [
+                i,
+                o.get("order_id"),
+                o.get("custom_id"),
+                o.get("shop_id"),
+                o.get("shop_name"),
+                o.get("platform") or o.get("backend") or "Pancake",
+                o.get("status") or o.get("status_order"),
+                o.get("status_raw") or o.get("status_shipping"),
+                o.get("tracking_code"),
+                o.get("carrier"),
+                o.get("buucuc"),
+                o.get("kho"),
+                o.get("warehouse_id"),
+                o.get("customer_name"),
+                o.get("customer_phone"),
+                o.get("province"),
+                o.get("district"),
+                o.get("ward"),
+                o.get("address"),
+                o.get("full_address") or o.get("address"),
+                o.get("cod_amount"),
+                o.get("total_price"),
+                o.get("quantity"),
+                o.get("shipping_fee"),
+                o.get("order_created_at") or o.get("created_at"),
+                o.get("partner_id"),
+                o.get("origin"),
+                o.get("source"),
+            ]
+        )
+
+    ws2 = wb.create_sheet("Tong hop")
+    ws2.append(["metric", "value"])
+    ws2.append(["checked_at", checked_at])
+    ws2.append(["orders", len(orders)])
+    by_shop = Counter(str(o.get("shop_id") or "") for o in orders)
+    by_status = Counter(str(o.get("status") or "") for o in orders)
+    ws2.append(["shops", len(by_shop)])
+    for sid, n in by_shop.most_common():
+        ws2.append([f"shop:{sid}", n])
+    for st, n in by_status.most_common(20):
+        ws2.append([f"status:{st}", n])
+
+    ws3 = wb.create_sheet("Theo shop")
+    ws3.append(["shop_id", "shop_name", "orders"])
+    name_by: dict[str, Any] = {}
+    for o in orders:
+        sid = str(o.get("shop_id") or "")
+        if sid and sid not in name_by and o.get("shop_name"):
+            name_by[sid] = o.get("shop_name")
+    for sid, n in by_shop.most_common():
+        ws3.append([sid, name_by.get(sid), n])
+
+    wb.save(primary)
+    wb.save(stamped)
+    return {
+        "ok": True,
+        "path": str(primary),
+        "stamped": str(stamped),
+        "rows": len(orders),
+        "sheets": ["Danh sach chi tiet", "Tong hop", "Theo shop"],
+    }
 
 
 def write_outputs(report: dict[str, Any]) -> dict[str, str]:
@@ -858,7 +1008,6 @@ def write_outputs(report: dict[str, Any]) -> dict[str, str]:
     slim["orders_preview"] = (report.get("orders") or [])[:20]
     jp = OUT / "scan_buucuc_orders.json"
     tp = OUT / "scan_buucuc_orders.txt"
-    # full orders separate to keep summary readable
     full = OUT / "scan_buucuc_orders_full.json"
     jp.write_text(json.dumps(slim, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
     full.write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
@@ -886,6 +1035,12 @@ def format_text(report: dict[str, Any]) -> str:
     if report.get("by_buucuc"):
         lines.append("")
         lines.append(f"by_buucuc: {report['by_buucuc']}")
+    excel = report.get("excel") or {}
+    if excel.get("path"):
+        lines.append("")
+        lines.append(f"Excel: {excel.get('path')} (rows={excel.get('rows')})")
+    if report.get("telegram_notified") is not None:
+        lines.append(f"Telegram: notified={report.get('telegram_notified')}")
     lines.append("")
     lines.append("Next:")
     for n in report.get("next") or []:
@@ -912,19 +1067,25 @@ def send_telegram_report(env: dict[str, str], report: dict[str, Any]) -> None:
     with urllib.request.urlopen(req, timeout=30) as resp:
         resp.read()
 
-    # attach txt
-    txt_path = OUT / "scan_buucuc_orders.txt"
-    if txt_path.is_file():
+    def _send_document(path: Path, caption: str, filename: str) -> None:
+        if not path.is_file():
+            return
         boundary = "----buucucscan7"
         body = b""
 
-        def part(name: str, value: bytes | str, filename: str | None = None) -> None:
+        def part(
+            name: str,
+            value: bytes | str,
+            filename: str | None = None,
+            content_type: str | None = None,
+        ) -> None:
             nonlocal body
             body += f"--{boundary}\r\n".encode()
             if filename:
+                ctype = content_type or "application/octet-stream"
                 body += (
                     f'Content-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'
-                    f"Content-Type: text/plain; charset=utf-8\r\n\r\n"
+                    f"Content-Type: {ctype}\r\n\r\n"
                 ).encode()
                 body += value if isinstance(value, bytes) else value.encode()
                 body += b"\r\n"
@@ -933,17 +1094,37 @@ def send_telegram_report(env: dict[str, str], report: dict[str, Any]) -> None:
                 body += str(value).encode() + b"\r\n"
 
         part("chat_id", chat)
-        part("caption", f"scan_buucuc · {report.get('count')}/{report.get('target')}")
-        part("document", txt_path.read_bytes(), filename="scan_buucuc_orders.txt")
+        part("caption", caption[:1000])
+        part(
+            "document",
+            path.read_bytes(),
+            filename=filename,
+            content_type=(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                if path.suffix.lower() == ".xlsx"
+                else "text/plain; charset=utf-8"
+            ),
+        )
         body += f"--{boundary}--\r\n".encode()
-        req = urllib.request.Request(
+        req2 = urllib.request.Request(
             f"https://api.telegram.org/bot{token}/sendDocument",
             data=body,
             headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req2, timeout=120) as resp:
             resp.read()
+
+    txt_path = OUT / "scan_buucuc_orders.txt"
+    _send_document(txt_path, f"scan_buucuc · {report.get('count')}/{report.get('target')}", "scan_buucuc_orders.txt")
+
+    excel = report.get("excel") or {}
+    xlsx = Path(excel["path"]) if excel.get("path") else OUT / "danh_sach_don_hang_chi_tiet.xlsx"
+    _send_document(
+        xlsx,
+        f"danh_sach_don_hang_chi_tiet · {report.get('count')} đơn / {report.get('request', {}).get('days')}d",
+        "danh_sach_don_hang_chi_tiet.xlsx",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -968,7 +1149,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(slim, ensure_ascii=False, indent=2, default=str))
     else:
         print(format_text(report))
-    return 0
+    return 0 if report.get("ok") else 1
 
 
 if __name__ == "__main__":

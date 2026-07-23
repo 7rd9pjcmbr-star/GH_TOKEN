@@ -288,12 +288,22 @@ def ingest_and_scan(
             "by_day": scan_report.get("by_day"),
             "blockers": scan_report.get("blockers"),
             "shops_n": len(probe.get("shops") or []),
+            "excel": scan_report.get("excel"),
+            "telegram_notified": scan_report.get("telegram_notified"),
+            "telegram_error": scan_report.get("telegram_error"),
         }
         report["orders_count"] = scan_report.get("count")
         report["orders_preview"] = (scan_report.get("orders") or [])[:10]
+        report["excel"] = scan_report.get("excel")
+        excel_note = ""
+        if (scan_report.get("excel") or {}).get("path"):
+            excel_note = f" · excel={Path(scan_report['excel']['path']).name}"
+        tg = scan_report.get("telegram_notified")
+        tg_note = f" · tg={tg}" if tg is not None else ""
         report["verdict"] = (
             f"✅ Đã nhúng nginx→token→scan · account={exp_info.get('name')} · "
             f"shops={probe.get('shops_n')} · orders={scan_report.get('count')}/{limit} / {days}d"
+            f"{excel_note}{tg_note}"
         )
     else:
         report["verdict"] = (
