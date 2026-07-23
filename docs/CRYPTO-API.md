@@ -60,3 +60,13 @@ python3 scripts/crypto_decode_assist.py --text 'MDk3OTI2MzQ2Mw=='
 ```
 
 Panel: **Hỗ trợ giải mã**. Báo cáo: `reports/telegram-classify/crypto_decode_assist.txt`.
+
+### Ánh xạ giải mã × icon · mọi kho + bưu cục
+
+Kết hợp decode assist với mapper icon phản hồi trên toàn bộ kho/bưu cục vận chuyển:
+
+```bash
+python3 scripts/decode_icon_logistics_mapper.py
+```
+
+Panel: **🗺 Giải mã×icon**. Báo cáo: `reports/telegram-classify/decode_icon_logistics_mapper.txt`.
