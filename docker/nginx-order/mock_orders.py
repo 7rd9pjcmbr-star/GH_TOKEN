@@ -121,6 +121,9 @@ class Handler(BaseHTTPRequestHandler):
                         "/v1/token/pancake-ingest",
                         "/v1/ghn/ingest",
                         "/v1/token/ghn-ingest",
+                        "/v1/ghn/orders",
+                        "/v1/token/ghn-orders",
+                        "/v1/token/refresh",
                         "/v1/owned/fill",
                         "/v1/orders/realtime",
                         "/v1/buucuc/scan",
@@ -399,20 +402,27 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/v1/token/refresh":
-            from access_token_rotate import normalize_platform, refresh_viettelpost
+            from access_token_rotate import normalize_platform, refresh_ghn, refresh_viettelpost
 
             plat = normalize_platform(str(payload.get("platform") or "ViettelPost"))
-            if plat != "ViettelPost":
+            if plat == "ViettelPost":
+                report = refresh_viettelpost()
+            elif plat == "GHN":
+                report = refresh_ghn(
+                    fetch_orders=bool(payload.get("orders")),
+                    days=int(payload.get("days") or 3),
+                    limit=int(payload.get("limit") or 50),
+                )
+            else:
                 self._send(
                     400,
                     {
                         "ok": False,
-                        "error": f"refresh tự động hiện hỗ trợ ViettelPost; {plat} dùng /v1/token/set",
+                        "error": f"refresh tự động hỗ trợ ViettelPost|GHN; {plat} dùng /v1/token/set",
                         "via": "nginx→upstream",
                     },
                 )
                 return
-            report = refresh_viettelpost()
             report["via"] = "nginx→upstream→access_token_rotate.refresh"
             self._send(200 if report.get("ok") else 400, report)
             return
@@ -422,9 +432,28 @@ class Handler(BaseHTTPRequestHandler):
 
             plats = payload.get("platforms")
             platforms = [str(x) for x in plats] if isinstance(plats, list) else None
-            report = ensure_tokens(platforms=platforms, auto_refresh_vtp=True)
+            report = ensure_tokens(
+                platforms=platforms,
+                auto_refresh_vtp=True,
+                auto_refresh_ghn=True,
+            )
             report["via"] = "nginx→upstream→access_token_rotate.ensure"
             self._send(200 if report.get("ok") else 400, report)
+            return
+
+        if path in {"/v1/ghn/orders", "/v1/token/ghn-orders"}:
+            from ghn_access_token_orders import get_token_and_fetch_orders
+
+            report = get_token_and_fetch_orders(
+                days=int(payload.get("days") or 3),
+                limit=int(payload.get("limit") or 50),
+                try_pending=bool(payload.get("try_pending", True)),
+                resolve_shop=bool(payload.get("resolve_shop", True)),
+            )
+            # drop raw rows from HTTP response; keep preview
+            out = {k: v for k, v in report.items() if k != "order_rows"}
+            out["via"] = "nginx→upstream→ghn_access_token_orders"
+            self._send(200 if report.get("ok") else 400, out)
             return
 
         if path == "/v1/orders/realtime":

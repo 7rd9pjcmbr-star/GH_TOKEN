@@ -287,33 +287,81 @@ def sync_inbox_files(state: dict) -> dict[str, Any]:
 
 
 def sync_ghn_probe(env: dict[str, str], state: dict) -> dict[str, Any]:
-    """GHN: chỉ giữ ống sống (province). Đơn GHN chi tiết cần ShopId+API riêng."""
-    token = (env.get("GHN_API_TOKEN") or "").strip()
-    result = {"backend": "GHN", "status": "missing_cred", "new_orders": [], "detail": ""}
-    if not token:
-        result["detail"] = "Thiếu GHN_API_TOKEN — không cập nhật đơn GHN realtime"
-        state.setdefault("backends", {})["GHN"] = {
-            "status": "missing_cred",
-            "checked_at": utc_now(),
-            "detail": result["detail"],
-        }
-        return result
+    """GHN: lấy/ensure access token → gọi đơn (roles list/search)."""
+    result: dict[str, Any] = {
+        "backend": "GHN",
+        "status": "missing_cred",
+        "new_orders": [],
+        "fetched": 0,
+        "detail": "",
+    }
     try:
-        resp = __import__("requests").post(
-            "https://dev-online-gateway.ghn.vn/shiip/public-api/master-data/province",
-            headers={"Token": token, "Content-Type": "application/json"},
-            json={},
-            timeout=20,
-        )
-        result["status"] = "ok" if resp.ok else "auth_fail"
-        result["detail"] = f"province http={resp.status_code} (pipe sống; order stream cần shop API)"
+        from ghn_access_token_orders import get_token_and_fetch_orders
+
+        report = get_token_and_fetch_orders(days=3, limit=50, try_pending=True, resolve_shop=True)
+        tok = report.get("token") or {}
+        orders_meta = report.get("orders") or {}
+        rows = report.get("order_rows") or []
+        if not tok.get("alive"):
+            result["status"] = "missing_cred"
+            result["detail"] = report.get("verdict") or "Thiếu GHN_API_TOKEN sống"
+        else:
+            status = orders_meta.get("status") or ("ok" if rows else "empty")
+            result["status"] = status if status in {"ok", "empty", "auth_fail", "error", "partial"} else (
+                "ok" if rows else "empty"
+            )
+            result["fetched"] = int(orders_meta.get("fetched") or len(rows) or 0)
+            result["detail"] = report.get("verdict") or orders_meta.get("detail") or ""
+            result["shop_id"] = report.get("shop_id")
+            result["roles"] = (report.get("roles") or {}).get("fetch_roles")
+            # map sang new_orders realtime
+            seen = state.setdefault("seen_orders", {})
+            for o in rows:
+                if not isinstance(o, dict):
+                    continue
+                oid = str(o.get("order_id") or o.get("tracking_code") or "")
+                if not oid:
+                    continue
+                key = f"GHN:{oid}"
+                if key in seen:
+                    continue
+                seen[key] = {"at": utc_now(), "backend": "GHN"}
+                result["new_orders"].append(
+                    {
+                        "backend": "GHN",
+                        "order_id": oid,
+                        "tracking_code": o.get("tracking_code") or oid,
+                        "status": o.get("status"),
+                        "created_at": o.get("created_at"),
+                        "shop_id": o.get("shop_id") or report.get("shop_id"),
+                        "customer_name": o.get("customer_name"),
+                        "customer_phone": o.get("customer_phone"),
+                        "source": "ghn_access_token_orders",
+                    }
+                )
     except Exception as exc:  # noqa: BLE001
-        result["status"] = "error"
-        result["detail"] = str(exc)[:160]
+        # fallback keepalive province nếu module lỗi
+        token = (env.get("GHN_API_TOKEN") or "").strip()
+        if not token:
+            result["detail"] = f"Thiếu GHN_API_TOKEN · {exc}"[:160]
+        else:
+            try:
+                from ghn_cookie_ingest import probe_token as ghn_probe
+
+                probe = ghn_probe(token)
+                result["status"] = "ok" if probe.get("success") else (
+                    "auth_fail" if int(probe.get("http") or 0) in (401, 403) else "error"
+                )
+                result["detail"] = f"fallback province · http={probe.get('http')} · err={exc}"[:200]
+            except Exception as e2:  # noqa: BLE001
+                result["status"] = "error"
+                result["detail"] = str(e2)[:160]
     state.setdefault("backends", {})["GHN"] = {
         "status": result["status"],
         "checked_at": utc_now(),
         "detail": result["detail"],
+        "fetched": result.get("fetched"),
+        "new_orders": len(result.get("new_orders") or []),
     }
     return result
 

@@ -281,6 +281,78 @@ def set_access_token(
 # —— refresh per platform ————————————————————
 
 
+def refresh_ghn(env: dict[str, str] | None = None, *, fetch_orders: bool = False, days: int = 3, limit: int = 50) -> dict:
+    """Lấy/duy trì GHN_API_TOKEN (owned) → resolve shop → (optional) gọi đơn.
+
+    GHN public API không có login USER/PASSWORD như ViettelPost — token lấy từ
+    dashboard / printA5 / cookie session owned, rồi gọi header Token.
+    """
+    env = env or load_env()
+    from ghn_access_token_orders import get_token_and_fetch_orders, resolve_access_token, resolve_shop_id
+
+    if fetch_orders:
+        report = get_token_and_fetch_orders(days=days, limit=limit, try_pending=True, resolve_shop=True)
+        return {
+            "ok": bool(report.get("ok")),
+            "platform": "GHN",
+            "checked_at": utc_now(),
+            "token_masked": (report.get("token") or {}).get("token_masked"),
+            "shop_id": report.get("shop_id"),
+            "orders": report.get("orders"),
+            "roles": report.get("roles"),
+            "verdict": report.get("verdict"),
+            "next": report.get("next"),
+            "refresh": {
+                "step_used": "ensure_ghn_session+shop_all+orders",
+                "token_masked": (report.get("token") or {}).get("token_masked"),
+            },
+            "source_report": {
+                "ensure": (report.get("token") or {}).get("ensure"),
+                "shop": report.get("shop"),
+            },
+        }
+
+    tok = resolve_access_token(try_pending=True)
+    token = tok.get("token") or ""
+    if not token or not tok.get("alive"):
+        return {
+            "ok": False,
+            "platform": "GHN",
+            "error": "Thiếu GHN_API_TOKEN sống (owned)",
+            "hint": "Đặt printA5/cookie vào secrets/ghn_session.raw hoặc set --token",
+            "ensure": tok.get("ensure"),
+            "checked_at": utc_now(),
+            "verdict": (tok.get("ensure") or {}).get("verdict") or "❌ GHN token missing/dead",
+        }
+
+    shop = resolve_shop_id(token, shop_id=tok.get("shop_id"), persist=True)
+    # re-apply env key via set_access_token so access_tokens.state tracks rotation
+    set_report = set_access_token("GHN", token, shop_id=shop.get("shop_id"))
+    return {
+        "ok": True,
+        "platform": "GHN",
+        "checked_at": utc_now(),
+        "token_masked": tok.get("token_masked") or set_report.get("token_masked"),
+        "shop_id": shop.get("shop_id"),
+        "shop": shop,
+        "ensure": tok.get("ensure"),
+        "set": {"ok": set_report.get("ok"), "env_file": set_report.get("env_file")},
+        "refresh": {
+            "step_used": "ensure_ghn_session+shop_all",
+            "token_masked": tok.get("token_masked"),
+            "alive": True,
+        },
+        "verdict": (
+            f"✅ Refresh GHN access token · {tok.get('token_masked')} · "
+            f"shop={shop.get('shop_id') or '—'}"
+        ),
+        "next": [
+            "python3 scripts/ghn_access_token_orders.py run --days 3 --limit 50",
+            "python3 scripts/access_token_rotate.py apply-realtime --direct",
+        ],
+    }
+
+
 def refresh_viettelpost(env: dict[str, str] | None = None) -> dict:
     """Login owned USER/PASSWORD → lấy token mới → ghi env."""
     env = env or load_env()
@@ -338,17 +410,31 @@ def probe_token(platform: str, env: dict[str, str] | None = None) -> dict:
     env = env or load_env()
     plat = normalize_platform(platform)
     if plat == "GHN":
-        token = (env.get("GHN_API_TOKEN") or "").strip()
+        token = (env.get("GHN_API_TOKEN") or env.get("GHN_TOKEN") or "").strip()
         if not token:
             return {"ok": False, "platform": plat, "status": "missing_cred"}
-        code, _ = http_json(
-            "https://online-gateway.ghn.vn/shiip/public-api/v2/shipping-order/available-services",
-            method="POST",
-            headers={"Token": token, "Content-Type": "application/json"},
-            body=b"{}",
-        )
-        status = "auth_fail" if code in (401, 403) else ("ok" if code else "error")
-        return {"ok": status == "ok", "platform": plat, "status": status, "http": code}
+        # province GET = probe chuẩn (available-services + {} dễ 400 dù token sống)
+        from ghn_cookie_ingest import probe_token as ghn_probe
+
+        probe = ghn_probe(token)
+        http = int(probe.get("http") or 0)
+        if probe.get("success"):
+            status = "ok"
+        elif http in (401, 403) or (
+            isinstance(probe.get("message"), str)
+            and "Unauthorized" in (probe.get("message") or "")
+        ):
+            status = "auth_fail"
+        else:
+            status = "error" if http else "error"
+        return {
+            "ok": status == "ok",
+            "platform": plat,
+            "status": status,
+            "http": http,
+            "probe_url": probe.get("url"),
+            "provinces_n": probe.get("provinces_n"),
+        }
     if plat == "ViettelPost":
         token = (env.get("VIETTELPOST_TOKEN") or "").strip()
         if not token:
@@ -401,7 +487,12 @@ def probe_token(platform: str, env: dict[str, str] | None = None) -> dict:
     }
 
 
-def ensure_tokens(*, platforms: list[str] | None = None, auto_refresh_vtp: bool = True) -> dict:
+def ensure_tokens(
+    *,
+    platforms: list[str] | None = None,
+    auto_refresh_vtp: bool = True,
+    auto_refresh_ghn: bool = True,
+) -> dict:
     """Đảm bảo token sẵn sàng trước khi sync realtime."""
     env = load_env()
     plats = platforms or ["Pancake", "GHN", "ViettelPost", "TPOS"]
@@ -426,6 +517,22 @@ def ensure_tokens(*, platforms: list[str] | None = None, auto_refresh_vtp: bool 
             if ref.get("ok"):
                 refreshed.append(plat)
                 env = load_env()  # reload
+                entry["probe_after"] = probe_token(plat, env)
+        if (
+            auto_refresh_ghn
+            and plat == "GHN"
+            and probe.get("status") in {"auth_fail", "missing_cred", "error"}
+        ):
+            ref = refresh_ghn(env, fetch_orders=False)
+            entry["refresh"] = {
+                "ok": ref.get("ok"),
+                "verdict": ref.get("verdict") or ref.get("error"),
+                "token_masked": (ref.get("refresh") or {}).get("token_masked") or ref.get("token_masked"),
+                "shop_id": ref.get("shop_id"),
+            }
+            if ref.get("ok"):
+                refreshed.append(plat)
+                env = load_env()
                 entry["probe_after"] = probe_token(plat, env)
         results.append(entry)
 
@@ -615,7 +722,10 @@ def status() -> dict:
         ),
         "cli": {
             "set": "python3 scripts/access_token_rotate.py set --platform GHN --token YOUR_TOKEN",
+            "refresh_ghn": "python3 scripts/access_token_rotate.py refresh --platform GHN --direct",
+            "refresh_ghn_orders": "python3 scripts/access_token_rotate.py refresh --platform GHN --orders --direct",
             "refresh_vtp": "python3 scripts/access_token_rotate.py refresh --platform ViettelPost",
+            "ghn_orders": "python3 scripts/ghn_access_token_orders.py run --days 3 --limit 50",
             "ensure": "python3 scripts/access_token_rotate.py ensure",
             "realtime": "python3 scripts/access_token_rotate.py apply-realtime",
             "pipeline": "client → nginx:18080 → upstream → access_token_rotate → realtime orders",
@@ -666,6 +776,15 @@ def format_text(report: dict) -> str:
         L(f"realtime new={c.get('new_count')} blocked={c.get('blocked')}")
         for b in c.get("backends") or []:
             L(f"  - {b.get('backend')}: {b.get('status')} · {b.get('detail')}")
+    if report.get("orders"):
+        o = report["orders"] if isinstance(report["orders"], dict) else {}
+        L("")
+        L(f"GHN orders: status={o.get('status')} fetched={o.get('fetched')} · {o.get('detail') or ''}")
+        for row in (o.get("preview") or [])[:5]:
+            if isinstance(row, dict):
+                L(f"  · {row.get('order_id') or row.get('tracking_code')} · {row.get('status')}")
+    if report.get("shop_id"):
+        L(f"shop_id={report.get('shop_id')}")
     if report.get("nginx_orders"):
         L("")
         L(f"nginx mock orders: {len(report['nginx_orders'])}")
@@ -710,12 +829,15 @@ def main(argv: list[str] | None = None) -> int:
     p_set.add_argument("--direct", action="store_true", help="Ghi env thẳng, không qua nginx")
     p_set.add_argument("--keep", action="store_true", help="Giữ nginx sau khi set")
 
-    p_ref = sub.add_parser("refresh", help="Refresh token (ViettelPost Login owned)")
+    p_ref = sub.add_parser("refresh", help="Refresh token (GHN ensure / ViettelPost Login owned)")
     p_ref.add_argument("--platform", default="ViettelPost")
     p_ref.add_argument("--direct", action="store_true")
     p_ref.add_argument("--keep", action="store_true")
+    p_ref.add_argument("--orders", action="store_true", help="GHN: sau khi lấy token → gọi đơn")
+    p_ref.add_argument("--days", type=int, default=3, help="GHN orders window")
+    p_ref.add_argument("--limit", type=int, default=50, help="GHN orders limit")
 
-    p_ens = sub.add_parser("ensure", help="Probe + auto-refresh VTP (qua nginx)")
+    p_ens = sub.add_parser("ensure", help="Probe + auto-refresh VTP/GHN (qua nginx)")
     p_ens.add_argument("--direct", action="store_true")
     p_ens.add_argument("--keep", action="store_true")
 
@@ -754,14 +876,21 @@ def main(argv: list[str] | None = None) -> int:
             )
     elif args.cmd == "refresh":
         plat = normalize_platform(args.platform)
-        if plat != "ViettelPost":
+        if plat not in {"ViettelPost", "GHN"}:
             report = {
                 "ok": False,
-                "error": f"refresh tự động hiện hỗ trợ ViettelPost; {plat} dùng: set --token",
+                "error": f"refresh tự động hỗ trợ ViettelPost|GHN; {plat} dùng: set --token",
                 "checked_at": utc_now(),
             }
         elif args.direct:
-            report = refresh_viettelpost()
+            if plat == "GHN":
+                report = refresh_ghn(
+                    fetch_orders=bool(args.orders),
+                    days=int(args.days),
+                    limit=int(args.limit),
+                )
+            else:
+                report = refresh_viettelpost()
             report["via_nginx"] = False
         else:
             from nginx_order_embed import NginxOrderEmbed
@@ -772,12 +901,22 @@ def main(argv: list[str] | None = None) -> int:
                 report = {"ok": False, "error": "nginx embed chưa up", "start": started}
             else:
                 try:
-                    res = mod.token_refresh(plat)
-                    payload = res.get("payload") if isinstance(res.get("payload"), dict) else {}
-                    report = dict(payload) if payload else {"ok": False, "error": res}
-                    report["via_nginx"] = True
-                    report["embedded"] = res.get("embedded")
-                    report["pipeline"] = res.get("pipeline")
+                    # GHN --orders: chạy trực tiếp sau nginx ensure (payload đầy đủ)
+                    if plat == "GHN" and args.orders:
+                        report = refresh_ghn(
+                            fetch_orders=True,
+                            days=int(args.days),
+                            limit=int(args.limit),
+                        )
+                        report["via_nginx"] = True
+                        report["pipeline"] = "nginx→up→refresh_ghn+orders"
+                    else:
+                        res = mod.token_refresh(plat)
+                        payload = res.get("payload") if isinstance(res.get("payload"), dict) else {}
+                        report = dict(payload) if payload else {"ok": False, "error": res}
+                        report["via_nginx"] = True
+                        report["embedded"] = res.get("embedded")
+                        report["pipeline"] = res.get("pipeline")
                     report["checked_at"] = utc_now()
                 finally:
                     if not args.keep:

@@ -135,19 +135,24 @@ def interconnect_ghn(*, notify: bool = False, scan: bool = True, days: int = 3, 
     except Exception as e:  # noqa: BLE001
         steps["keepalive"] = {"ok": False, "error": str(e)[:160]}
 
-    # 7) Scan GHN with applied roles (will missing_cred if no token)
+    # 7) Access token → gọi đơn GHN (roles list/search)
     if scan:
         try:
-            from scan_buucuc_orders import load_env as scan_env, scan_ghn
+            from ghn_access_token_orders import get_token_and_fetch_orders
 
-            sg = scan_ghn(scan_env(), days=days, limit=limit)
+            sg = get_token_and_fetch_orders(
+                days=days, limit=limit, try_pending=True, resolve_shop=True
+            )
+            orders = sg.get("orders") or {}
             steps["scan"] = {
-                "ok": sg.get("status") not in {"missing_cred", "auth_fail", "error"},
-                "status": sg.get("status"),
-                "fetched": sg.get("fetched"),
-                "detail": (sg.get("detail") or "")[:160],
-                "roles": sg.get("roles"),
-                "attempts_n": len(sg.get("attempts") or []),
+                "ok": bool(sg.get("ok")) and (orders.get("status") not in {"auth_fail", "missing_cred"}),
+                "status": orders.get("status") or ("ok" if sg.get("ok") else "missing_cred"),
+                "fetched": orders.get("fetched"),
+                "detail": (sg.get("verdict") or orders.get("detail") or "")[:160],
+                "roles": sg.get("roles") or orders.get("roles"),
+                "shop_id": sg.get("shop_id"),
+                "token_masked": (sg.get("token") or {}).get("token_masked"),
+                "via": "ghn_access_token_orders",
             }
         except Exception as e:  # noqa: BLE001
             steps["scan"] = {"ok": False, "error": str(e)[:160]}
@@ -182,8 +187,9 @@ def interconnect_ghn(*, notify: bool = False, scan: bool = True, days: int = 3, 
         "policy": {"owned_only": True, "no_dump_login": True},
         "next_actions": [
             "printf '%s\\n' '<printA5 owned>' > secrets/ghn_session.raw && python3 scripts/ghn_cookie_ingest.py ensure",
+            "python3 scripts/ghn_access_token_orders.py run --days 3 --limit 50",
+            "python3 scripts/access_token_rotate.py refresh --platform GHN --orders --direct",
             "python3 scripts/ghn_pipe_interconnect.py --scan --days 3",
-            "python3 scripts/oms_interconnect.py --once",
         ],
     }
 

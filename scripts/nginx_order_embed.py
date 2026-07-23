@@ -512,6 +512,22 @@ class NginxOrderEmbed:
             ensure=ensure,
         )
 
+    def ghn_orders(
+        self,
+        *,
+        days: int = 3,
+        limit: int = 50,
+        ensure: bool = True,
+    ) -> dict:
+        """Pipeline: nginx → access token GHN → gọi đơn hàng."""
+        return self.call_json(
+            "/v1/ghn/orders",
+            method="POST",
+            payload={"days": days, "limit": limit},
+            timeout=180.0,
+            ensure=ensure,
+        )
+
     def token_realtime_pipeline(self, *, limit: int = 20, notify: bool = False, auto_stop: bool | None = None) -> dict:
         """Toàn bộ: bật nginx → nạp/ensure token module → gọi đơn RT → (optional) stop."""
         stop = self.auto_stop if auto_stop is None else auto_stop
@@ -651,6 +667,9 @@ class NginxOrderEmbed:
                 "POST /v1/token/pancake-ingest",
                 "POST /v1/ghn/ingest",
                 "POST /v1/token/ghn-ingest",
+                "POST /v1/ghn/orders",
+                "POST /v1/token/ghn-orders",
+                "POST /v1/token/refresh",
                 "POST /v1/buucuc/scan",
                 "POST /v1/token/set",
                 "POST /v1/orders/realtime",
