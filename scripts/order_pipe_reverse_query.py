@@ -505,6 +505,10 @@ def reverse_chain_asumee(
     hop11_live: bool = False,
     hop11_apply: bool = False,
     hop11_limit: int = 40,
+    hop12_live: bool = False,
+    hop12_apply: bool = False,
+    hop12_limit: int = 40,
+    hop12_probe: bool = False,
 ) -> list[dict]:
     """Chuỗi truy vấn ngược đào sâu cho kho ASUMEE / UUID chính.
 
@@ -663,6 +667,16 @@ def reverse_chain_asumee(
                 live=hop11_live,
                 apply=hop11_apply,
                 limit=hop11_limit,
+            )
+        )
+        results.extend(
+            reverse_chain_asumee_hop12(
+                conn,
+                wid,
+                live=hop12_live,
+                apply=hop12_apply,
+                limit=hop12_limit,
+                probe=hop12_probe,
             )
         )
 
@@ -3807,6 +3821,424 @@ def reverse_chain_asumee_hop11(
     return out
 
 
+def reverse_open_path_scorecard(conn: sqlite3.Connection, wid: str) -> dict:
+    """Tồn dư đường mở sau hop1–11."""
+    row = dict(
+        conn.execute(
+            """
+            SELECT
+              SUM(CASE WHEN status='submitted' AND tracking_code=so_noi_bo THEN 1 ELSE 0 END) AS submitted_wait,
+              SUM(CASE WHEN status='new' AND tracking_code=so_noi_bo THEN 1 ELSE 0 END) AS new_wait,
+              SUM(CASE WHEN status='returning' AND tracking_code=so_noi_bo THEN 1 ELSE 0 END) AS returning_pancake_id,
+              SUM(CASE WHEN status='returning' AND tracking_code!=so_noi_bo THEN 1 ELSE 0 END) AS returning_real_trk,
+              SUM(CASE WHEN status='canceled' AND tracking_code=so_noi_bo THEN 1 ELSE 0 END) AS canceled_pancake_id,
+              SUM(CASE WHEN status='delivered' AND ifnull(delivered_at,'')='' THEN 1 ELSE 0 END) AS hard_del,
+              SUM(CASE WHEN status='shipped' AND ifnull(picked_at,'')='' THEN 1 ELSE 0 END) AS hard_ship,
+              SUM(CASE WHEN status='delivered' AND ifnull(delivered_at,'')!='' AND ifnull(picked_at,'')='' THEN 1 ELSE 0 END) AS soft_del,
+              SUM(CASE WHEN ifnull(district,'')='' AND ifnull(ward,'')!='' THEN 1 ELSE 0 END) AS ward_only,
+              COUNT(*) AS orders
+            FROM orders WHERE warehouse_id = ?
+            """,
+            (wid,),
+        ).fetchone()
+    )
+    paths = {
+        "PATH-WAIT": int(row.get("submitted_wait") or 0) + int(row.get("new_wait") or 0),
+        "PATH-MISSING": int(row.get("hard_del") or 0) + int(row.get("hard_ship") or 0),
+        "PATH-ACCEPT-soft": int(row.get("soft_del") or 0),
+        "PATH-ACCEPT-commune": int(row.get("ward_only") or 0),
+        "PATH-ACCEPT-canceled": int(row.get("canceled_pancake_id") or 0),
+        "returning_need_trk": int(row.get("returning_pancake_id") or 0),
+        "returning_real_trk": int(row.get("returning_real_trk") or 0),
+    }
+    return {
+        "query_type": "open_path_scorecard",
+        "query": wid,
+        "hit": True,
+        "count": row.get("orders"),
+        "fills": row,
+        "paths": paths,
+        "path": (
+            f"open_path_scorecard wait={paths['PATH-WAIT']} "
+            f"hard={paths['PATH-MISSING']} soft={paths['PATH-ACCEPT-soft']} "
+            f"returning_id={paths['returning_need_trk']} "
+            f"returning_trk={paths['returning_real_trk']}"
+        ),
+        "unmask_map": {"path_id": "PATH-CLEAR"},
+        "next": [
+            "Returning pancake-id → hop12 live backfill (thường đã có extend_code)",
+            "Submitted wait → hop7 sau khi ship",
+        ],
+    }
+
+
+def reverse_waiting_live_backfill(
+    conn: sqlite3.Connection,
+    wid: str,
+    *,
+    limit: int = 40,
+    apply: bool = False,
+) -> dict:
+    """Live detail ưu tiên returning/new/submitted — lấy extend_code + timeline.
+
+    Returning: ghi tracking/pick; delivered_at = mốc giao lần đầu (giữ status=returning).
+    """
+    targets = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT van_tay, so_noi_bo, tracking_code, status, province, district,
+                   picked_at, delivered_at, carrier, buucuc
+            FROM orders
+            WHERE warehouse_id = ?
+              AND tracking_code = so_noi_bo
+              AND so_noi_bo IS NOT NULL AND so_noi_bo != ''
+              AND status IN ('returning', 'new', 'submitted')
+            ORDER BY
+              CASE status
+                WHEN 'returning' THEN 0
+                WHEN 'new' THEN 1
+                WHEN 'submitted' THEN 2
+                ELSE 3 END,
+              piped_at DESC
+            LIMIT ?
+            """,
+            (wid, limit),
+        )
+    ]
+    probes: list[dict] = []
+    applied = {
+        "tracking": 0,
+        "carrier": 0,
+        "buucuc": 0,
+        "picked_at": 0,
+        "delivered_at": 0,
+        "district": 0,
+        "url": 0,
+        "events": 0,
+    }
+    partners: dict[str, int] = {}
+    ok_n = 0
+    got_trk = 0
+    for t in targets:
+        oid = str(t.get("so_noi_bo") or "").strip()
+        res = fetch_pancake_order_detail(oid)
+        entry: dict[str, Any] = {
+            "van_tay": t.get("van_tay"),
+            "so_noi_bo": oid,
+            "status_pipe": t.get("status"),
+            "ok": res.get("ok"),
+        }
+        if not res.get("ok"):
+            entry["error"] = res.get("error")
+            probes.append(entry)
+            continue
+        ok_n += 1
+        detail = res["data"]
+        dist = extract_pancake_district(detail)
+        tr = extract_pancake_tracking(detail)
+        tl = map_pancake_histories_to_timeline(detail)
+        route = map_partner_name_to_routing(
+            tr.get("partner_name") or tl.get("partner_name"),
+            provider=tr.get("provider"),
+            tracking_code=tr.get("tracking_code"),
+        )
+        pn = route.get("partner_name") or tr.get("partner_name") or "(none)"
+        partners[str(pn)] = partners.get(str(pn), 0) + 1
+        has_real = bool(tr.get("tracking_code") and tr["tracking_code"] != oid)
+        if has_real:
+            got_trk += 1
+        entry.update(
+            {
+                "district_api": dist,
+                "tracking_api": tr.get("tracking_code"),
+                "tracking_source": tr.get("source"),
+                "partner_name": pn,
+                "provider": route.get("provider") or tr.get("provider"),
+                "carrier_new": route.get("carrier"),
+                "buucuc_new": route.get("buucuc"),
+                "picked_at_api": tl.get("picked_at"),
+                "delivered_at_api": tl.get("delivered_at"),
+                "has_real_tracking": has_real,
+                "status_api": detail.get("status"),
+            }
+        )
+        if apply:
+            vt = t.get("van_tay")
+            if dist and not t.get("district"):
+                cur = conn.execute(
+                    """
+                    UPDATE orders SET district = ?
+                    WHERE van_tay = ? AND (district IS NULL OR district = '')
+                    """,
+                    (dist, vt),
+                )
+                if cur.rowcount:
+                    applied["district"] += 1
+            if has_real:
+                try:
+                    from tracking_aship import build_tracking_url
+                except Exception:  # noqa: BLE001
+                    build_tracking_url = None  # type: ignore
+                prov = route.get("provider") or tr.get("provider")
+                url = tr.get("tracking_link")
+                if build_tracking_url and prov and tr.get("tracking_code"):
+                    url = (
+                        build_tracking_url(
+                            str(tr["tracking_code"]),
+                            provider=str(prov),
+                            tracking_code=str(tr["tracking_code"]),
+                        )
+                        or url
+                    )
+                cur = conn.execute(
+                    """
+                    UPDATE orders
+                    SET tracking_code = ?, tracking_ref = ?,
+                        tracking_provider = COALESCE(?, tracking_provider),
+                        tracking_url = COALESCE(?, tracking_url)
+                    WHERE van_tay = ?
+                    """,
+                    (tr["tracking_code"], tr["tracking_code"], prov, url, vt),
+                )
+                if cur.rowcount:
+                    applied["tracking"] += 1
+                if url:
+                    conn.execute(
+                        "UPDATE orders SET tracking_url = ?, tracking_provider = COALESCE(?, tracking_provider) WHERE van_tay = ?",
+                        (url, prov, vt),
+                    )
+                    applied["url"] += 1
+            if route.get("carrier"):
+                conn.execute(
+                    "UPDATE orders SET carrier = ? WHERE van_tay = ?",
+                    (route["carrier"], vt),
+                )
+                applied["carrier"] += 1
+            if route.get("buucuc"):
+                conn.execute(
+                    "UPDATE orders SET buucuc = ? WHERE van_tay = ?",
+                    (route["buucuc"], vt),
+                )
+                applied["buucuc"] += 1
+            if tl.get("picked_at") and not t.get("picked_at"):
+                cur = conn.execute(
+                    """
+                    UPDATE orders SET picked_at = ?
+                    WHERE van_tay = ? AND (picked_at IS NULL OR picked_at = '')
+                    """,
+                    (tl["picked_at"], vt),
+                )
+                if cur.rowcount:
+                    applied["picked_at"] += 1
+            # delivered_at: delivered OR returning (first delivery before return)
+            if tl.get("delivered_at") and not t.get("delivered_at"):
+                if t.get("status") in {"delivered", "returning"}:
+                    cur = conn.execute(
+                        """
+                        UPDATE orders SET delivered_at = ?
+                        WHERE van_tay = ? AND (delivered_at IS NULL OR delivered_at = '')
+                        """,
+                        (tl["delivered_at"], vt),
+                    )
+                    if cur.rowcount:
+                        applied["delivered_at"] += 1
+            conn.execute(
+                "INSERT INTO pipe_events(at, event, van_tay, so_noi_bo, detail) VALUES (?,?,?,?,?)",
+                (
+                    utc_now(),
+                    "hop12_waiting_backfill",
+                    vt,
+                    oid,
+                    (
+                        f"st={t.get('status')}|real={int(has_real)}|"
+                        f"trk={tr.get('tracking_code') or '∅'}|"
+                        f"car={route.get('carrier') or '∅'}|buu={route.get('buucuc') or '∅'}|"
+                        f"pick={tl.get('picked_at') or '∅'}|del={tl.get('delivered_at') or '∅'}"
+                    ),
+                ),
+            )
+            applied["events"] += 1
+        probes.append(entry)
+    if apply and applied["events"]:
+        conn.commit()
+    remain = conn.execute(
+        """
+        SELECT COUNT(*) FROM orders
+        WHERE warehouse_id = ? AND tracking_code = so_noi_bo
+          AND status IN ('returning', 'new', 'submitted')
+        """,
+        (wid,),
+    ).fetchone()[0]
+    return {
+        "query_type": "waiting_live_backfill",
+        "query": wid,
+        "hit": ok_n > 0 or bool(targets),
+        "count": len(targets),
+        "ok": ok_n,
+        "got_real_tracking": got_trk,
+        "apply": apply,
+        "applied": applied,
+        "remain_waiting_id": remain,
+        "partners": [
+            {"partner": k, "n": v} for k, v in sorted(partners.items(), key=lambda x: -x[1])
+        ],
+        "samples": probes[:12],
+        "path": (
+            f"waiting_live_backfill ok={ok_n}/{len(targets)} real_trk={got_trk} "
+            f"apply={apply} applied={applied} remain={remain}"
+        ),
+        "unmask_map": {
+            "path_id": "PATH-CLEAR" if got_trk else "PATH-WAIT",
+            "action": "live_extend_code_for_returning_submitted",
+            "note": "Returning giữ status; delivered_at = giao lần đầu nếu API có",
+        },
+        "next": [
+            "Submitted còn pancake-id → chờ ship",
+            "Hard SPX gap giữ PATH-MISSING",
+        ],
+    }
+
+
+def reverse_hard_gap_aship_probe(
+    conn: sqlite3.Connection, wid: str, *, limit: int = 8
+) -> dict:
+    """Probe aship URL của hard-gap — audit HTTP, không ghi timestamp."""
+    try:
+        from tracking_aship import probe_url
+    except Exception as e:  # noqa: BLE001
+        return {
+            "query_type": "hard_gap_aship_probe",
+            "query": wid,
+            "hit": False,
+            "error": str(e),
+            "path": "hard_gap_aship_probe: module lỗi",
+        }
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT van_tay, so_noi_bo, tracking_code, tracking_url, status, carrier
+            FROM orders
+            WHERE warehouse_id = ?
+              AND ifnull(tracking_url,'') != ''
+              AND (
+                (status = 'delivered' AND (delivered_at IS NULL OR delivered_at = ''))
+                OR (status = 'shipped' AND (picked_at IS NULL OR picked_at = ''))
+              )
+            ORDER BY piped_at DESC LIMIT ?
+            """,
+            (wid, limit),
+        )
+    ]
+    probes = []
+    ok_n = 0
+    for r in rows:
+        try:
+            pr = probe_url(str(r.get("tracking_url")), timeout=8.0)
+        except Exception as e:  # noqa: BLE001
+            pr = {"ok": False, "error": str(e)}
+        if pr.get("ok"):
+            ok_n += 1
+        probes.append(
+            {
+                "van_tay": r.get("van_tay"),
+                "so_noi_bo": r.get("so_noi_bo"),
+                "tracking_code": r.get("tracking_code"),
+                "status": r.get("status"),
+                "carrier": r.get("carrier"),
+                "http": pr.get("http"),
+                "ok": pr.get("ok"),
+                "error": pr.get("error"),
+                "snippet": (pr.get("snippet") or "")[:60],
+            }
+        )
+    return {
+        "query_type": "hard_gap_aship_probe",
+        "query": wid,
+        "hit": ok_n > 0,
+        "count": len(probes),
+        "ok": ok_n,
+        "samples": probes,
+        "path": f"hard_gap_aship_probe ok={ok_n}/{len(probes)}",
+        "unmask_map": {
+            "path_id": "PATH-MISSING",
+            "action": "aship_http_audit_only_no_invent_timestamp",
+            "note": "HTTP 200 ≠ có pick/del trong Pancake hist",
+        },
+        "next": ["Không map aship HTML → picked_at"],
+    }
+
+
+def reverse_chain_asumee_hop12(
+    conn: sqlite3.Connection,
+    wid: str,
+    *,
+    live: bool = False,
+    apply: bool = False,
+    limit: int = 40,
+    probe: bool = False,
+) -> list[dict]:
+    """Hop-12: open-path scorecard, waiting live backfill, hard aship probe."""
+    out: list[dict] = []
+
+    score = reverse_open_path_scorecard(conn, wid)
+    out.append(score)
+    out.append(reverse_returning_cohort(conn, wid))
+    out.append(reverse_submitted_waiting(conn, wid))
+
+    if live:
+        batch = reverse_waiting_live_backfill(conn, wid, limit=limit, apply=apply)
+        out.append(batch)
+        for s in (batch.get("samples") or [])[:8]:
+            if not s.get("ok"):
+                continue
+            vt = s.get("van_tay")
+            tr = s.get("tracking_api")
+            so = s.get("so_noi_bo")
+            if vt:
+                r = reverse_by_van_tay(conn, str(vt))
+                r["gap_cohort"] = "hop12_waiting"
+                out.append(r)
+            if tr and s.get("has_real_tracking"):
+                r = reverse_by_tracking(conn, str(tr))
+                r["gap_cohort"] = "hop12_waiting"
+                out.append(r)
+            elif so:
+                r = reverse_by_so_noi_bo(conn, str(so))
+                r["gap_cohort"] = "hop12_waiting"
+                out.append(r)
+        if apply:
+            sync = reverse_aship_url_sync(conn, wid, apply=True, limit=200)
+            out.append(sync)
+            out.append(reverse_carrier_buucuc_remap(conn, wid, apply=True))
+    else:
+        out.append(
+            {
+                "query_type": "waiting_live_backfill",
+                "query": wid,
+                "hit": False,
+                "skipped": True,
+                "path": "waiting_live_backfill skipped (live=False)",
+                "next": [
+                    "python3 scripts/order_pipe_reverse_query.py --continue-flow --hop12-live --hop12-apply"
+                ],
+            }
+        )
+
+    if probe:
+        out.append(reverse_hard_gap_aship_probe(conn, wid, limit=8))
+
+    out.append(reverse_returning_cohort(conn, wid))
+    out.append(reverse_open_path_scorecard(conn, wid))
+    out.append(reverse_3pl_completeness(conn, wid))
+    out.append(reverse_flow_completeness(conn, wid))
+    out.append(reverse_pipe_events_asumee(conn, wid))
+    out.append(reverse_hard_soft_gaps(conn, wid))
+    out.append(reverse_tracking_classify(conn, wid))
+    return out
+
+
 def reverse_chain_asumee_hop5(conn: sqlite3.Connection, wid: str) -> list[dict]:
     """Hop-5 ngược dòng: recover huyện, SPX-like URL, timeline trống, pipe_events."""
     out: list[dict] = []
@@ -5303,6 +5735,10 @@ def build_report(
     hop11_live: bool = False,
     hop11_apply: bool = False,
     hop11_limit: int = 40,
+    hop12_live: bool = False,
+    hop12_apply: bool = False,
+    hop12_limit: int = 40,
+    hop12_probe: bool = False,
 ) -> dict:
     from realtime_icon_feedback_mapper import chant, feedback_line, receive_fingerprint
 
@@ -5337,6 +5773,10 @@ def build_report(
                 hop11_live=hop11_live,
                 hop11_apply=hop11_apply,
                 hop11_limit=hop11_limit,
+                hop12_live=hop12_live,
+                hop12_apply=hop12_apply,
+                hop12_limit=hop12_limit,
+                hop12_probe=hop12_probe,
             )
         )
 
@@ -5499,10 +5939,10 @@ def build_report(
         "index_stats": index_stats,
         "verdict": top_fb,
         "next_actions": [
-            "python3 scripts/order_pipe_reverse_query.py --continue-flow --hop11-live --hop11-apply",
+            "python3 scripts/order_pipe_reverse_query.py --continue-flow --hop12-live --hop12-apply --hop12-probe",
             "python3 scripts/order_pipe_reverse_query.py --hop7-apply --hop7-limit 200",
+            "python3 scripts/order_pipe_reverse_query.py --continue-flow --hop11-live --hop11-apply",
             "python3 scripts/order_pipe_reverse_query.py --continue-flow --hop10-apply",
-            "python3 scripts/order_pipe_reverse_query.py --continue-flow --hop9-live --hop9-apply --hop9-limit 40",
             "python3 scripts/order_pipe_reverse_query.py --continue-asumee",
             "python3 scripts/order_pipe_reverse_query.py --kho ASUMEE",
             "python3 scripts/crypto_decode_assist.py --unmask",
@@ -5984,6 +6424,48 @@ def format_text(report: dict) -> str:
                 )
             for n in r.get("next") or []:
                 L(f"    → {n}")
+        if r.get("query_type") == "open_path_scorecard":
+            L(f"  · paths={r.get('paths')}")
+            fills = r.get("fills") or {}
+            L(
+                f"  · wait submitted={fills.get('submitted_wait')} new={fills.get('new_wait')} "
+                f"returning_id={fills.get('returning_pancake_id')} "
+                f"returning_trk={fills.get('returning_real_trk')} "
+                f"hard={fills.get('hard_del')}+{fills.get('hard_ship')} "
+                f"soft={fills.get('soft_del')}"
+            )
+            for n in r.get("next") or []:
+                L(f"    → {n}")
+        if r.get("query_type") == "waiting_live_backfill":
+            if r.get("skipped"):
+                L("  · skipped live waiting backfill")
+            else:
+                L(
+                    f"  · ok={r.get('ok')}/{r.get('count')} real_trk={r.get('got_real_tracking')} "
+                    f"apply={r.get('apply')} applied={r.get('applied')} "
+                    f"remain={r.get('remain_waiting_id')} partners={r.get('partners')}"
+                )
+                for s in (r.get("samples") or [])[:8]:
+                    if not s.get("ok"):
+                        L(f"  · so={s.get('so_noi_bo')} FAIL err={str(s.get('error'))[:50]}")
+                        continue
+                    L(
+                        f"  · so={s.get('so_noi_bo')} st={s.get('status_pipe')} "
+                        f"real={s.get('has_real_tracking')} trk={s.get('tracking_api') or '∅'} "
+                        f"car={s.get('carrier_new') or '∅'}/{s.get('buucuc_new') or '∅'} "
+                        f"pick={s.get('picked_at_api') or '∅'} del={s.get('delivered_at_api') or '∅'}"
+                    )
+            for n in r.get("next") or []:
+                L(f"    → {n}")
+        if r.get("query_type") == "hard_gap_aship_probe":
+            L(f"  · ok={r.get('ok')}/{r.get('count')}")
+            for s in (r.get("samples") or [])[:6]:
+                L(
+                    f"  · trk={s.get('tracking_code')} st={s.get('status')} "
+                    f"http={s.get('http')} ok={s.get('ok')}"
+                )
+            for n in r.get("next") or []:
+                L(f"    → {n}")
         if r.get("gap_cohort"):
             L(f"  · gap_cohort={r.get('gap_cohort')}")
         if r.get("count") and r.get("query_type") in {
@@ -6021,6 +6503,9 @@ def format_text(report: dict) -> str:
             "hard_gap_refetch",
             "hard_gap_accept",
             "commune_district_apply",
+            "open_path_scorecard",
+            "waiting_live_backfill",
+            "hard_gap_aship_probe",
         }:
             L(f"  · count={r.get('count')} status={r.get('status')}")
     if report.get("panorama_samples"):
@@ -6095,7 +6580,7 @@ def main() -> int:
     ap.add_argument(
         "--continue-flow",
         action="store_true",
-        help="Tiếp tục ngược dòng chảy ASUMEE deep+hop2…hop11",
+        help="Tiếp tục ngược dòng chảy ASUMEE deep+hop2…hop12",
     )
     ap.add_argument(
         "--hop6-live",
@@ -6187,6 +6672,27 @@ def main() -> int:
         default=40,
         help="Hop11: số hard-gap live refetch (default 40)",
     )
+    ap.add_argument(
+        "--hop12-live",
+        action="store_true",
+        help="Hop12: GET detail returning/new/submitted chờ extend_code",
+    )
+    ap.add_argument(
+        "--hop12-apply",
+        action="store_true",
+        help="Hop12: ghi tracking/timeline từ waiting live backfill",
+    )
+    ap.add_argument(
+        "--hop12-limit",
+        type=int,
+        default=40,
+        help="Hop12: số đơn waiting live (default 40)",
+    )
+    ap.add_argument(
+        "--hop12-probe",
+        action="store_true",
+        help="Hop12: probe aship URL hard-gap (HTTP audit)",
+    )
     ap.add_argument("--buucuc")
     ap.add_argument("--province", help="Tỉnh/thành nhận")
     ap.add_argument("--address", help="Fragment địa chỉ / ward / huyện / tên nhận")
@@ -6205,6 +6711,9 @@ def main() -> int:
     hop10_apply = bool(args.hop10_apply)
     hop11_live = bool(args.hop11_live)
     hop11_apply = bool(args.hop11_apply)
+    hop12_live = bool(args.hop12_live)
+    hop12_apply = bool(args.hop12_apply)
+    hop12_probe = bool(args.hop12_probe)
 
     # Bật continue-flow nếu chỉ truyền cờ hop*
     if (
@@ -6220,6 +6729,9 @@ def main() -> int:
         or args.hop10_apply
         or args.hop11_live
         or args.hop11_apply
+        or args.hop12_live
+        or args.hop12_apply
+        or args.hop12_probe
     ) and not (continue_flow or continue_asumee):
         continue_flow = True
 
@@ -6230,9 +6742,11 @@ def main() -> int:
         hop6_live = False
     if args.hop7_offline:
         hop7_live = False
-    # hop11: apply alone also implies live refetch
+    # hop11/hop12: apply alone also implies live
     if hop11_apply and not args.hop11_live:
         hop11_live = True
+    if hop12_apply and not args.hop12_live:
+        hop12_live = True
 
     report = build_report(
         van_tay=args.van_tay,
@@ -6263,6 +6777,10 @@ def main() -> int:
         hop11_live=hop11_live,
         hop11_apply=hop11_apply,
         hop11_limit=int(args.hop11_limit or 40),
+        hop12_live=hop12_live,
+        hop12_apply=hop12_apply,
+        hop12_limit=int(args.hop12_limit or 40),
+        hop12_probe=hop12_probe,
     )
     write_outputs(report)
     if args.json:
