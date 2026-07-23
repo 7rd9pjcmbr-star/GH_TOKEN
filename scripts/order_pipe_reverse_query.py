@@ -182,7 +182,7 @@ def reverse_by_kho(conn: sqlite3.Connection, kho: str, limit: int = 30) -> dict:
         dict(r)
         for r in conn.execute(
             """
-            SELECT van_tay, so_noi_bo, buucuc, backend, tracking_code, status, icon_chant
+            SELECT van_tay, so_noi_bo, kho, buucuc, backend, tracking_code, status, icon_chant
             FROM orders WHERE kho LIKE ? ORDER BY piped_at DESC LIMIT ?
             """,
             (f"%{name}%", limit),
