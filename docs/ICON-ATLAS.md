@@ -35,3 +35,21 @@ Icon chỉ trên cạnh (`layers` contains, `key` related) vẫn BFS hai đầu 
 
 - Mapper: panel **Atlas icon → thư viện**
 - Logic-view: nút **Map mọi icon → thư viện**
+
+## Realtime feedback
+
+Truy vấn thời gian thực (OMS / pipe / sync) gắn phản hồi icon:
+
+```js
+MaMoLogicModules.icons.callForRealtime({ channels: [{ id, status, backend, detail }] })
+// → feedback: "Mapper gọi: Tia Lửa Hub → Màn Realtime → …"
+```
+
+Python / Telegram:
+
+```bash
+python3 scripts/realtime_icon_feedback_mapper.py
+# Panel: nút Icon realtime · tự gắn đầu phản hồi Realtime đơn / Đấu nối OMS
+```
+
+Map: `iconByRealtimeStatus` · `iconByRealtimeChannel` trong `data/network-map.js`.

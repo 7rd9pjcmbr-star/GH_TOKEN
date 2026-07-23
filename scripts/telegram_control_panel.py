@@ -138,6 +138,9 @@ def panel_keyboard() -> dict:
                 {"text": "🧭 Mapper toàn diện", "callback_data": "q:mapper_full"},
                 {"text": "🔗 Đấu nối OMS", "callback_data": "q:oms"},
             ],
+            [
+                {"text": "✨ Icon realtime", "callback_data": "q:icon_rt"},
+            ],
             [{"text": "🔁 Làm mới phân tích", "callback_data": "q:refresh"}],
         ]
     }
@@ -286,12 +289,41 @@ def fmt_pipes(_a: dict | None = None) -> str:
 
 def fmt_realtime(_a: dict | None = None) -> str:
     try:
+        from realtime_icon_feedback_mapper import attach_feedback_prefix
         from realtime_order_sync import format_cycle, load_env, run_cycle
 
         cycle = run_cycle(load_env(), limit=20, notify=False, notify_new_only=False)
-        return format_cycle(cycle)
+        return attach_feedback_prefix(format_cycle(cycle))[:3800]
     except Exception as e:  # noqa: BLE001
         return f"Realtime lỗi: {e}\nChạy: python3 scripts/realtime_order_sync.py --once --notify"
+
+
+def fmt_oms(_a: dict | None = None) -> str:
+    try:
+        from oms_interconnect import format_report, interconnect, load_env
+        from realtime_icon_feedback_mapper import attach_feedback_prefix
+
+        report = interconnect(load_env(), ingest=True)
+        return attach_feedback_prefix(format_report(report))[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "oms_interconnect.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return f"Đấu nối OMS lỗi: {e}\nChạy: python3 scripts/oms_interconnect.py --once"
+
+
+def fmt_icon_rt(_a: dict | None = None) -> str:
+    try:
+        from realtime_icon_feedback_mapper import build_from_live, format_text, write_outputs
+
+        report = build_from_live()
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "realtime_icon_feedback.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return f"Icon realtime lỗi: {e}\nChạy: python3 scripts/realtime_icon_feedback_mapper.py"
 
 
 def fmt_urls(_a: dict | None = None) -> str:
@@ -363,19 +395,6 @@ def fmt_mapper_full(_a: dict | None = None) -> str:
         return f"Mapper toàn diện lỗi: {e}\nChạy: python3 scripts/comprehensive_order_mapper.py"
 
 
-def fmt_oms(_a: dict | None = None) -> str:
-    try:
-        from oms_interconnect import format_report, interconnect, load_env
-
-        report = interconnect(load_env(), ingest=True)
-        return format_report(report)[:3800]
-    except Exception as e:  # noqa: BLE001
-        path = ROOT / "reports" / "telegram-classify" / "oms_interconnect.txt"
-        if path.is_file():
-            return path.read_text(encoding="utf-8")[:3800]
-        return f"Đấu nối OMS lỗi: {e}\nChạy: python3 scripts/oms_interconnect.py --once"
-
-
 HANDLERS = {
     "q:overview": fmt_overview,
     "q:source": fmt_source,
@@ -389,6 +408,7 @@ HANDLERS = {
     "q:endpoints": fmt_endpoints,
     "q:mapper_full": fmt_mapper_full,
     "q:oms": fmt_oms,
+    "q:icon_rt": fmt_icon_rt,
 }
 
 
@@ -445,6 +465,7 @@ def main() -> int:
         "q:endpoints",
         "q:mapper_full",
         "q:oms",
+        "q:icon_rt",
     ]:
         send(
             token,
@@ -460,6 +481,7 @@ def main() -> int:
                 "q:endpoints",
                 "q:mapper_full",
                 "q:oms",
+                "q:icon_rt",
             }
             else None,
         )

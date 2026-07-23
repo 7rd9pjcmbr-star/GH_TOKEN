@@ -102,6 +102,34 @@ window.NETWORK_MAP = {
     wrench: { call: "Cờ Lê Công Cụ", role: "tool", motto: "phụ thuộc / công cụ" },
   },
 
+  /**
+   * Icon phản hồi truy vấn thời gian thực (OMS / pipe / sync)
+   * status → icon; channel → lead icon
+   */
+  iconByRealtimeStatus: {
+    connected: "monitor",
+    alive: "monitor",
+    ok: "monitor",
+    missing_cred: "key",
+    auth_fail: "lock",
+    error: "wrench",
+    stale: "wrench",
+    blocked: "lock",
+  },
+
+  iconByRealtimeChannel: {
+    telegram: "spark",
+    pancake: "layers",
+    ghn: "network",
+    viettelpost: "network",
+    tracking: "compass",
+    tpos: "cpu",
+    direct_api: "code",
+    spx_local: "cube",
+    vnpost_local: "code",
+    oms_bus: "spark",
+  },
+
   /** Icon gọi khi phân tích định dạng (analyze) */
   iconByFormat: {
     "nginx-queue": "layers",

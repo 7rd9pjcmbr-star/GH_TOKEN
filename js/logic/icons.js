@@ -324,6 +324,89 @@
     };
   }
 
+  /**
+   * Mapper icon nhận phản hồi truy vấn thời gian thực (OMS / pipe / sync)
+   * input: { channels:[{id,status,backend,detail}], backends?:[], links?:[] }
+   */
+  function callForRealtime(report, opts = {}) {
+    const byStatus = net().iconByRealtimeStatus || {
+      connected: "monitor",
+      alive: "monitor",
+      ok: "monitor",
+      missing_cred: "key",
+      auth_fail: "lock",
+      error: "wrench",
+      stale: "wrench",
+      blocked: "lock",
+    };
+    const byChannel = net().iconByRealtimeChannel || {
+      telegram: "spark",
+      pancake: "layers",
+      ghn: "network",
+      viettelpost: "network",
+      tracking: "compass",
+      tpos: "cpu",
+      direct_api: "code",
+      spx_local: "cube",
+      vnpost_local: "code",
+      oms_bus: "spark",
+    };
+
+    const channels = report?.channels || report?.backends || [];
+    const paths = [];
+    const mergedIcons = ["spark", "monitor"];
+
+    channels.forEach((ch) => {
+      const id = ch.id || ch.backend || "channel";
+      const status = String(ch.status || "error").toLowerCase();
+      const lead = byChannel[id] || byChannel[String(ch.backend || "").toLowerCase()] || "chip";
+      const stIcon = byStatus[status] || "wrench";
+      let icons = [lead, stIcon];
+      if (status === "missing_cred") icons = [lead, "key", "lock"];
+      if (status === "connected" || status === "alive" || status === "ok") icons = [lead, "monitor"];
+      icons.forEach((n) => {
+        if (!mergedIcons.includes(n)) mergedIcons.push(n);
+      });
+      const calls = icons.map((n) => describeIcon(n).call);
+      const detail = `${ch.backend || id}: ${status}${ch.detail ? " · " + String(ch.detail).slice(0, 80) : ""}`;
+      paths.push({
+        channel: id,
+        status,
+        icons,
+        icon_chant: calls.join(" → "),
+        feedback: `Mapper gọi: ${calls.join(" → ")} — ${detail}`,
+        called: icons.map((n) => describeIcon(n)),
+      });
+    });
+
+    (report?.links || []).forEach((link) => {
+      if (!link?.live) return;
+      ["spark", byChannel[link.to] || "network", "monitor"].forEach((n) => {
+        if (!mergedIcons.includes(n)) mergedIcons.push(n);
+      });
+    });
+
+    const callNames = mergedIcons.map((n) => describeIcon(n).call);
+    const connected = paths.filter((p) =>
+      ["connected", "alive", "ok"].includes(p.status)
+    ).length;
+    const feedback =
+      `Mapper gọi: ${callNames.join(" → ")} — realtime ${connected}/${paths.length} channel sống` +
+      (opts.detail ? ` · ${opts.detail}` : "");
+
+    return {
+      ok: true,
+      armySize: Object.keys(army()).length,
+      called: mergedIcons.map((n) => describeIcon(n)),
+      uniqueIcons: mergedIcons,
+      chant: mergedIcons.join(" → "),
+      callChant: callNames.join(" → "),
+      feedback,
+      paths,
+      channels: paths,
+    };
+  }
+
   const Icons = {
     army() {
       return Object.entries(army()).map(([name, meta]) => ({
@@ -337,6 +420,7 @@
     callOnPaths,
     callForFormat,
     callFromContext,
+    callForRealtime,
 
     mapAllLibraries,
     docsFor,
@@ -350,6 +434,9 @@
           return callForFormat(input);
         }
         return callFromContext(input, opts);
+      }
+      if (input && typeof input === "object" && (input.channels || input.backends)) {
+        return callForRealtime(input, opts);
       }
       const text = String(input ?? "");
       // thử format trước
