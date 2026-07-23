@@ -62,6 +62,8 @@ SKIP_NAME_HINTS = (
     "leaks.",
     "leak_",
     "darknet",
+    "results_cookies",
+    "vnpost_ok",
 )
 
 
