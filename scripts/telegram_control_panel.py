@@ -142,6 +142,9 @@ def panel_keyboard() -> dict:
                 {"text": "✨ Icon realtime", "callback_data": "q:icon_rt"},
                 {"text": "🗄 Backend/kho", "callback_data": "q:kho_be"},
             ],
+            [
+                {"text": "⏱ Mapper RT đơn", "callback_data": "q:rt_orders"},
+            ],
             [{"text": "🔁 Làm mới phân tích", "callback_data": "q:refresh"}],
         ]
     }
@@ -341,6 +344,23 @@ def fmt_kho_be(_a: dict | None = None) -> str:
         return f"Mapper backend/kho lỗi: {e}\nChạy: python3 scripts/warehouse_backend_mapper.py"
 
 
+def fmt_rt_orders(_a: dict | None = None) -> str:
+    try:
+        from realtime_order_backend_mapper import build_report, format_text, write_outputs
+
+        report = build_report()
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "realtime_order_backend_mapper.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Mapper RT đơn lỗi: {e}\n"
+            "Chạy: python3 scripts/realtime_order_backend_mapper.py"
+        )
+
+
 def fmt_urls(_a: dict | None = None) -> str:
     path = ROOT / "reports" / "telegram-classify" / "url_paths_expanded.txt"
     alt = ROOT / "reports" / "telegram-classify" / "url_paths_expanded.json"
@@ -425,6 +445,7 @@ HANDLERS = {
     "q:oms": fmt_oms,
     "q:icon_rt": fmt_icon_rt,
     "q:kho_be": fmt_kho_be,
+    "q:rt_orders": fmt_rt_orders,
 }
 
 
@@ -483,6 +504,7 @@ def main() -> int:
         "q:oms",
         "q:icon_rt",
         "q:kho_be",
+        "q:rt_orders",
     ]:
         send(
             token,
@@ -500,6 +522,7 @@ def main() -> int:
                 "q:oms",
                 "q:icon_rt",
                 "q:kho_be",
+                "q:rt_orders",
             }
             else None,
         )

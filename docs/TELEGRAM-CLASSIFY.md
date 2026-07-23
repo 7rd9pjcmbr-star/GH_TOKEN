@@ -91,3 +91,12 @@ python3 scripts/fix_order_phones.py quarantine/telegram/orders_detailed_*.csv \
 ```
 
 Gắn nhãn `ok` / `missing` / `masked` / `invalid`, xuất `*.phone_fixed.csv` + todo khắc phục upstream (Pancake map, tắt PII mask, bắt buộc SĐT khi upload Telegram).
+
+## Mapper đơn hàng realtime từ backend toàn diện
+
+```bash
+python3 scripts/realtime_order_backend_mapper.py
+```
+
+Gộp OMS probe + realtime sync + ingest local → map từng đơn theo backend/kho/carrier/NS.
+Panel: **Mapper RT đơn**. Báo cáo: `reports/telegram-classify/realtime_order_backend_mapper.txt`.
