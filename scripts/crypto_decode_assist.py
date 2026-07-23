@@ -1469,9 +1469,30 @@ def assist_unmask(
             "AEAD → python3 scripts/crypto_decode_assist.py --unmask --aes-gcm KEY NONCE CT",
             "Frida → --unmask --frida-aes FILE (MAPPER_ICON_AES_KEY_B64)",
             "Atlas → python3 scripts/unmask_redaction_crypto_mapper.py",
+            "Deep inner L0→L5: python3 scripts/inner_unmask_deep_mapper.py",
         ],
         "cli": "python3 scripts/crypto_decode_assist.py --unmask",
     }
+    # Gắn tóm tắt deep mapper nếu có plaintext/bundle
+    try:
+        from inner_unmask_deep_mapper import build_report as deep_build
+
+        deep = deep_build()
+        report["deep_inner"] = {
+            "ok": deep.get("ok"),
+            "verdict": deep.get("verdict"),
+            "stats": deep.get("stats"),
+            "field_hits_total": deep.get("field_hits_total"),
+            "matrix_n": len(deep.get("matrix") or []),
+        }
+        if deep.get("ok"):
+            report["verdict"] = (
+                f"{report['verdict']} | Deep: hits={deep.get('field_hits_total')} "
+                f"MASK={(deep.get('stats') or {}).get('mask_n')} "
+                f"b64→mask={(deep.get('stats') or {}).get('b64_to_mask')}"
+            )
+    except Exception as e:  # noqa: BLE001
+        report["deep_inner"] = {"ok": False, "error": str(e)}
     return report
 
 
@@ -1543,6 +1564,13 @@ def format_unmask_text(report: dict) -> str:
                 f"· {p.get('id')}: crypto_unmask={p.get('crypto_unmask')} "
                 f"→ {p.get('action')}"
             )
+    deep = report.get("deep_inner") or {}
+    if deep:
+        L("")
+        L("=== Deep inner L0→L5 ===")
+        L(f"· {deep.get('verdict') or deep}")
+        if deep.get("stats"):
+            L(f"  stats={deep.get('stats')}")
     L("")
     L("Next:")
     for a in report.get("next_actions") or []:

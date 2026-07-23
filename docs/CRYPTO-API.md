@@ -95,3 +95,14 @@ python3 scripts/unmask_redaction_crypto_mapper.py --sample '+84335****64' --look
 
 UI: `MaMoCrypto.recommend("unmask redaction")` · `MaMoCrypto.lookup("encryption-vs-encoding")`.
 Báo cáo: `reports/telegram-classify/unmask_redaction_crypto_mapper.txt`.
+
+### Mapper truy vấn sâu lớp bên trong (L0→L5)
+
+Phân tích toàn diện envelope sau AES + ánh xạ path unmask:
+
+```bash
+python3 scripts/inner_unmask_deep_mapper.py
+python3 scripts/inner_unmask_deep_mapper.py --bundle path/to/frida-a11y-offline-aes-*.json
+```
+
+Panel: **🧊 Inner·unmask sâu**. Báo cáo: `reports/telegram-classify/inner_unmask_deep_mapper.txt`.

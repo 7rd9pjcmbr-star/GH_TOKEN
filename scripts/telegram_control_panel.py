@@ -155,6 +155,9 @@ def panel_keyboard() -> dict:
                 {"text": "🗺 Giải mã×icon", "callback_data": "q:decode_map"},
             ],
             [
+                {"text": "🧊 Inner·unmask sâu", "callback_data": "q:inner_deep"},
+            ],
+            [
                 {"text": "🏬 Kho·NS·Shop", "callback_data": "q:kho_shop"},
                 {"text": "🗄 Backend BC·DB", "callback_data": "q:bc_db"},
             ],
@@ -488,6 +491,23 @@ def fmt_unmask_map(_a: dict | None = None) -> str:
         return (
             f"Unmask×atlas lỗi: {e}\n"
             "Chạy: python3 scripts/unmask_redaction_crypto_mapper.py"
+        )
+
+
+def fmt_inner_deep(_a: dict | None = None) -> str:
+    try:
+        from inner_unmask_deep_mapper import build_report, format_text, write_outputs
+
+        report = build_report()
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "inner_unmask_deep_mapper.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Inner·unmask sâu lỗi: {e}\n"
+            "Chạy: python3 scripts/inner_unmask_deep_mapper.py"
         )
 
 
@@ -881,6 +901,7 @@ HANDLERS = {
     "q:rt_expand": fmt_rt_expand,
     "q:crypto_cmp": fmt_crypto_cmp,
     "q:unmask_map": fmt_unmask_map,
+    "q:inner_deep": fmt_inner_deep,
     "q:decode": fmt_decode,
     "q:decode_map": fmt_decode_map,
     "q:kho_shop": fmt_kho_shop,
@@ -961,6 +982,7 @@ def main() -> int:
         "q:rt_expand",
         "q:crypto_cmp",
         "q:unmask_map",
+        "q:inner_deep",
         "q:decode",
         "q:decode_map",
         "q:kho_shop",
@@ -998,6 +1020,7 @@ def main() -> int:
                 "q:rt_expand",
                 "q:crypto_cmp",
                 "q:unmask_map",
+                "q:inner_deep",
                 "q:decode",
                 "q:decode_map",
                 "q:kho_shop",
