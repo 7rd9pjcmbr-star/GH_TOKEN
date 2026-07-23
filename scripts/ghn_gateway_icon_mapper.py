@@ -27,6 +27,7 @@ SECRETS = ROOT / "secrets"
 # Alias người dùng / biến thể → host chuẩn GHN API
 GHN_GATEWAY_ALIASES: dict[str, str] = {
     "ghn.gateway.online.vn": "online-gateway.ghn.vn",
+    "online.gateway.ghn.vn": "online-gateway.ghn.vn",
     "gateway.online.vn": "online-gateway.ghn.vn",
     "gateway.ghn.vn": "online-gateway.ghn.vn",
     "api.ghn.vn": "online-gateway.ghn.vn",
