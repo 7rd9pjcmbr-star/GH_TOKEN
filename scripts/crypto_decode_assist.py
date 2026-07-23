@@ -211,6 +211,7 @@ SECRETS = ROOT / "secrets"
 UPLOADS = Path("/home/ubuntu/.cursor/projects/workspace/uploads")
 FRIDA_AAD_DEFAULT = "mapper-icon-aes-v1"
 KEY_ENV_NAMES = (
+    "MAPPER_AES_KEY_B64",
     "MAPPER_ICON_AES_KEY_B64",
     "ICON_AES_KEY_B64",
     "AES_GCM_KEY_B64",
@@ -992,6 +993,7 @@ def build_report(inputs: list[str] | None = None) -> dict:
             "no_bruteforce": True,
         },
         "next_actions": [
+            "Hỗ trợ unmask: python3 scripts/crypto_decode_assist.py --unmask",
             "Frida AES: điền MAPPER_ICON_AES_KEY_B64 vào secrets rồi: "
             "python3 scripts/crypto_decode_assist.py --frida-aes FILE",
             "SĐT **** → refetch API / bản AEAD nội bộ có key — không dùng fromBase64",

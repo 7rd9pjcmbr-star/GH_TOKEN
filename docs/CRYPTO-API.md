@@ -63,7 +63,7 @@ python3 scripts/crypto_decode_assist.py --aes-gcm KEY_B64 NONCE_B64 CT_B64 --aad
 python3 scripts/crypto_decode_assist.py --unmask --aes-gcm KEY_B64 NONCE_B64 CT_B64
 # Frida a11y offline AES (mapper-icon-aes-v1):
 python3 scripts/crypto_decode_assist.py --frida-aes path/to/frida-a11y-offline-aes-*.json --key-b64 KEY_B64
-# hoặc điền MAPPER_ICON_AES_KEY_B64 vào secrets/backend_pipes.env rồi:
+# hoặc điền MAPPER_AES_KEY_B64 / MAPPER_ICON_AES_KEY_B64 vào secrets/backend_pipes.env rồi:
 python3 scripts/crypto_decode_assist.py --frida-aes path/to/bundle.json
 # ASUNMEE mask assist:
 python3 scripts/crypto_decode_assist.py --asunmee --live
@@ -71,6 +71,8 @@ python3 scripts/crypto_decode_assist.py --asunmee --live
 
 Panel: **Hỗ trợ giải mã** (`--unmask`). Báo cáo: `reports/telegram-classify/unmask_decode_assist.txt`.
 Plaintext Frida (khi có key): `reports/telegram-classify/frida_a11y_aes_plaintext.json`.
+
+> Outer AES unwrap ≠ unmask Pancake PII — inner envelope vẫn có thể giữ `****`.
 
 ### Ánh xạ giải mã × icon · mọi kho + bưu cục
 
