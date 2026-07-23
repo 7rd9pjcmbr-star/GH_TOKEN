@@ -88,6 +88,9 @@ def resolve_provider(
     track = (tracking_code or "").upper()
     if track.startswith("SPX"):
         return "spx"
+    # SPX Express thường: 26 + 12 ký tự (vd 260724FBQYQM5X) — dù buucuc=Pancake
+    if re.fullmatch(r"26[0-9A-Z]{12}", track):
+        return "spx"
     if track.startswith(("GHN", "GHA")):
         return "ghn"
     if re.match(r"^V\d+", track) or "VTP" in track:

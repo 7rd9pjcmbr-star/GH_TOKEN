@@ -597,8 +597,92 @@ def reverse_chain_asumee(
         results.extend(reverse_chain_asumee_hop2(conn, wid))
         results.extend(reverse_chain_asumee_hop3(conn, wid))
         results.extend(reverse_chain_asumee_hop4(conn, wid))
+        results.extend(reverse_chain_asumee_hop5(conn, wid))
 
     return results
+
+
+def reverse_chain_asumee_hop5(conn: sqlite3.Connection, wid: str) -> list[dict]:
+    """Hop-5 ngược dòng: recover huyện, SPX-like URL, timeline trống, pipe_events."""
+    out: list[dict] = []
+
+    # District recover từ full_address (ward có, district trống)
+    dist = reverse_district_recover(conn, wid)
+    out.append(dist)
+    for s in (dist.get("samples") or [])[:5]:
+        hint = s.get("hint_district")
+        vt = s.get("van_tay")
+        so = s.get("so_noi_bo")
+        if vt:
+            r = reverse_by_van_tay(conn, str(vt))
+            r["gap_cohort"] = "hop5_district_recover"
+            out.append(r)
+        if so:
+            r = reverse_by_so_noi_bo(conn, str(so))
+            r["gap_cohort"] = "hop5_district_recover"
+            out.append(r)
+        if hint:
+            out.append(reverse_by_address(conn, str(hint), limit=6))
+
+    out.append(reverse_gap_cohort(conn, wid, "no_district"))
+    out.append(reverse_gap_cohort(conn, wid, "delivered_no_timeline"))
+
+    # SPX-like tracking (26**********) → aship URL + reverse drills
+    spx = reverse_spx_like_tracking(conn, wid, limit=14)
+    out.append(spx)
+    for tn in (spx.get("_drill_tracking") or [])[:8]:
+        r = reverse_by_tracking(conn, tn)
+        r["gap_cohort"] = "hop5_spx_like"
+        out.append(r)
+
+    # Timeline gaps: shipped/delivered thiếu pick/deliver
+    tl = reverse_timeline_gap(conn, wid, limit=12)
+    out.append(tl)
+    for s in (tl.get("samples") or [])[:4]:
+        vt = s.get("van_tay")
+        so = s.get("so_noi_bo")
+        tr = s.get("tracking_code")
+        if vt:
+            r = reverse_by_van_tay(conn, str(vt))
+            r["gap_cohort"] = "hop5_timeline"
+            out.append(r)
+        if so:
+            r = reverse_by_so_noi_bo(conn, str(so))
+            r["gap_cohort"] = "hop5_timeline"
+            out.append(r)
+        if tr and str(tr) != str(so):
+            r = reverse_by_tracking(conn, str(tr))
+            r["gap_cohort"] = "hop5_timeline"
+            out.append(r)
+
+    # pipe_events cho ASUMEE (thường 0)
+    out.append(reverse_pipe_events_asumee(conn, wid))
+
+    # Canceled + SPX-like → reverse
+    canceled_spx = conn.execute(
+        """
+        SELECT van_tay, so_noi_bo, tracking_code FROM orders
+        WHERE warehouse_id = ? AND status = 'canceled'
+          AND tracking_code GLOB '26*' AND length(tracking_code) = 14
+        ORDER BY piped_at DESC LIMIT 4
+        """,
+        (wid,),
+    ).fetchall()
+    for vt, so, tr in canceled_spx:
+        if vt:
+            r = reverse_by_van_tay(conn, str(vt))
+            r["gap_cohort"] = "hop5_canceled_spx"
+            out.append(r)
+        if tr:
+            r = reverse_by_tracking(conn, str(tr))
+            r["gap_cohort"] = "hop5_canceled_spx"
+            out.append(r)
+        elif so:
+            r = reverse_by_so_noi_bo(conn, str(so))
+            r["gap_cohort"] = "hop5_canceled_spx"
+            out.append(r)
+
+    return out
 
 
 def reverse_chain_asumee_hop4(conn: sqlite3.Connection, wid: str) -> list[dict]:
@@ -1078,6 +1162,10 @@ def reverse_gap_cohort(conn: sqlite3.Connection, wid: str, kind: str) -> dict:
             "lower(coalesce(status,'')) IN ('submitted','pending','new','confirmed') "
             "AND (province IS NULL OR province = '')"
         ),
+        "no_district": "(district IS NULL OR district = '')",
+        "delivered_no_timeline": (
+            "status = 'delivered' AND (delivered_at IS NULL OR delivered_at = '')"
+        ),
     }
     where = where_map.get(kind, "1=0")
     if kind not in where_map:
@@ -1135,6 +1223,14 @@ def reverse_gap_cohort(conn: sqlite3.Connection, wid: str, kind: str) -> dict:
             "path_id": "PATH-MISSING-GEO",
             "action": "recover_province_from_full_address_before_ship",
         },
+        "no_district": {
+            "path_id": "PATH-MISSING-GEO",
+            "action": "backfill_district_from_full_address_or_pancake",
+        },
+        "delivered_no_timeline": {
+            "path_id": "PATH-MISSING",
+            "action": "map_pancake_status_history_to_delivered_at",
+        },
     }.get(kind, {"path_id": "PATH-UNKNOWN", "action": "inspect"})
     return _attach_flow(
         {
@@ -1159,6 +1255,332 @@ def reverse_gap_cohort(conn: sqlite3.Connection, wid: str, kind: str) -> dict:
             "path": f"gap:{kind} n={n} ← ASUMEE ← status×{len(by_status)}",
         }
     )
+
+
+def _district_hint_from_address(addr: str) -> str | None:
+    """Gợi ý huyện/quận từ full_address khi district trống."""
+    if not addr:
+        return None
+    # Ưu tiên token rõ: Huyện / Quận / Thị xã / Thành phố (trừ tỉnh đứng sau)
+    m = re.search(
+        r"(Huyện\s+[^,;/|]+|Quận\s+[^,;/|]+|Thị\s+xã\s+[^,;/|]+|"
+        r"Thành\s+phố\s+[^,;/|]+|Thành\s+Phố\s+[^,;/|]+)",
+        addr,
+        flags=re.IGNORECASE,
+    )
+    if m:
+        hint = re.sub(r"\s+", " ", m.group(1)).strip(" .,")
+        if "*" in hint:
+            return None
+        if len(hint) >= 5:
+            return hint
+    parts = [p.strip() for p in re.split(r"[,/|]", addr) if p.strip()]
+    for p in parts:
+        low = p.lower()
+        if low.startswith(("huyện ", "quận ", "thị xã ", "thành phố ")):
+            if "*" in p:
+                continue
+            return p
+    return None
+
+
+def reverse_district_recover(conn: sqlite3.Connection, wid: str) -> dict:
+    """Truy vấn ngược: thiếu district nhưng còn full_address / ward → gợi ý huyện."""
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT van_tay, so_noi_bo, status, province, ward, full_address,
+                   receiver_phone, tracking_code
+            FROM orders
+            WHERE warehouse_id = ?
+              AND (district IS NULL OR district = '')
+              AND full_address IS NOT NULL AND full_address != ''
+            ORDER BY piped_at DESC LIMIT 40
+            """,
+            (wid,),
+        )
+    ]
+    recovered = []
+    for r in rows:
+        hint = _district_hint_from_address(str(r.get("full_address") or ""))
+        recovered.append(
+            {
+                "van_tay": r.get("van_tay"),
+                "so_noi_bo": r.get("so_noi_bo"),
+                "status": r.get("status"),
+                "province": r.get("province"),
+                "ward": r.get("ward"),
+                "hint_district": hint,
+                "full_address": (r.get("full_address") or "")[:120],
+                "phone_class": (
+                    "MASKED"
+                    if r.get("receiver_phone") and "*" in str(r.get("receiver_phone"))
+                    else ("MISSING" if not r.get("receiver_phone") else "OK")
+                ),
+            }
+        )
+    with_hint = [x for x in recovered if x.get("hint_district")]
+    by_hint: dict[str, int] = {}
+    for x in with_hint:
+        h = str(x.get("hint_district"))
+        by_hint[h] = by_hint.get(h, 0) + 1
+    n_no_dist = conn.execute(
+        """
+        SELECT COUNT(*) FROM orders
+        WHERE warehouse_id = ? AND (district IS NULL OR district = '')
+        """,
+        (wid,),
+    ).fetchone()[0]
+    n_ward_only = conn.execute(
+        """
+        SELECT COUNT(*) FROM orders
+        WHERE warehouse_id = ?
+          AND (district IS NULL OR district = '')
+          AND ward IS NOT NULL AND ward != ''
+        """,
+        (wid,),
+    ).fetchone()[0]
+    return {
+        "query_type": "district_recover",
+        "query": wid,
+        "hit": bool(with_hint) or n_no_dist > 0,
+        "count": n_no_dist,
+        "ward_without_district": n_ward_only,
+        "sample_scanned": len(recovered),
+        "recovered_hints": len(with_hint),
+        "by_hint_district": [
+            {"hint": k, "orders": v}
+            for k, v in sorted(by_hint.items(), key=lambda kv: -kv[1])
+        ][:15],
+        "samples": with_hint[:10] or recovered[:8],
+        "path": (
+            f"district_recover: no_district={n_no_dist} ward_only={n_ward_only} "
+            f"hints={len(with_hint)}/{len(recovered)}"
+        ),
+        "unmask_map": {
+            "note": "Recover huyện từ address; PII vẫn MASK nếu có *",
+            "path_id": "PATH-MISSING-GEO",
+            "action": "backfill_district_from_full_address_or_pancake",
+        },
+        "next": [
+            "Pipe lại shipping_address.district từ Pancake detail",
+            "Ward có · district trống là pattern ASUMEE chính",
+        ],
+    }
+
+
+def reverse_spx_like_tracking(conn: sqlite3.Connection, wid: str, limit: int = 14) -> dict:
+    """Gắn aship URL cho mã SPX-like (26XXXXXXXXXXXX) dù buucuc=Pancake."""
+    try:
+        from tracking_aship import attach_tracking_urls, build_tracking_url
+    except Exception as e:  # noqa: BLE001
+        return {
+            "query_type": "spx_like_tracking",
+            "query": wid,
+            "hit": False,
+            "error": str(e),
+            "path": "spx_like_tracking: module lỗi",
+        }
+
+    n = conn.execute(
+        """
+        SELECT COUNT(*) FROM orders
+        WHERE warehouse_id = ?
+          AND tracking_code GLOB '26*' AND length(tracking_code) = 14
+        """,
+        (wid,),
+    ).fetchone()[0]
+    by_status = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT status, COUNT(*) AS orders FROM orders
+            WHERE warehouse_id = ?
+              AND tracking_code GLOB '26*' AND length(tracking_code) = 14
+            GROUP BY status ORDER BY orders DESC
+            """,
+            (wid,),
+        )
+    ]
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT * FROM orders
+            WHERE warehouse_id = ?
+              AND tracking_code GLOB '26*' AND length(tracking_code) = 14
+            ORDER BY piped_at DESC LIMIT ?
+            """,
+            (wid, limit),
+        )
+    ]
+    attached = []
+    drills: list[str] = []
+    for o in rows:
+        a = attach_tracking_urls(dict(o))
+        # Force SPX URL nếu resolver chưa bắt (phiên bản cũ)
+        if not a.get("tracking_url") and a.get("tracking_code"):
+            a["tracking_provider"] = "spx"
+            a["tracking_url"] = build_tracking_url(
+                str(a["tracking_code"]), provider="spx", tracking_code=str(a["tracking_code"])
+            )
+        attached.append(
+            {
+                "van_tay": a.get("van_tay"),
+                "so_noi_bo": a.get("so_noi_bo"),
+                "tracking_code": a.get("tracking_code"),
+                "status": a.get("status"),
+                "province": a.get("province"),
+                "buucuc": a.get("buucuc"),
+                "carrier": a.get("carrier"),
+                "tracking_provider": a.get("tracking_provider"),
+                "tracking_url": a.get("tracking_url"),
+                "has_url": bool(a.get("tracking_url")),
+            }
+        )
+        tn = str(a.get("tracking_code") or "").strip()
+        if tn and tn not in drills:
+            drills.append(tn)
+
+    return {
+        "query_type": "spx_like_tracking",
+        "query": wid,
+        "hit": n > 0,
+        "count": n,
+        "by_status": by_status,
+        "with_url": sum(1 for a in attached if a.get("has_url")),
+        "samples": attached[:12],
+        "path": (
+            f"spx_like_tracking n={n} sample={len(attached)} "
+            f"with_url={sum(1 for a in attached if a.get('has_url'))}"
+        ),
+        "unmask_map": {
+            "note": "SPX URL ≠ unmask PII; mã 26* suy ra provider=spx",
+            "path_id": "PATH-CLEAR" if any(a.get("has_url") for a in attached) else "PATH-MISSING",
+        },
+        "next": [
+            "Probe aship URL nhẹ nếu egress cho phép",
+            "Map buucuc/carrier=SPX khi pipe lại shipments",
+        ],
+        "_drill_tracking": drills[:8],
+    }
+
+
+def reverse_timeline_gap(conn: sqlite3.Connection, wid: str, limit: int = 12) -> dict:
+    """Shipped/delivered nhưng thiếu picked_at / delivered_at."""
+    row = dict(
+        conn.execute(
+            """
+            SELECT
+              SUM(CASE WHEN status IN ('shipped','delivered')
+                        AND (picked_at IS NULL OR picked_at='') THEN 1 ELSE 0 END)
+                AS shipped_no_pick,
+              SUM(CASE WHEN status='delivered'
+                        AND (delivered_at IS NULL OR delivered_at='') THEN 1 ELSE 0 END)
+                AS delivered_no_at,
+              SUM(CASE WHEN status='shipped' THEN 1 ELSE 0 END) AS shipped,
+              SUM(CASE WHEN status='delivered' THEN 1 ELSE 0 END) AS delivered
+            FROM orders WHERE warehouse_id = ?
+            """,
+            (wid,),
+        ).fetchone()
+    )
+    samples = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT van_tay, so_noi_bo, tracking_code, status, province, ward,
+                   picked_at, delivered_at, created_at, buucuc
+            FROM orders
+            WHERE warehouse_id = ?
+              AND status IN ('shipped', 'delivered')
+              AND (picked_at IS NULL OR picked_at = ''
+                   OR (status='delivered' AND (delivered_at IS NULL OR delivered_at='')))
+            ORDER BY piped_at DESC LIMIT ?
+            """,
+            (wid, limit),
+        )
+    ]
+    return {
+        "query_type": "timeline_gap",
+        "query": wid,
+        "hit": (row.get("shipped_no_pick") or 0) > 0 or (row.get("delivered_no_at") or 0) > 0,
+        "count": (row.get("shipped_no_pick") or 0) + (row.get("delivered_no_at") or 0),
+        "gaps": row,
+        "samples": samples,
+        "path": (
+            f"timeline_gap: shipped_no_pick={row.get('shipped_no_pick')}/"
+            f"{row.get('shipped')} delivered_no_at={row.get('delivered_no_at')}/"
+            f"{row.get('delivered')}"
+        ),
+        "unmask_map": {
+            "path_id": "PATH-MISSING",
+            "action": "map_pancake_status_history_to_picked_delivered_at",
+        },
+        "next": [
+            "Pipe status history / last_partner_update từ Pancake detail",
+            "Không suy diễn delivered_at từ piped_at",
+        ],
+    }
+
+
+def reverse_pipe_events_asumee(conn: sqlite3.Connection, wid: str) -> dict:
+    """Đếm pipe_events gắn van_tay ASUMEE — thường 0 (thiếu event bus)."""
+    n = conn.execute(
+        """
+        SELECT COUNT(*) FROM pipe_events pe
+        WHERE pe.van_tay IN (
+          SELECT van_tay FROM orders WHERE warehouse_id = ?
+        )
+        """,
+        (wid,),
+    ).fetchone()[0]
+    by_event = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT pe.event, COUNT(*) AS n FROM pipe_events pe
+            WHERE pe.van_tay IN (
+              SELECT van_tay FROM orders WHERE warehouse_id = ?
+            )
+            GROUP BY pe.event ORDER BY n DESC LIMIT 12
+            """,
+            (wid,),
+        )
+    ]
+    recent = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT pe.at, pe.event, pe.van_tay, pe.so_noi_bo,
+                   substr(pe.detail, 1, 80) AS detail
+            FROM pipe_events pe
+            WHERE pe.van_tay IN (
+              SELECT van_tay FROM orders WHERE warehouse_id = ?
+            )
+            ORDER BY pe.id DESC LIMIT 8
+            """,
+            (wid,),
+        )
+    ]
+    return {
+        "query_type": "pipe_events",
+        "query": wid,
+        "hit": True,
+        "count": n,
+        "by_event": by_event,
+        "samples": recent,
+        "path": f"pipe_events ASUMEE n={n} event_types={len(by_event)}",
+        "unmask_map": {
+            "path_id": "PATH-MISSING" if n == 0 else "PATH-CLEAR",
+            "action": "emit_pipe_events_on_status_change_for_asumee",
+        },
+        "next": [
+            "Bật pipe_events khi sync ASUMEE (status/pick/deliver)",
+            "Không có event → không truy ngược timeline từ bus",
+        ],
+    }
 
 
 def reverse_geo_recover(conn: sqlite3.Connection, wid: str) -> dict:
@@ -1984,6 +2406,45 @@ def format_text(report: dict) -> str:
                 )
             for n in r.get("next") or []:
                 L(f"    → {n}")
+        if r.get("query_type") == "district_recover":
+            L(
+                f"  · no_district={r.get('count')} ward_only={r.get('ward_without_district')} "
+                f"hints={r.get('recovered_hints')}/{r.get('sample_scanned')}"
+            )
+            for m in (r.get("by_hint_district") or [])[:8]:
+                L(f"  · district_hint {m.get('hint')}: n={m.get('orders')}")
+            for s in (r.get("samples") or [])[:5]:
+                L(
+                    f"  · recover van_tay={s.get('van_tay')} dist={s.get('hint_district')!r} "
+                    f"ward={s.get('ward')!r} prov={s.get('province')!r}"
+                )
+            for n in r.get("next") or []:
+                L(f"    → {n}")
+        if r.get("query_type") == "spx_like_tracking":
+            L(f"  · with_url={r.get('with_url')} by_status={r.get('by_status')}")
+            for s in (r.get("samples") or [])[:6]:
+                L(
+                    f"  · trk={s.get('tracking_code')} st={s.get('status')} "
+                    f"url={'(yes)' if s.get('has_url') else '∅'} "
+                    f"prov={s.get('tracking_provider') or '∅'} "
+                    f"buu={s.get('buucuc')}"
+                )
+            for n in r.get("next") or []:
+                L(f"    → {n}")
+        if r.get("query_type") == "timeline_gap":
+            L(f"  · gaps={r.get('gaps')}")
+            for s in (r.get("samples") or [])[:5]:
+                L(
+                    f"  · {s.get('van_tay')} st={s.get('status')} "
+                    f"pick={s.get('picked_at') or '∅'} deliver={s.get('delivered_at') or '∅'} "
+                    f"trk={s.get('tracking_code')}"
+                )
+            for n in r.get("next") or []:
+                L(f"    → {n}")
+        if r.get("query_type") == "pipe_events":
+            L(f"  · events={r.get('count')} by_event={r.get('by_event')}")
+            for n in r.get("next") or []:
+                L(f"    → {n}")
         if r.get("gap_cohort"):
             L(f"  · gap_cohort={r.get('gap_cohort')}")
         if r.get("count") and r.get("query_type") in {
@@ -1995,6 +2456,10 @@ def format_text(report: dict) -> str:
             "phone_ok_contrast",
             "mask_phone_clusters",
             "tracking_url_attach",
+            "district_recover",
+            "spx_like_tracking",
+            "timeline_gap",
+            "pipe_events",
         }:
             L(f"  · count={r.get('count')} status={r.get('status')}")
     if report.get("panorama_samples"):
