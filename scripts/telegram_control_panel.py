@@ -128,8 +128,9 @@ def panel_keyboard() -> dict:
             ],
             [
                 {"text": "🔌 Pipe backend", "callback_data": "q:pipes"},
-                {"text": "🔁 Làm mới phân tích", "callback_data": "q:refresh"},
+                {"text": "⏱ Realtime đơn", "callback_data": "q:realtime"},
             ],
+            [{"text": "🔁 Làm mới phân tích", "callback_data": "q:refresh"}],
         ]
     }
 
@@ -275,6 +276,16 @@ def fmt_pipes(_a: dict | None = None) -> str:
         return f"Pipe backend lỗi: {e}\nChạy: python3 scripts/backend_pipe_keepalive.py --once --notify"
 
 
+def fmt_realtime(_a: dict | None = None) -> str:
+    try:
+        from realtime_order_sync import format_cycle, load_env, run_cycle
+
+        cycle = run_cycle(load_env(), limit=20, notify=False, notify_new_only=False)
+        return format_cycle(cycle)
+    except Exception as e:  # noqa: BLE001
+        return f"Realtime lỗi: {e}\nChạy: python3 scripts/realtime_order_sync.py --once --notify"
+
+
 HANDLERS = {
     "q:overview": fmt_overview,
     "q:source": fmt_source,
@@ -283,6 +294,7 @@ HANDLERS = {
     "q:todo": fmt_todo,
     "q:paths": fmt_paths,
     "q:pipes": fmt_pipes,
+    "q:realtime": fmt_realtime,
 }
 
 
@@ -326,12 +338,12 @@ def main() -> int:
 
     # Always open panel + push full query pack so nguyên nhân rõ ngay
     open_panel(token, chat, analysis)
-    for key in ["q:overview", "q:source", "q:masked", "q:missing", "q:todo", "q:paths", "q:pipes"]:
+    for key in ["q:overview", "q:source", "q:masked", "q:missing", "q:todo", "q:paths", "q:pipes", "q:realtime"]:
         send(
             token,
             chat,
             HANDLERS[key](analysis),
-            panel_keyboard() if key in {"q:paths", "q:pipes"} else None,
+            panel_keyboard() if key in {"q:paths", "q:pipes", "q:realtime"} else None,
         )
 
     once = "--once" in sys.argv

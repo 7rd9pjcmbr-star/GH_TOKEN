@@ -54,6 +54,22 @@ python3 scripts/backend_pipe_keepalive.py --loop --interval 300 --notify-on-risk
 Điền `PANCAKE_POS_API_KEY` / `GHN_API_TOKEN` / `TPOS_*` vào `secrets/backend_pipes.env` (gitignored).
 State: `secrets/backend_pipes.state.json` · báo cáo: `reports/telegram-classify/backend_pipe_keepalive.json`.
 
+## Realtime đơn hàng theo backend
+
+```bash
+# một vòng + Telegram
+python3 scripts/realtime_order_sync.py --once --notify
+
+# poll liên tục (60s), chỉ báo khi có đơn mới
+python3 scripts/realtime_order_sync.py --loop --interval 60 --notify --notify-new-only
+```
+
+- Pancake: kéo `/shops/{id}/orders` khi có API key  
+- Telegram/direct_api: theo dõi file mới trong `quarantine/telegram`  
+- GHN/TPOS: giữ pipe (cần token shop)  
+Snapshot: `reports/telegram-classify/realtime/realtime_latest.json`  
+Panel: nút **Realtime đơn**.
+
 ```bash
 python3 scripts/fix_order_phones.py quarantine/telegram/orders_detailed_*.csv \
   --out reports/telegram-classify/phone-fix
