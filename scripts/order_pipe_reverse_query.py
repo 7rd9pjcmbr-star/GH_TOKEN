@@ -1355,6 +1355,76 @@ def map_partner_name_to_routing(
     """Map partner_name / provider / mã VĐ → carrier + buucuc + aship provider."""
     pn = str(partner_name or "").strip()
     up = pn.upper()
+    # Bỏ dấu để khớp "Giao hàng nhanh" / "Giao Hang Nhanh"
+    up_ascii = (
+        up.replace("À", "A")
+        .replace("Á", "A")
+        .replace("Ả", "A")
+        .replace("Ã", "A")
+        .replace("Ạ", "A")
+        .replace("Ă", "A")
+        .replace("Ằ", "A")
+        .replace("Ắ", "A")
+        .replace("Ẳ", "A")
+        .replace("Ẵ", "A")
+        .replace("Ặ", "A")
+        .replace("Â", "A")
+        .replace("Ầ", "A")
+        .replace("Ấ", "A")
+        .replace("Ẩ", "A")
+        .replace("Ẫ", "A")
+        .replace("Ậ", "A")
+        .replace("È", "E")
+        .replace("É", "E")
+        .replace("Ẻ", "E")
+        .replace("Ẽ", "E")
+        .replace("Ẹ", "E")
+        .replace("Ê", "E")
+        .replace("Ề", "E")
+        .replace("Ế", "E")
+        .replace("Ể", "E")
+        .replace("Ễ", "E")
+        .replace("Ệ", "E")
+        .replace("Ì", "I")
+        .replace("Í", "I")
+        .replace("Ỉ", "I")
+        .replace("Ĩ", "I")
+        .replace("Ị", "I")
+        .replace("Ò", "O")
+        .replace("Ó", "O")
+        .replace("Ỏ", "O")
+        .replace("Õ", "O")
+        .replace("Ọ", "O")
+        .replace("Ô", "O")
+        .replace("Ồ", "O")
+        .replace("Ố", "O")
+        .replace("Ổ", "O")
+        .replace("Ỗ", "O")
+        .replace("Ộ", "O")
+        .replace("Ơ", "O")
+        .replace("Ờ", "O")
+        .replace("Ớ", "O")
+        .replace("Ở", "O")
+        .replace("Ỡ", "O")
+        .replace("Ợ", "O")
+        .replace("Ù", "U")
+        .replace("Ú", "U")
+        .replace("Ủ", "U")
+        .replace("Ũ", "U")
+        .replace("Ụ", "U")
+        .replace("Ư", "U")
+        .replace("Ừ", "U")
+        .replace("Ứ", "U")
+        .replace("Ử", "U")
+        .replace("Ữ", "U")
+        .replace("Ự", "U")
+        .replace("Ỳ", "Y")
+        .replace("Ý", "Y")
+        .replace("Ỷ", "Y")
+        .replace("Ỹ", "Y")
+        .replace("Ỵ", "Y")
+        .replace("Đ", "D")
+    )
     code = str(tracking_code or "").strip()
     prov = (provider or "").strip().lower() or None
     carrier = None
@@ -1364,16 +1434,23 @@ def map_partner_name_to_routing(
         carrier, buucuc, prov = "J&T", "J&T", "jnt"
     elif prov == "spx" or "SPX" in up or "SHOPEE XPRESS" in up or "SHOPEE" in up:
         carrier, buucuc, prov = "Shopee Xpress", "SPX", "spx"
-    elif prov == "ghn" or "GHN" in up or "GIAOHANGNHANH" in up:
+    elif (
+        prov == "ghn"
+        or "GHN" in up
+        or "GIAOHANGNHANH" in up_ascii.replace(" ", "")
+        or "GIAO HANG NHANH" in up_ascii
+    ):
         carrier, buucuc, prov = "GHN", "GHN", "ghn"
     elif prov == "viettelpost" or "VIETTEL" in up or "VTP" in up:
         carrier, buucuc, prov = "Viettel Post", "ViettelPost", "viettelpost"
-    elif "VNPOST" in up or "BƯU ĐIỆN" in up or "BUU DIEN" in up:
+    elif "VNPOST" in up or "BUU DIEN" in up_ascii or "BƯU ĐIỆN" in up:
         carrier, buucuc, prov = "VNPost", "VNPost", "vnpost"
-    elif "GHTK" in up or "GIAOHANGTIETKIEM" in up:
+    elif "GHTK" in up or "GIAOHANGTIETKIEM" in up_ascii.replace(" ", ""):
         carrier, buucuc, prov = "GHTK", "GHTK", "ghtk"
     elif code.upper().startswith("SPX") or re.fullmatch(r"26[0-9A-Za-z]{12}", code):
         carrier, buucuc, prov = "Shopee Xpress", "SPX", "spx"
+    elif code.upper().startswith("VNGH") or code.upper().startswith("GHN"):
+        carrier, buucuc, prov = "GHN", "GHN", "ghn"
     elif pn and pn not in {"Pancake", "None"}:
         carrier = pn
         buucuc = pn
@@ -1417,10 +1494,14 @@ def reverse_carrier_buucuc_remap(
         if not route.get("buucuc") and not route.get("carrier"):
             continue
         need_buu = route.get("buucuc") and (
-            not r.get("buucuc") or r.get("buucuc") == "Pancake"
+            not r.get("buucuc")
+            or r.get("buucuc") == "Pancake"
+            or r.get("buucuc") != route.get("buucuc")
         )
         need_car = route.get("carrier") and (
-            not r.get("carrier") or r.get("carrier") == "Pancake"
+            not r.get("carrier")
+            or r.get("carrier") == "Pancake"
+            or r.get("carrier") != route.get("carrier")
         )
         if not need_buu and not need_car:
             continue
@@ -1439,31 +1520,23 @@ def reverse_carrier_buucuc_remap(
         bkey = str(item.get("buucuc_new") or "(none)")
         by_buucuc[bkey] = by_buucuc.get(bkey, 0) + 1
         if apply:
-            conn.execute(
-                """
-                UPDATE orders
-                SET carrier = COALESCE(?, carrier),
-                    buucuc = COALESCE(?, buucuc),
-                    tracking_provider = COALESCE(?, tracking_provider)
-                WHERE van_tay = ?
-                """,
-                (
-                    item.get("carrier_new") if need_car else None,
-                    item.get("buucuc_new") if need_buu else None,
-                    route.get("provider"),
-                    r.get("van_tay"),
-                ),
-            )
-            # Force replace Pancake
             if need_car and item.get("carrier_new"):
                 conn.execute(
-                    "UPDATE orders SET carrier = ? WHERE van_tay = ? AND carrier = 'Pancake'",
+                    "UPDATE orders SET carrier = ? WHERE van_tay = ?",
                     (item["carrier_new"], r.get("van_tay")),
                 )
             if need_buu and item.get("buucuc_new"):
                 conn.execute(
-                    "UPDATE orders SET buucuc = ? WHERE van_tay = ? AND buucuc = 'Pancake'",
+                    "UPDATE orders SET buucuc = ? WHERE van_tay = ?",
                     (item["buucuc_new"], r.get("van_tay")),
+                )
+            if route.get("provider"):
+                conn.execute(
+                    """
+                    UPDATE orders SET tracking_provider = COALESCE(?, tracking_provider)
+                    WHERE van_tay = ?
+                    """,
+                    (route.get("provider"), r.get("van_tay")),
                 )
             conn.execute(
                 "INSERT INTO pipe_events(at, event, van_tay, so_noi_bo, detail) VALUES (?,?,?,?,?)",
@@ -3944,6 +4017,9 @@ def main() -> int:
 
     continue_flow = bool(args.continue_flow)
     continue_asumee = bool(args.continue_asumee)
+    only_hop7 = bool(args.hop7_apply or args.hop7_offline) and not (
+        continue_flow or continue_asumee or args.hop6_apply or args.hop6_live or args.hop6_offline
+    )
     if (
         args.hop6_live
         or args.hop6_apply
@@ -3952,6 +4028,11 @@ def main() -> int:
         or args.hop7_offline
     ) and not (continue_flow or continue_asumee):
         continue_flow = True
+
+    # Chỉ hop7: bỏ live hop6 để tập trung batch timeline
+    if only_hop7:
+        hop6_live = False
+        hop6_apply = False
 
     report = build_report(
         van_tay=args.van_tay,
