@@ -134,6 +134,9 @@ def panel_keyboard() -> dict:
                 {"text": "🌐 URL mở rộng", "callback_data": "q:urls"},
                 {"text": "🗺 Mapper EP", "callback_data": "q:endpoints"},
             ],
+            [
+                {"text": "🧭 Mapper toàn diện", "callback_data": "q:mapper_full"},
+            ],
             [{"text": "🔁 Làm mới phân tích", "callback_data": "q:refresh"}],
         ]
     }
@@ -336,6 +339,29 @@ def fmt_endpoints(_a: dict | None = None) -> str:
     return "Chưa có endpoint_mapper_deep. Chạy mapper endpoint trên agent."
 
 
+def fmt_mapper_full(_a: dict | None = None) -> str:
+    path = ROOT / "reports" / "telegram-classify" / "comprehensive_mapper.txt"
+    alt = ROOT / "reports" / "telegram-classify" / "comprehensive_mapper.json"
+    try:
+        from comprehensive_order_mapper import build_report, format_text, write_outputs
+
+        report = build_report()
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        if alt.is_file():
+            data = json.loads(alt.read_text(encoding="utf-8"))
+            return (
+                f"🧭 MAPPER TOÀN DIỆN\n{data.get('verdict')}\n"
+                f"pipes={len(data.get('master_pipes') or [])} "
+                f"layers={len(data.get('layers') or [])}\n"
+                f"(regen lỗi: {e})"
+            )[:3800]
+        return f"Mapper toàn diện lỗi: {e}\nChạy: python3 scripts/comprehensive_order_mapper.py"
+
+
 HANDLERS = {
     "q:overview": fmt_overview,
     "q:source": fmt_source,
@@ -347,6 +373,7 @@ HANDLERS = {
     "q:realtime": fmt_realtime,
     "q:urls": fmt_urls,
     "q:endpoints": fmt_endpoints,
+    "q:mapper_full": fmt_mapper_full,
 }
 
 
@@ -401,13 +428,22 @@ def main() -> int:
         "q:realtime",
         "q:urls",
         "q:endpoints",
+        "q:mapper_full",
     ]:
         send(
             token,
             chat,
             HANDLERS[key](analysis),
             panel_keyboard()
-            if key in {"q:paths", "q:pipes", "q:realtime", "q:urls", "q:endpoints"}
+            if key
+            in {
+                "q:paths",
+                "q:pipes",
+                "q:realtime",
+                "q:urls",
+                "q:endpoints",
+                "q:mapper_full",
+            }
             else None,
         )
 
