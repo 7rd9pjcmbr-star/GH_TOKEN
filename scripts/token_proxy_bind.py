@@ -656,6 +656,8 @@ def run_bind(
         )
         report["ok"] = False
         report["next"] = [
+            "python3 scripts/proxy_saas_windows_audit.py  # cửa sổ ProxyFlow/Proxy Pool",
+            "Export Proxy Pool (kubernetes2 ScanToolmanus V3) → secrets/proxies.owned.txt",
             "printf '%s\\n' 'ip:port' 'ip:port:user:pass' >> secrets/proxies.owned.txt",
             "python3 scripts/token_proxy_bind.py bind",
             "python3 scripts/token_proxy_bind.py nginx-orders --limit-tokens 5",
