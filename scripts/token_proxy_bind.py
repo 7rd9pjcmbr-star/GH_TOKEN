@@ -154,29 +154,52 @@ def parse_proxy_line(line: str) -> dict[str, Any] | None:
     }
 
 
-def scan_proxy_files() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Scan owned/known locations for proxy lines."""
+def scan_proxy_files(*, include_raw_dumps: bool = False) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Scan owned/known locations for proxy lines.
+
+    Mặc định ưu tiên secrets/proxies.live.txt + proxies.owned.txt (đã probe).
+    Raw Telegram dumps (_proxies/*) chỉ khi include_raw_dumps=True.
+    """
     sources: list[Path] = []
-    for p in (PROXY_OWNED, PROXY_LIST, SECRETS / "proxies.txt", SECRETS / "proxy.txt"):
+    for p in (
+        SECRETS / "proxies.live.txt",
+        PROXY_OWNED,
+        SECRETS / "proxies.telegram.txt",
+        PROXY_LIST,
+        SECRETS / "proxies.txt",
+        SECRETS / "proxy.txt",
+    ):
         if p.is_file():
             sources.append(p)
-    if INBOX.is_dir():
-        for p in INBOX.rglob("*"):
-            if not p.is_file() or p.suffix.lower() in {
-                ".png",
-                ".jpg",
-                ".jpeg",
-                ".gif",
-                ".webp",
-                ".mp4",
-                ".zip",
-                ".xlsx",
-                ".xls",
-                ".db",
-            }:
-                continue
-            if NAME_PROXY_RE.search(p.name) or NAME_PROXY_RE.search(str(p.relative_to(INBOX))):
-                sources.append(p)
+
+    # Nếu đã có live/owned → bỏ qua dump thô (tránh bind 10k proxy chết)
+    have_curated = any(
+        p.is_file() and p.stat().st_size > 40
+        for p in (SECRETS / "proxies.live.txt", PROXY_OWNED)
+    )
+    if include_raw_dumps or not have_curated:
+        if INBOX.is_dir():
+            for p in INBOX.rglob("*"):
+                if not p.is_file() or p.suffix.lower() in {
+                    ".png",
+                    ".jpg",
+                    ".jpeg",
+                    ".gif",
+                    ".webp",
+                    ".mp4",
+                    ".zip",
+                    ".xlsx",
+                    ".xls",
+                    ".db",
+                }:
+                    continue
+                rel = str(p.relative_to(INBOX))
+                if (
+                    NAME_PROXY_RE.search(p.name)
+                    or NAME_PROXY_RE.search(rel)
+                    or "_proxies" in rel.split("/")
+                ):
+                    sources.append(p)
 
     found: list[dict[str, Any]] = []
     meta: list[dict[str, Any]] = []
