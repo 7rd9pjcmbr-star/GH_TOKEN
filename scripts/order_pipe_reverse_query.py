@@ -495,6 +495,9 @@ def reverse_chain_asumee(
     hop7_live: bool = True,
     hop7_apply: bool = False,
     hop7_limit: int = 40,
+    hop8_apply: bool = False,
+    hop8_probe: bool = False,
+    hop8_probe_limit: int = 6,
 ) -> list[dict]:
     """Chuỗi truy vấn ngược đào sâu cho kho ASUMEE / UUID chính.
 
@@ -623,6 +626,15 @@ def reverse_chain_asumee(
                 live=hop7_live,
                 apply=hop7_apply,
                 limit=hop7_limit,
+            )
+        )
+        results.extend(
+            reverse_chain_asumee_hop8(
+                conn,
+                wid,
+                apply=hop8_apply,
+                probe=hop8_probe,
+                probe_limit=hop8_probe_limit,
             )
         )
 
@@ -1923,6 +1935,414 @@ def reverse_chain_asumee_hop7(
         out.append(reverse_by_buucuc(conn, str(buu), limit=8))
 
     out.append(reverse_timeline_gap(conn, wid, limit=6))
+    out.append(reverse_pipe_events_asumee(conn, wid))
+    out.append(reverse_tracking_classify(conn, wid))
+    return out
+
+
+def reverse_hard_soft_gaps(conn: sqlite3.Connection, wid: str) -> dict:
+    """Phân tách hard/soft timeline gap sau hop7."""
+    hard_del = conn.execute(
+        """
+        SELECT COUNT(*) FROM orders
+        WHERE warehouse_id = ? AND status = 'delivered'
+          AND (delivered_at IS NULL OR delivered_at = '')
+        """,
+        (wid,),
+    ).fetchone()[0]
+    hard_ship = conn.execute(
+        """
+        SELECT COUNT(*) FROM orders
+        WHERE warehouse_id = ? AND status = 'shipped'
+          AND (picked_at IS NULL OR picked_at = '')
+        """,
+        (wid,),
+    ).fetchone()[0]
+    soft = conn.execute(
+        """
+        SELECT COUNT(*) FROM orders
+        WHERE warehouse_id = ? AND status = 'delivered'
+          AND delivered_at IS NOT NULL AND delivered_at != ''
+          AND (picked_at IS NULL OR picked_at = '')
+        """,
+        (wid,),
+    ).fetchone()[0]
+    by_carrier = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT coalesce(carrier,'(none)') AS carrier, status, COUNT(*) AS orders
+            FROM orders
+            WHERE warehouse_id = ?
+              AND (
+                (status = 'delivered' AND (delivered_at IS NULL OR delivered_at = ''))
+                OR (status = 'shipped' AND (picked_at IS NULL OR picked_at = ''))
+                OR (
+                  status = 'delivered'
+                  AND delivered_at IS NOT NULL AND delivered_at != ''
+                  AND (picked_at IS NULL OR picked_at = '')
+                )
+              )
+            GROUP BY 1, 2 ORDER BY orders DESC LIMIT 20
+            """,
+            (wid,),
+        )
+    ]
+    samples = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT van_tay, so_noi_bo, tracking_code, status, carrier, buucuc,
+                   picked_at, delivered_at, tracking_url, tracking_provider
+            FROM orders
+            WHERE warehouse_id = ?
+              AND (
+                (status = 'delivered' AND (delivered_at IS NULL OR delivered_at = ''))
+                OR (status = 'shipped' AND (picked_at IS NULL OR picked_at = ''))
+              )
+            ORDER BY piped_at DESC LIMIT 12
+            """,
+            (wid,),
+        )
+    ]
+    return {
+        "query_type": "hard_soft_gaps",
+        "query": wid,
+        "hit": True,
+        "count": hard_del + hard_ship + soft,
+        "hard_delivered_no_at": hard_del,
+        "hard_shipped_no_pick": hard_ship,
+        "soft_delivered_no_pick": soft,
+        "by_carrier_status": by_carrier,
+        "samples": samples,
+        "path": (
+            f"hard_soft_gaps hard_del={hard_del} hard_ship={hard_ship} "
+            f"soft_no_pick={soft}"
+        ),
+        "unmask_map": {
+            "path_id": "PATH-MISSING" if (hard_del + hard_ship) else "PATH-CLEAR",
+            "action": "accept_spx_missing_histories_or_refetch_partner_webhook",
+        },
+        "next": [
+            "Hard SPX thường hist=0 / extend_update=∅ — không bịa timestamp",
+            "Soft: đã có delivered_at, thiếu pick — giữ nguyên",
+        ],
+    }
+
+
+def reverse_3pl_completeness(conn: sqlite3.Connection, wid: str) -> dict:
+    """Ma trận 3PL: carrier × fill tracking/pick/deliver/url."""
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT
+              coalesce(nullif(carrier,''), '(none)') AS carrier,
+              coalesce(nullif(buucuc,''), '(none)') AS buucuc,
+              COUNT(*) AS orders,
+              SUM(CASE WHEN tracking_code IS NOT NULL AND tracking_code != ''
+                        AND tracking_code != so_noi_bo THEN 1 ELSE 0 END) AS trk_real,
+              SUM(CASE WHEN ifnull(tracking_url,'') != '' THEN 1 ELSE 0 END) AS with_url,
+              SUM(CASE WHEN ifnull(picked_at,'') != '' THEN 1 ELSE 0 END) AS with_pick,
+              SUM(CASE WHEN ifnull(delivered_at,'') != '' THEN 1 ELSE 0 END) AS with_del,
+              SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END) AS delivered,
+              SUM(CASE WHEN status = 'shipped' THEN 1 ELSE 0 END) AS shipped
+            FROM orders WHERE warehouse_id = ?
+            GROUP BY 1, 2 ORDER BY orders DESC LIMIT 20
+            """,
+            (wid,),
+        )
+    ]
+    return {
+        "query_type": "three_pl_completeness",
+        "query": wid,
+        "hit": bool(rows),
+        "count": len(rows),
+        "matrix": rows,
+        "path": f"three_pl_completeness carriers×{len(rows)}",
+        "unmask_map": {"path_id": "PATH-CLEAR", "action": "monitor_3pl_fill_rates"},
+    }
+
+
+def reverse_aship_url_sync(
+    conn: sqlite3.Connection, wid: str, *, apply: bool = False, limit: int = 120
+) -> dict:
+    """Đồng bộ tracking_url/provider aship cho mã VĐ thật; sửa provider lệch."""
+    try:
+        from tracking_aship import attach_tracking_urls, build_tracking_url, resolve_provider
+    except Exception as e:  # noqa: BLE001
+        return {
+            "query_type": "aship_url_sync",
+            "query": wid,
+            "hit": False,
+            "error": str(e),
+            "path": "aship_url_sync: module lỗi",
+        }
+
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT van_tay, so_noi_bo, tracking_code, carrier, buucuc,
+                   tracking_provider, tracking_url, status
+            FROM orders
+            WHERE warehouse_id = ?
+              AND tracking_code IS NOT NULL AND tracking_code != ''
+              AND tracking_code != so_noi_bo
+            ORDER BY piped_at DESC LIMIT ?
+            """,
+            (wid, max(limit, 500)),
+        )
+    ]
+    plan = []
+    applied = {"url": 0, "provider": 0}
+    by_prov: dict[str, int] = {}
+    for r in rows:
+        route_prov = resolve_provider(
+            carrier=r.get("carrier"),
+            buucuc=r.get("buucuc"),
+            tracking_code=r.get("tracking_code"),
+        )
+        # Carrier thắng tracking_provider cũ nếu lệch (vd SPX+ghn)
+        desired = route_prov or (r.get("tracking_provider") or None)
+        if r.get("carrier") == "Shopee Xpress" or r.get("buucuc") == "SPX":
+            desired = "spx"
+        elif r.get("carrier") == "J&T" or r.get("buucuc") == "J&T":
+            desired = "jnt"
+        elif r.get("carrier") == "GHN" or r.get("buucuc") == "GHN":
+            desired = "ghn"
+        url = None
+        if desired and r.get("tracking_code"):
+            url = build_tracking_url(
+                str(r["tracking_code"]),
+                provider=desired,
+                tracking_code=str(r["tracking_code"]),
+                carrier=r.get("carrier"),
+                buucuc=r.get("buucuc"),
+            )
+        need_prov = desired and desired != (r.get("tracking_provider") or "")
+        need_url = url and url != (r.get("tracking_url") or "")
+        if not need_prov and not need_url:
+            if desired:
+                by_prov[desired] = by_prov.get(desired, 0) + 1
+            continue
+        item = {
+            "van_tay": r.get("van_tay"),
+            "so_noi_bo": r.get("so_noi_bo"),
+            "tracking_code": r.get("tracking_code"),
+            "provider_old": r.get("tracking_provider"),
+            "provider_new": desired,
+            "url_old": bool(r.get("tracking_url")),
+            "url_new": url,
+            "status": r.get("status"),
+            "carrier": r.get("carrier"),
+        }
+        plan.append(item)
+        if desired:
+            by_prov[desired] = by_prov.get(desired, 0) + 1
+        if apply:
+            if need_prov:
+                conn.execute(
+                    "UPDATE orders SET tracking_provider = ? WHERE van_tay = ?",
+                    (desired, r.get("van_tay")),
+                )
+                applied["provider"] += 1
+            if need_url and url:
+                conn.execute(
+                    "UPDATE orders SET tracking_url = ?, tracking_ref = COALESCE(tracking_ref, ?) WHERE van_tay = ?",
+                    (url, r.get("tracking_code"), r.get("van_tay")),
+                )
+                applied["url"] += 1
+            conn.execute(
+                "INSERT INTO pipe_events(at, event, van_tay, so_noi_bo, detail) VALUES (?,?,?,?,?)",
+                (
+                    utc_now(),
+                    "aship_url_sync",
+                    r.get("van_tay"),
+                    r.get("so_noi_bo"),
+                    f"prov={r.get('tracking_provider')}→{desired}|url={'1' if url else '0'}",
+                ),
+            )
+    if apply and (applied["url"] or applied["provider"]):
+        conn.commit()
+
+    missing_url = conn.execute(
+        """
+        SELECT COUNT(*) FROM orders
+        WHERE warehouse_id = ?
+          AND tracking_code IS NOT NULL AND tracking_code != ''
+          AND tracking_code != so_noi_bo
+          AND (tracking_url IS NULL OR tracking_url = '')
+        """,
+        (wid,),
+    ).fetchone()[0]
+    with_url = conn.execute(
+        """
+        SELECT COUNT(*) FROM orders
+        WHERE warehouse_id = ? AND ifnull(tracking_url,'') != ''
+        """,
+        (wid,),
+    ).fetchone()[0]
+
+    return {
+        "query_type": "aship_url_sync",
+        "query": wid,
+        "hit": True,
+        "count": len(plan),
+        "scanned": len(rows),
+        "apply": apply,
+        "applied": applied,
+        "with_url": with_url,
+        "missing_url_real_trk": missing_url,
+        "by_provider": [
+            {"provider": k, "n": v} for k, v in sorted(by_prov.items(), key=lambda x: -x[1])
+        ],
+        "samples": plan[:12],
+        "path": (
+            f"aship_url_sync fix={len(plan)}/{len(rows)} apply={apply} "
+            f"applied={applied} with_url={with_url} missing={missing_url}"
+        ),
+        "unmask_map": {
+            "note": "aship URL ≠ unmask PII",
+            "path_id": "PATH-CLEAR" if with_url else "PATH-MISSING",
+        },
+        "next": [
+            "python3 scripts/order_pipe_reverse_query.py --hop8-apply",
+            "python3 scripts/tracking_aship.py --probe  # nếu egress cho phép",
+        ],
+    }
+
+
+def reverse_aship_probe_sample(
+    conn: sqlite3.Connection, wid: str, *, limit: int = 6
+) -> dict:
+    """Probe nhẹ vài aship URL (HEAD/GET snippet) — secrets-only, không dump body."""
+    try:
+        from tracking_aship import probe_url
+    except Exception as e:  # noqa: BLE001
+        return {
+            "query_type": "aship_probe",
+            "query": wid,
+            "hit": False,
+            "error": str(e),
+            "path": "aship_probe: module lỗi",
+        }
+
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT van_tay, so_noi_bo, tracking_code, tracking_provider, tracking_url, carrier
+            FROM orders
+            WHERE warehouse_id = ?
+              AND ifnull(tracking_url,'') != ''
+              AND tracking_code != so_noi_bo
+            ORDER BY piped_at DESC LIMIT ?
+            """,
+            (wid, limit),
+        )
+    ]
+    probes = []
+    ok_n = 0
+    for r in rows:
+        url = r.get("tracking_url")
+        try:
+            pr = probe_url(str(url), timeout=8.0)
+        except Exception as e:  # noqa: BLE001
+            pr = {"ok": False, "error": str(e)}
+        if pr.get("ok"):
+            ok_n += 1
+        probes.append(
+            {
+                "van_tay": r.get("van_tay"),
+                "tracking_code": r.get("tracking_code"),
+                "provider": r.get("tracking_provider"),
+                "carrier": r.get("carrier"),
+                "http": pr.get("http"),
+                "ok": pr.get("ok"),
+                "error": pr.get("error"),
+                "snippet": (pr.get("snippet") or "")[:80],
+            }
+        )
+    return {
+        "query_type": "aship_probe",
+        "query": wid,
+        "hit": ok_n > 0,
+        "count": len(probes),
+        "ok": ok_n,
+        "samples": probes,
+        "path": f"aship_probe ok={ok_n}/{len(probes)}",
+        "unmask_map": {"path_id": "PATH-CLEAR" if ok_n else "PATH-MISSING"},
+        "next": ["Probe chỉ kiểm tra HTTP — không unmask PII"],
+    }
+
+
+def reverse_chain_asumee_hop8(
+    conn: sqlite3.Connection,
+    wid: str,
+    *,
+    apply: bool = False,
+    probe: bool = False,
+    probe_limit: int = 6,
+) -> list[dict]:
+    """Hop-8: aship URL sync, hard/soft gaps, ma trận 3PL, drill buucuc."""
+    out: list[dict] = []
+
+    gaps = reverse_hard_soft_gaps(conn, wid)
+    out.append(gaps)
+    for s in (gaps.get("samples") or [])[:4]:
+        vt = s.get("van_tay")
+        tr = s.get("tracking_code")
+        if vt:
+            r = reverse_by_van_tay(conn, str(vt))
+            r["gap_cohort"] = "hop8_hard_gap"
+            out.append(r)
+        if tr and tr != s.get("so_noi_bo"):
+            r = reverse_by_tracking(conn, str(tr))
+            r["gap_cohort"] = "hop8_hard_gap"
+            out.append(r)
+
+    out.append(reverse_3pl_completeness(conn, wid))
+
+    sync = reverse_aship_url_sync(conn, wid, apply=apply, limit=900)
+    out.append(sync)
+    for s in (sync.get("samples") or [])[:5]:
+        tr = s.get("tracking_code")
+        if tr:
+            r = reverse_by_tracking(conn, str(tr))
+            r["gap_cohort"] = "hop8_aship_sync"
+            out.append(r)
+
+    # Drill top 3PL buucuc
+    for (buu,) in conn.execute(
+        """
+        SELECT buucuc FROM orders
+        WHERE warehouse_id = ? AND buucuc IN ('J&T','SPX','GHN')
+        GROUP BY buucuc ORDER BY COUNT(*) DESC
+        """,
+        (wid,),
+    ):
+        out.append(reverse_by_buucuc(conn, str(buu), limit=10))
+
+    # Sample reverse by real tracking per provider
+    for prov, label in (("jnt", "J&T"), ("spx", "SPX"), ("ghn", "GHN")):
+        rows = conn.execute(
+            """
+            SELECT tracking_code FROM orders
+            WHERE warehouse_id = ? AND tracking_provider = ?
+              AND tracking_code IS NOT NULL AND tracking_code != so_noi_bo
+            ORDER BY piped_at DESC LIMIT 3
+            """,
+            (wid, prov),
+        ).fetchall()
+        for (tr,) in rows:
+            r = reverse_by_tracking(conn, str(tr))
+            r["gap_cohort"] = f"hop8_{label}"
+            out.append(r)
+
+    if probe:
+        out.append(reverse_aship_probe_sample(conn, wid, limit=probe_limit))
+
     out.append(reverse_pipe_events_asumee(conn, wid))
     out.append(reverse_tracking_classify(conn, wid))
     return out
@@ -3414,6 +3834,9 @@ def build_report(
     hop7_live: bool = True,
     hop7_apply: bool = False,
     hop7_limit: int = 40,
+    hop8_apply: bool = False,
+    hop8_probe: bool = False,
+    hop8_probe_limit: int = 6,
 ) -> dict:
     from realtime_icon_feedback_mapper import chant, feedback_line, receive_fingerprint
 
@@ -3438,6 +3861,9 @@ def build_report(
                 hop7_live=hop7_live,
                 hop7_apply=hop7_apply,
                 hop7_limit=hop7_limit,
+                hop8_apply=hop8_apply,
+                hop8_probe=hop8_probe,
+                hop8_probe_limit=hop8_probe_limit,
             )
         )
 
@@ -3600,10 +4026,9 @@ def build_report(
         "index_stats": index_stats,
         "verdict": top_fb,
         "next_actions": [
-            "python3 scripts/order_pipe_reverse_query.py --continue-flow",
-            "python3 scripts/order_pipe_reverse_query.py --hop7-apply --hop7-limit 100",
-            "python3 scripts/order_pipe_reverse_query.py --continue-flow --hop6-apply --hop7-apply",
-            "python3 scripts/order_pipe_reverse_query.py --hop6-live --hop6-apply --hop6-limit 20",
+            "python3 scripts/order_pipe_reverse_query.py --continue-flow --hop6-offline --hop7-offline --hop8-apply",
+            "python3 scripts/order_pipe_reverse_query.py --hop8-apply --hop8-probe",
+            "python3 scripts/order_pipe_reverse_query.py --hop7-apply --hop7-limit 50",
             "python3 scripts/order_pipe_reverse_query.py --continue-asumee",
             "python3 scripts/order_pipe_reverse_query.py --warehouse 55e5f0e1-ed06-4dad-b35a-406bee25cdea",
             "python3 scripts/order_pipe_reverse_query.py --kho ASUMEE",
@@ -3892,6 +4317,54 @@ def format_text(report: dict) -> str:
                 )
             for n in r.get("next") or []:
                 L(f"    → {n}")
+        if r.get("query_type") == "hard_soft_gaps":
+            L(
+                f"  · hard_del={r.get('hard_delivered_no_at')} "
+                f"hard_ship={r.get('hard_shipped_no_pick')} "
+                f"soft_no_pick={r.get('soft_delivered_no_pick')}"
+            )
+            for m in (r.get("by_carrier_status") or [])[:10]:
+                L(
+                    f"  · {m.get('carrier')} / {m.get('status')}: n={m.get('orders')}"
+                )
+            for s in (r.get("samples") or [])[:6]:
+                L(
+                    f"  · {s.get('so_noi_bo')} st={s.get('status')} car={s.get('carrier')} "
+                    f"pick={s.get('picked_at') or '∅'} del={s.get('delivered_at') or '∅'} "
+                    f"trk={s.get('tracking_code')}"
+                )
+            for n in r.get("next") or []:
+                L(f"    → {n}")
+        if r.get("query_type") == "three_pl_completeness":
+            for m in (r.get("matrix") or [])[:10]:
+                L(
+                    f"  · {m.get('carrier')}/{m.get('buucuc')}: n={m.get('orders')} "
+                    f"trk={m.get('trk_real')} url={m.get('with_url')} "
+                    f"pick={m.get('with_pick')} del={m.get('with_del')} "
+                    f"ship={m.get('shipped')} done={m.get('delivered')}"
+                )
+        if r.get("query_type") == "aship_url_sync":
+            L(
+                f"  · fix={r.get('count')}/{r.get('scanned')} apply={r.get('apply')} "
+                f"applied={r.get('applied')} with_url={r.get('with_url')} "
+                f"missing={r.get('missing_url_real_trk')} by_prov={r.get('by_provider')}"
+            )
+            for s in (r.get("samples") or [])[:6]:
+                L(
+                    f"  · trk={s.get('tracking_code')} "
+                    f"prov={s.get('provider_old')}→{s.get('provider_new')} "
+                    f"url={'yes' if s.get('url_new') else '∅'} car={s.get('carrier')}"
+                )
+            for n in r.get("next") or []:
+                L(f"    → {n}")
+        if r.get("query_type") == "aship_probe":
+            L(f"  · ok={r.get('ok')}/{r.get('count')}")
+            for s in (r.get("samples") or [])[:6]:
+                L(
+                    f"  · trk={s.get('tracking_code')} prov={s.get('provider')} "
+                    f"http={s.get('http')} ok={s.get('ok')} "
+                    f"err={str(s.get('error') or '')[:40]}"
+                )
         if r.get("gap_cohort"):
             L(f"  · gap_cohort={r.get('gap_cohort')}")
         if r.get("count") and r.get("query_type") in {
@@ -3913,6 +4386,10 @@ def format_text(report: dict) -> str:
             "pancake_detail_backfill",
             "batch_timeline_backfill",
             "carrier_buucuc_remap",
+            "hard_soft_gaps",
+            "three_pl_completeness",
+            "aship_url_sync",
+            "aship_probe",
         }:
             L(f"  · count={r.get('count')} status={r.get('status')}")
     if report.get("panorama_samples"):
@@ -3987,12 +4464,12 @@ def main() -> int:
     ap.add_argument(
         "--continue-flow",
         action="store_true",
-        help="Tiếp tục ngược dòng chảy ASUMEE deep+hop2…hop7",
+        help="Tiếp tục ngược dòng chảy ASUMEE deep+hop2…hop8",
     )
     ap.add_argument(
         "--hop6-live",
         action="store_true",
-        help="Hop6: GET Pancake detail owned (mặc định bật khi --continue-flow)",
+        help="Hop6: GET Pancake detail owned",
     )
     ap.add_argument(
         "--hop6-offline",
@@ -4026,6 +4503,22 @@ def main() -> int:
         default=40,
         help="Hop7: số đơn batch detail (default 40)",
     )
+    ap.add_argument(
+        "--hop8-apply",
+        action="store_true",
+        help="Hop8: sync aship URL/provider + drill 3PL (ghi DB)",
+    )
+    ap.add_argument(
+        "--hop8-probe",
+        action="store_true",
+        help="Hop8: probe nhẹ vài aship URL",
+    )
+    ap.add_argument(
+        "--hop8-probe-limit",
+        type=int,
+        default=6,
+        help="Hop8: số URL probe (default 6)",
+    )
     ap.add_argument("--buucuc")
     ap.add_argument("--province", help="Tỉnh/thành nhận")
     ap.add_argument("--address", help="Fragment địa chỉ / ward / huyện / tên nhận")
@@ -4033,37 +4526,32 @@ def main() -> int:
     ap.add_argument("--q", help="Auto-detect query")
     args = ap.parse_args()
 
-    hop6_live = True
-    if args.hop6_offline:
-        hop6_live = False
-    elif args.hop6_live:
-        hop6_live = True
-
-    hop7_live = True
-    if args.hop7_offline:
-        hop7_live = False
-
-    hop6_apply = bool(args.hop6_apply)
-    hop7_apply = bool(args.hop7_apply) or hop6_apply
-
     continue_flow = bool(args.continue_flow)
     continue_asumee = bool(args.continue_asumee)
-    only_hop7 = bool(args.hop7_apply or args.hop7_offline) and not (
-        continue_flow or continue_asumee or args.hop6_apply or args.hop6_live or args.hop6_offline
-    )
+    hop6_apply = bool(args.hop6_apply)
+    hop7_apply = bool(args.hop7_apply) or hop6_apply
+    hop8_apply = bool(args.hop8_apply)
+    hop8_probe = bool(args.hop8_probe)
+
+    # Bật continue-flow nếu chỉ truyền cờ hop*
     if (
         args.hop6_live
         or args.hop6_apply
         or args.hop6_offline
         or args.hop7_apply
         or args.hop7_offline
+        or args.hop8_apply
+        or args.hop8_probe
     ) and not (continue_flow or continue_asumee):
         continue_flow = True
 
-    # Chỉ hop7: bỏ live hop6 để tập trung batch timeline
-    if only_hop7:
+    # Live defaults: hop6/hop7 offline trừ khi user xin live/apply batch
+    hop6_live = bool(args.hop6_live) or (hop6_apply and not args.hop6_offline)
+    hop7_live = bool(hop7_apply) and not args.hop7_offline
+    if args.hop6_offline:
         hop6_live = False
-        hop6_apply = False
+    if args.hop7_offline:
+        hop7_live = False
 
     report = build_report(
         van_tay=args.van_tay,
@@ -4084,6 +4572,9 @@ def main() -> int:
         hop7_live=hop7_live,
         hop7_apply=hop7_apply,
         hop7_limit=int(args.hop7_limit or 40),
+        hop8_apply=hop8_apply,
+        hop8_probe=hop8_probe,
+        hop8_probe_limit=int(args.hop8_probe_limit or 6),
     )
     write_outputs(report)
     if args.json:
