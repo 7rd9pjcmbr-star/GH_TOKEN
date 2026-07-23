@@ -1473,9 +1473,12 @@ def reverse_timeline_gap(conn: sqlite3.Connection, wid: str, limit: int = 12) ->
         conn.execute(
             """
             SELECT
-              SUM(CASE WHEN status IN ('shipped','delivered')
+              SUM(CASE WHEN status='shipped'
                         AND (picked_at IS NULL OR picked_at='') THEN 1 ELSE 0 END)
                 AS shipped_no_pick,
+              SUM(CASE WHEN status='delivered'
+                        AND (picked_at IS NULL OR picked_at='') THEN 1 ELSE 0 END)
+                AS delivered_no_pick,
               SUM(CASE WHEN status='delivered'
                         AND (delivered_at IS NULL OR delivered_at='') THEN 1 ELSE 0 END)
                 AS delivered_no_at,
@@ -1505,13 +1508,19 @@ def reverse_timeline_gap(conn: sqlite3.Connection, wid: str, limit: int = 12) ->
     return {
         "query_type": "timeline_gap",
         "query": wid,
-        "hit": (row.get("shipped_no_pick") or 0) > 0 or (row.get("delivered_no_at") or 0) > 0,
-        "count": (row.get("shipped_no_pick") or 0) + (row.get("delivered_no_at") or 0),
+        "hit": (
+            (row.get("shipped_no_pick") or 0) > 0
+            or (row.get("delivered_no_pick") or 0) > 0
+            or (row.get("delivered_no_at") or 0) > 0
+        ),
+        "count": (row.get("shipped_no_pick") or 0)
+        + (row.get("delivered_no_at") or 0),
         "gaps": row,
         "samples": samples,
         "path": (
             f"timeline_gap: shipped_no_pick={row.get('shipped_no_pick')}/"
-            f"{row.get('shipped')} delivered_no_at={row.get('delivered_no_at')}/"
+            f"{row.get('shipped')} delivered_no_pick={row.get('delivered_no_pick')}/"
+            f"{row.get('delivered')} delivered_no_at={row.get('delivered_no_at')}/"
             f"{row.get('delivered')}"
         ),
         "unmask_map": {
