@@ -258,6 +258,13 @@ def normalize_from_json_order(o: dict, file_name: str) -> dict:
         "tracking_code": tracking,
         "province": addr.get("province_name") or addr.get("province"),
         "district": addr.get("district_name") or addr.get("district"),
+        "ward": addr.get("commnue_name") or addr.get("commune_name") or addr.get("ward_name"),
+        "address_detail": addr.get("address"),
+        "full_address": addr.get("full_address") or addr.get("new_full_address"),
+        "postal_code": addr.get("post_code"),
+        "receiver_name": addr.get("full_name") or o.get("customer_name") or p.get("bill_full_name"),
+        "receiver_phone": addr.get("phone_number") or phone,
+        "cod_amount": o.get("cod_amount") or p.get("cod"),
         "channel": "pancake_payload" if p else "json_flat",
         "file": file_name,
         "order_created_at": o.get("order_created_at") or p.get("inserted_at"),
@@ -276,6 +283,15 @@ def normalize_from_thanhcoong(r: dict) -> dict:
     if sender in {"Sender Name", "Tên người gửi"} or account in {"Account ID", "ID tài khoản"}:
         return {}
     shop_name = sender or None
+    province = r.get("Receiver Province") or r.get("Tỉnh, thành")
+    district = (
+        r.get("Receiver District(old)/Ward(new)")
+        or r.get("Quận, huyện (cũ) / Phường, xã (mới)")
+    )
+    ward = r.get("Receiver Ward(old)") or r.get("Phường, xã (cũ)")
+    detail = r.get("Receiver Detail Address") or r.get("Địa chỉ chi tiết")
+    full_parts = [p for p in (detail, ward, district, province) if p]
+    full_address = ", ".join(str(p) for p in full_parts) if full_parts else None
     return {
         "oms_id": f"spx:{r.get('Tracking No.') or r.get('Mã vận đơn') or ''}",
         "order_key": r.get("Customer Reference No.") or r.get("Tracking No."),
@@ -299,9 +315,20 @@ def normalize_from_thanhcoong(r: dict) -> dict:
         "account": account or None,
         "carrier": r.get("3PL Name") or r.get("Tên 3PL") or "SPX",
         "tracking_code": r.get("Tracking No.") or r.get("Mã vận đơn"),
-        "province": r.get("Receiver Province") or r.get("Tỉnh, thành"),
-        "district": r.get("Receiver District(old)/Ward(new)")
-        or r.get("Quận, huyện (cũ) / Phường, xã (mới)"),
+        "province": province,
+        "district": district,
+        "ward": ward,
+        "address_detail": detail,
+        "full_address": full_address,
+        "postal_code": r.get("Receiver Postal Code") or r.get("Mã bưu điện"),
+        "receiver_name": r.get("Receiver Name") or r.get("Tên người nhận"),
+        "receiver_phone": phone,
+        "sender_province": r.get("Sender Province"),
+        "sender_district": r.get("Sender District(old)/Ward(new)"),
+        "sender_ward": r.get("Sender Ward(old)"),
+        "sender_address": r.get("Sender Detail Address"),
+        "cod_amount": r.get("COD Amount") or r.get("Tiền CoD"),
+        "parcel_value": r.get("Parcel Value"),
         "channel": "spx_local",
         "file": "thanhcoong.xlsx",
         "order_created_at": r.get("Create Time") or r.get("Thời gian tạo"),

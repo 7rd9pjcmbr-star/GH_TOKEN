@@ -123,6 +123,7 @@ def ensure_pipe_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_pipe_kho ON orders(kho);
         CREATE INDEX IF NOT EXISTS idx_pipe_buu ON orders(buucuc);
         CREATE INDEX IF NOT EXISTS idx_pipe_be ON orders(backend);
+        CREATE INDEX IF NOT EXISTS idx_pipe_prov ON orders(province);
         CREATE TABLE IF NOT EXISTS fingerprints (
           van_tay TEXT PRIMARY KEY,
           so_noi_bo TEXT,
@@ -150,6 +151,48 @@ def ensure_pipe_schema(conn: sqlite3.Connection) -> None:
           value TEXT
         );
         """
+    )
+    # migrate address / flow columns
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(orders)").fetchall()}
+    for col, typ in (
+        ("ward", "TEXT"),
+        ("address_detail", "TEXT"),
+        ("full_address", "TEXT"),
+        ("postal_code", "TEXT"),
+        ("receiver_name", "TEXT"),
+        ("receiver_phone", "TEXT"),
+        ("sender_province", "TEXT"),
+        ("sender_district", "TEXT"),
+        ("sender_ward", "TEXT"),
+        ("sender_address", "TEXT"),
+        ("cod_amount", "TEXT"),
+        ("picked_at", "TEXT"),
+        ("delivered_at", "TEXT"),
+        ("flow_path", "TEXT"),
+    ):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE orders ADD COLUMN {col} {typ}")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pipe_prov ON orders(province)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pipe_track ON orders(tracking_code)")
+
+
+def _compose_flow_path(row: dict) -> str:
+    """Toàn cảnh: kho → bưu cục → mã VĐ → địa chỉ nhận."""
+    geo = " / ".join(
+        str(x)
+        for x in (
+            row.get("address_detail"),
+            row.get("ward"),
+            row.get("district"),
+            row.get("province"),
+        )
+        if x
+    ) or row.get("full_address") or "(chưa có địa chỉ)"
+    recv = row.get("receiver_name") or "(ẩn tên)"
+    return (
+        f"kho:{row.get('kho') or '?'} → {row.get('backend') or '?'} → "
+        f"buucuc:{row.get('buucuc') or '?'} → track:{row.get('tracking_code') or '∅'} → "
+        f"[{row.get('status') or '?'}] → nhận:{recv} @ {geo}"
     )
 
 
@@ -198,7 +241,7 @@ def ensure_buucuc_mirror_schema(conn: sqlite3.Connection) -> None:
         );
         """
     )
-    # migrate older wipe-schema DBs missing fingerprint cols
+    # migrate older wipe-schema DBs missing fingerprint / address cols
     cols = {r[1] for r in conn.execute("PRAGMA table_info(orders)").fetchall()}
     for col, typ in (
         ("van_tay", "TEXT"),
@@ -206,6 +249,12 @@ def ensure_buucuc_mirror_schema(conn: sqlite3.Connection) -> None:
         ("icon_chant", "TEXT"),
         ("icon_feedback", "TEXT"),
         ("piped_at", "TEXT"),
+        ("ward", "TEXT"),
+        ("address_detail", "TEXT"),
+        ("full_address", "TEXT"),
+        ("postal_code", "TEXT"),
+        ("receiver_name", "TEXT"),
+        ("flow_path", "TEXT"),
     ):
         if col not in cols:
             conn.execute(f"ALTER TABLE orders ADD COLUMN {col} {typ}")
@@ -216,6 +265,7 @@ def ensure_buucuc_mirror_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_orders_kho ON orders(kho);
         CREATE INDEX IF NOT EXISTS idx_orders_van_tay ON orders(van_tay);
         CREATE INDEX IF NOT EXISTS idx_orders_so_noi_bo ON orders(so_noi_bo);
+        CREATE INDEX IF NOT EXISTS idx_orders_province ON orders(province);
         """
     )
 
@@ -240,7 +290,7 @@ def enrich_row(rec: dict, *, realtime_new: bool = False, pipe_source: str = "oms
         tracking=rec.get("tracking_code"),
         realtime_new=realtime_new,
     )
-    return {
+    row = {
         "van_tay": vt,
         "so_noi_bo": so or None,
         "oms_id": rec.get("oms_id"),
@@ -257,6 +307,17 @@ def enrich_row(rec: dict, *, realtime_new: bool = False, pipe_source: str = "oms
         "tracking_code": rec.get("tracking_code"),
         "province": rec.get("province"),
         "district": rec.get("district"),
+        "ward": rec.get("ward"),
+        "address_detail": rec.get("address_detail"),
+        "full_address": rec.get("full_address"),
+        "postal_code": rec.get("postal_code"),
+        "receiver_name": rec.get("receiver_name") or rec.get("customer_name"),
+        "receiver_phone": (rec.get("receiver_phone") or rec.get("customer_phone") or "")[:40] or None,
+        "sender_province": rec.get("sender_province"),
+        "sender_district": rec.get("sender_district"),
+        "sender_ward": rec.get("sender_ward"),
+        "sender_address": rec.get("sender_address"),
+        "cod_amount": str(rec.get("cod_amount") or "") or None,
         "phone_class": rec.get("phone_class"),
         "customer_phone": (rec.get("customer_phone") or "")[:40] or None,
         "status": status or None,
@@ -273,12 +334,16 @@ def enrich_row(rec: dict, *, realtime_new: bool = False, pipe_source: str = "oms
         "icon_chant": icon.get("icon_chant"),
         "icon_feedback": icon.get("feedback"),
         "created_at": rec.get("created_at") or rec.get("order_created_at"),
+        "picked_at": rec.get("picked_at"),
+        "delivered_at": rec.get("delivered_at"),
         "synced_at": rec.get("synced_at"),
         "event_at": rec.get("created_at") or rec.get("synced_at") or rec.get("updated_at"),
         "piped_at": utc_now(),
         "pipe_source": pipe_source,
         "_icon": icon,
     }
+    row["flow_path"] = _compose_flow_path(row)
+    return row
 
 
 def upsert_pipe_order(conn: sqlite3.Connection, row: dict) -> None:
@@ -289,8 +354,11 @@ def upsert_pipe_order(conn: sqlite3.Connection, row: dict) -> None:
           warehouse_id, warehouse_display, shop_id, shop_name, staff_creator,
           carrier, tracking_code, province, district, phone_class, status,
           source, channel, file, realtime_new, icon_chant, icon_feedback,
-          created_at, synced_at, event_at, piped_at, pipe_source
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          created_at, synced_at, event_at, piped_at, pipe_source,
+          ward, address_detail, full_address, postal_code, receiver_name, receiver_phone,
+          sender_province, sender_district, sender_ward, sender_address,
+          cod_amount, picked_at, delivered_at, flow_path
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(van_tay) DO UPDATE SET
           so_noi_bo=excluded.so_noi_bo,
           oms_id=excluded.oms_id,
@@ -319,7 +387,21 @@ def upsert_pipe_order(conn: sqlite3.Connection, row: dict) -> None:
           synced_at=COALESCE(excluded.synced_at, orders.synced_at),
           event_at=COALESCE(excluded.event_at, orders.event_at),
           piped_at=excluded.piped_at,
-          pipe_source=excluded.pipe_source
+          pipe_source=excluded.pipe_source,
+          ward=COALESCE(excluded.ward, orders.ward),
+          address_detail=COALESCE(excluded.address_detail, orders.address_detail),
+          full_address=COALESCE(excluded.full_address, orders.full_address),
+          postal_code=COALESCE(excluded.postal_code, orders.postal_code),
+          receiver_name=COALESCE(excluded.receiver_name, orders.receiver_name),
+          receiver_phone=COALESCE(excluded.receiver_phone, orders.receiver_phone),
+          sender_province=COALESCE(excluded.sender_province, orders.sender_province),
+          sender_district=COALESCE(excluded.sender_district, orders.sender_district),
+          sender_ward=COALESCE(excluded.sender_ward, orders.sender_ward),
+          sender_address=COALESCE(excluded.sender_address, orders.sender_address),
+          cod_amount=COALESCE(excluded.cod_amount, orders.cod_amount),
+          picked_at=COALESCE(excluded.picked_at, orders.picked_at),
+          delivered_at=COALESCE(excluded.delivered_at, orders.delivered_at),
+          flow_path=excluded.flow_path
         """,
         (
             row["van_tay"],
@@ -351,6 +433,20 @@ def upsert_pipe_order(conn: sqlite3.Connection, row: dict) -> None:
             row["event_at"],
             row["piped_at"],
             row["pipe_source"],
+            row.get("ward"),
+            row.get("address_detail"),
+            row.get("full_address"),
+            row.get("postal_code"),
+            row.get("receiver_name"),
+            row.get("receiver_phone"),
+            row.get("sender_province"),
+            row.get("sender_district"),
+            row.get("sender_ward"),
+            row.get("sender_address"),
+            row.get("cod_amount"),
+            row.get("picked_at"),
+            row.get("delivered_at"),
+            row.get("flow_path"),
         ),
     )
     conn.execute(
@@ -403,8 +499,9 @@ def upsert_buucuc_mirror(conn: sqlite3.Connection, row: dict) -> None:
           shop_id, shop_name, page_id, pancake_shop_id, staff_creator, staff_account,
           staff_seller, staff_care, carrier, tracking_code, province, district,
           phone_class, customer_phone, status, source, channel, platform, file,
-          van_tay, so_noi_bo, icon_chant, icon_feedback, piped_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          van_tay, so_noi_bo, icon_chant, icon_feedback, piped_at,
+          ward, address_detail, full_address, postal_code, receiver_name, flow_path
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             row["oms_id"],
@@ -427,7 +524,7 @@ def upsert_buucuc_mirror(conn: sqlite3.Connection, row: dict) -> None:
             row["province"],
             row["district"],
             row["phone_class"],
-            row.get("customer_phone"),
+            row.get("customer_phone") or row.get("receiver_phone"),
             row["status"],
             row["source"],
             row["channel"],
@@ -438,6 +535,12 @@ def upsert_buucuc_mirror(conn: sqlite3.Connection, row: dict) -> None:
             row["icon_chant"],
             row["icon_feedback"],
             row["piped_at"],
+            row.get("ward"),
+            row.get("address_detail"),
+            row.get("full_address"),
+            row.get("postal_code"),
+            row.get("receiver_name"),
+            row.get("flow_path"),
         ),
     )
 

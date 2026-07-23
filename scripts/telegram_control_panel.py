@@ -162,7 +162,7 @@ def panel_keyboard() -> dict:
                 {"text": "🧬 Pipe kho·BC·FP", "callback_data": "q:pipe_fp"},
             ],
             [
-                {"text": "🔁 Truy vấn ngược", "callback_data": "q:rev_q"},
+                {"text": "🌊 Ngược·dòng chảy", "callback_data": "q:rev_q"},
             ],
             [{"text": "🔁 Làm mới phân tích", "callback_data": "q:refresh"}],
         ]
