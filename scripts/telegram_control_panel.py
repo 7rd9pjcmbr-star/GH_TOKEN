@@ -364,12 +364,12 @@ def main() -> int:
 
     # Always open panel + push full query pack so nguyên nhân rõ ngay
     open_panel(token, chat, analysis)
-    for key in ["q:overview", "q:source", "q:masked", "q:missing", "q:todo", "q:paths", "q:pipes", "q:realtime"]:
+    for key in ["q:overview", "q:source", "q:masked", "q:missing", "q:todo", "q:paths", "q:pipes", "q:realtime", "q:urls"]:
         send(
             token,
             chat,
             HANDLERS[key](analysis),
-            panel_keyboard() if key in {"q:paths", "q:pipes", "q:realtime"} else None,
+            panel_keyboard() if key in {"q:paths", "q:pipes", "q:realtime", "q:urls"} else None,
         )
 
     once = "--once" in sys.argv
