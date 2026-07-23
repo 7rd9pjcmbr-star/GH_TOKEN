@@ -596,8 +596,205 @@ def reverse_chain_asumee(
     if hop2:
         results.extend(reverse_chain_asumee_hop2(conn, wid))
         results.extend(reverse_chain_asumee_hop3(conn, wid))
+        results.extend(reverse_chain_asumee_hop4(conn, wid))
 
     return results
+
+
+def reverse_chain_asumee_hop4(conn: sqlite3.Connection, wid: str) -> list[dict]:
+    """Hop-4 ngược dòng: returning/new drill, attach tracking URL, submitted thiếu tỉnh."""
+    out: list[dict] = []
+
+    # Returning / new deep
+    for st in ("returning", "new"):
+        out.append(reverse_by_status_warehouse(conn, wid, st, limit=12))
+        rows = conn.execute(
+            """
+            SELECT van_tay, so_noi_bo, tracking_code FROM orders
+            WHERE warehouse_id = ? AND status = ? AND van_tay IS NOT NULL
+            ORDER BY piped_at DESC LIMIT 4
+            """,
+            (wid, st),
+        ).fetchall()
+        for vt, so, tr in rows:
+            if vt:
+                r = reverse_by_van_tay(conn, str(vt))
+                r["gap_cohort"] = f"hop4_{st}"
+                out.append(r)
+            if so:
+                r = reverse_by_so_noi_bo(conn, str(so))
+                r["gap_cohort"] = f"hop4_{st}"
+                out.append(r)
+            if tr and str(tr) != str(so):
+                r = reverse_by_tracking(conn, str(tr))
+                r["gap_cohort"] = f"hop4_{st}"
+                out.append(r)
+
+    # Submitted thiếu province + gap cohort
+    gap_sub = reverse_gap_cohort(conn, wid, "submitted_no_province")
+    out.append(gap_sub)
+    for s in (gap_sub.get("sample_orders") or [])[:4]:
+        vt = s.get("van_tay")
+        so = s.get("so_noi_bo")
+        if vt:
+            r = reverse_by_van_tay(conn, str(vt))
+            r["gap_cohort"] = "hop4_submitted_no_province"
+            out.append(r)
+        if so:
+            r = reverse_by_so_noi_bo(conn, str(so))
+            r["gap_cohort"] = "hop4_submitted_no_province"
+            out.append(r)
+
+    # Tracking URL attach batch (aship) + reverse drills
+    attach = reverse_tracking_url_attach(conn, wid, limit=12)
+    out.append(attach)
+    drills = list(attach.get("_drill_tracking") or [])
+    # Fallback: khi with_url=0 (Pancake order_id = tracking) vẫn drill tracking_code
+    if not drills:
+        for a in (attach.get("samples") or [])[:8]:
+            tn = str(a.get("tracking_code") or a.get("so_noi_bo") or "").strip()
+            if tn and tn not in drills:
+                drills.append(tn)
+    for tn in drills[:8]:
+        r = reverse_by_tracking(conn, tn)
+        r["gap_cohort"] = "hop4_tracking_url"
+        out.append(r)
+
+    # Timeline: newest submitted
+    newest = conn.execute(
+        """
+        SELECT van_tay, so_noi_bo FROM orders
+        WHERE warehouse_id = ? AND status = 'submitted'
+        ORDER BY piped_at DESC LIMIT 5
+        """,
+        (wid,),
+    ).fetchall()
+    for vt, so in newest:
+        if vt:
+            r = reverse_by_van_tay(conn, str(vt))
+            r["gap_cohort"] = "hop4_submitted_newest"
+            out.append(r)
+        if so:
+            r = reverse_by_so_noi_bo(conn, str(so))
+            r["gap_cohort"] = "hop4_submitted_newest"
+            out.append(r)
+
+    # Provinces of returning
+    for (prov,) in conn.execute(
+        """
+        SELECT province FROM orders
+        WHERE warehouse_id = ? AND status = 'returning'
+          AND province IS NOT NULL AND province != ''
+        GROUP BY province ORDER BY COUNT(*) DESC LIMIT 4
+        """,
+        (wid,),
+    ):
+        out.append(reverse_by_province(conn, prov, limit=8))
+
+    return out
+
+
+def reverse_tracking_url_attach(conn: sqlite3.Connection, wid: str, limit: int = 12) -> dict:
+    """Gắn tracking URL (aship) cho mẫu ASUMEE rồi ánh xạ ngược."""
+    try:
+        from tracking_aship import attach_tracking_urls
+    except Exception as e:  # noqa: BLE001
+        return {
+            "query_type": "tracking_url_attach",
+            "query": wid,
+            "hit": False,
+            "error": str(e),
+            "path": "tracking_url_attach: module lỗi",
+        }
+
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT * FROM orders
+            WHERE warehouse_id = ?
+              AND status IN ('shipped', 'delivered', 'returning')
+              AND tracking_code IS NOT NULL AND tracking_code != ''
+            ORDER BY piped_at DESC LIMIT ?
+            """,
+            (wid, limit),
+        )
+    ]
+    attached = []
+    providers: dict[str, int] = {}
+    for o in rows:
+        try:
+            a = attach_tracking_urls(dict(o))
+        except Exception:  # noqa: BLE001
+            a = dict(o)
+        url = a.get("tracking_url")
+        prov = a.get("tracking_provider") or "(none)"
+        providers[prov] = providers.get(prov, 0) + 1
+        attached.append(
+            {
+                "van_tay": a.get("van_tay"),
+                "so_noi_bo": a.get("so_noi_bo"),
+                "tracking_code": a.get("tracking_code"),
+                "status": a.get("status"),
+                "province": a.get("province"),
+                "buucuc": a.get("buucuc"),
+                "carrier": a.get("carrier"),
+                "tracking_provider": a.get("tracking_provider"),
+                "tracking_url": url,
+                "has_url": bool(url),
+            }
+        )
+    # Drill: ưu tiên mã có URL; fallback order_id/tracking_code (Pancake)
+    drills: list[str] = []
+    for a in attached:
+        if a.get("has_url") and a.get("tracking_code") and a["tracking_code"] not in drills:
+            drills.append(str(a["tracking_code"]))
+        if len(drills) >= 4:
+            break
+    if not drills:
+        for a in attached:
+            tn = str(a.get("tracking_code") or a.get("so_noi_bo") or "").strip()
+            if tn and tn not in drills:
+                drills.append(tn)
+            if len(drills) >= 6:
+                break
+
+    result = {
+        "query_type": "tracking_url_attach",
+        "query": wid,
+        "hit": bool(attached),
+        "count": len(attached),
+        "providers": [
+            {"provider": k, "n": v}
+            for k, v in sorted(providers.items(), key=lambda x: -x[1])
+        ],
+        "with_url": sum(1 for a in attached if a.get("has_url")),
+        "id_as_tracking": sum(
+            1
+            for a in attached
+            if a.get("tracking_code")
+            and a.get("so_noi_bo")
+            and str(a["tracking_code"]) == str(a["so_noi_bo"])
+        ),
+        "samples": attached[:10],
+        "path": (
+            f"tracking_url_attach n={len(attached)} with_url="
+            f"{sum(1 for a in attached if a.get('has_url'))} "
+            f"id_as_tracking="
+            f"{sum(1 for a in attached if a.get('tracking_code') and a.get('so_noi_bo') and str(a['tracking_code']) == str(a['so_noi_bo']))} "
+            f"providers={list(providers)}"
+        ),
+        "unmask_map": {
+            "note": "URL tracking ≠ unmask PII; carrier Pancake thường không có deep link 3PL",
+            "path_id": "PATH-CLEAR" if any(a.get("has_url") for a in attached) else "PATH-MISSING",
+        },
+        "next": [
+            "Nếu with_url=0: mã VĐ đang là order_id Pancake — cần mã GHN/SPX/VTP thật",
+            "Pipe lại shipments.tracking từ detail API nếu có",
+        ],
+    }
+    result["_drill_tracking"] = drills
+    return result
 
 
 def reverse_chain_asumee_hop3(conn: sqlite3.Connection, wid: str) -> list[dict]:
@@ -870,14 +1067,27 @@ def _geo_hint_from_address(addr: str) -> str | None:
 
 def reverse_gap_cohort(conn: sqlite3.Connection, wid: str, kind: str) -> dict:
     """Cohort lỗ hổng dòng chảy + mẫu đơn + unmask path."""
-    where = {
+    where_map = {
         "no_province": "(province IS NULL OR province = '')",
         "no_address": "(full_address IS NULL OR full_address = '')",
         "canceled_missing_phone": (
             "status = 'canceled' AND (receiver_phone IS NULL OR receiver_phone = '')"
         ),
         "mask_phone_delivered": "status = 'delivered' AND receiver_phone LIKE '%*%'",
-    }.get(kind, "1=0")
+        "submitted_no_province": (
+            "lower(coalesce(status,'')) IN ('submitted','pending','new','confirmed') "
+            "AND (province IS NULL OR province = '')"
+        ),
+    }
+    where = where_map.get(kind, "1=0")
+    if kind not in where_map:
+        return {
+            "query_type": "gap_cohort",
+            "query": kind,
+            "hit": False,
+            "error": f"unknown gap: {kind}",
+            "path": f"gap:{kind} unknown",
+        }
     n = conn.execute(
         f"SELECT COUNT(*) FROM orders WHERE warehouse_id = ? AND {where}", (wid,)
     ).fetchone()[0]
@@ -920,6 +1130,10 @@ def reverse_gap_cohort(conn: sqlite3.Connection, wid: str, kind: str) -> dict:
         "mask_phone_delivered": {
             "path_id": "PATH-MASK-REDACTION",
             "action": "fetch_unmasked_from_source_api",
+        },
+        "submitted_no_province": {
+            "path_id": "PATH-MISSING-GEO",
+            "action": "recover_province_from_full_address_before_ship",
         },
     }.get(kind, {"path_id": "PATH-UNKNOWN", "action": "inspect"})
     return _attach_flow(
@@ -1756,6 +1970,20 @@ def format_text(report: dict) -> str:
                     f"  · recover van_tay={s.get('van_tay')} hint={s.get('hint_province')!r} "
                     f"phone={s.get('phone_class')} addr={(s.get('full_address') or '')[:50]!r}"
                 )
+        if r.get("query_type") == "tracking_url_attach":
+            L(
+                f"  · with_url={r.get('with_url')} id_as_tracking={r.get('id_as_tracking')} "
+                f"providers={r.get('providers')}"
+            )
+            for s in (r.get("samples") or [])[:6]:
+                L(
+                    f"  · trk={s.get('tracking_code')} st={s.get('status')} "
+                    f"url={'(yes)' if s.get('has_url') else '∅'} "
+                    f"prov={s.get('tracking_provider') or s.get('province') or '∅'} "
+                    f"buu={s.get('buucuc')}"
+                )
+            for n in r.get("next") or []:
+                L(f"    → {n}")
         if r.get("gap_cohort"):
             L(f"  · gap_cohort={r.get('gap_cohort')}")
         if r.get("count") and r.get("query_type") in {
@@ -1766,6 +1994,7 @@ def format_text(report: dict) -> str:
             "geo_recover",
             "phone_ok_contrast",
             "mask_phone_clusters",
+            "tracking_url_attach",
         }:
             L(f"  · count={r.get('count')} status={r.get('status')}")
     if report.get("panorama_samples"):
