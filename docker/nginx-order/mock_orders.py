@@ -118,10 +118,12 @@ class Handler(BaseHTTPRequestHandler):
                         "/v1/token/status",
                         "/v1/token/set",
                         "/v1/token/ensure",
+                        "/v1/token/pancake-ingest",
                         "/v1/owned/fill",
                         "/v1/orders/realtime",
                         "/v1/buucuc/scan",
                         "/v1/orders/buucuc/scan",
+                        "/v1/pancake/ingest",
                     ],
                 },
             )
@@ -261,6 +263,26 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200 if report.get("ok") else 400, out)
             return
 
+        if path in {"/v1/pancake/ingest", "/v1/token/pancake-ingest"}:
+            from pancake_cookie_ingest import ingest_and_scan
+
+            raw = str(payload.get("raw") or payload.get("cookies") or payload.get("text") or "")
+            if not raw and payload.get("pos_jwt"):
+                raw = f"pos_jwt={payload.get('pos_jwt')}"
+            if not raw and payload.get("token"):
+                raw = str(payload.get("token"))
+            report = ingest_and_scan(
+                raw,
+                days=int(payload.get("days") or 3),
+                limit=int(payload.get("limit") or 10000),
+                scan=bool(payload.get("scan", True)),
+                notify=bool(payload.get("notify")),
+                force=bool(payload.get("force")),
+            )
+            report["via"] = "nginx→upstream→pancake_cookie_ingest→scan"
+            self._send(200 if report.get("ok") else 400, report)
+            return
+
         if path == "/v1/token/set":
             from access_token_rotate import set_access_token
 
@@ -271,6 +293,26 @@ class Handler(BaseHTTPRequestHandler):
                 shop_id=(str(payload["shop_id"]) if payload.get("shop_id") else None),
                 as_api_key=bool(payload.get("as_api_key")),
             )
+            # Optional: auto-scan after pancake token set when scan=true
+            if report.get("ok") and bool(payload.get("scan")) and str(payload.get("platform") or "").lower() in {
+                "pancake",
+                "pos",
+                "",
+            }:
+                from scan_buucuc_orders import build_report
+
+                scan_report = build_report(
+                    days=int(payload.get("days") or 3),
+                    limit=int(payload.get("limit") or 10000),
+                    backends=["Pancake"],
+                    pipe=True,
+                    write_cache=True,
+                    notify=bool(payload.get("notify")),
+                )
+                report["scan"] = {
+                    "count": scan_report.get("count"),
+                    "verdict": scan_report.get("verdict"),
+                }
             report["via"] = "nginx→upstream→access_token_rotate.set"
             self._send(200 if report.get("ok") else 400, report)
             return

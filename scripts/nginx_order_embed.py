@@ -465,6 +465,33 @@ class NginxOrderEmbed:
             ensure=ensure,
         )
 
+    def pancake_ingest(
+        self,
+        raw: str,
+        *,
+        days: int = 3,
+        limit: int = 10000,
+        scan: bool = True,
+        notify: bool = False,
+        force: bool = False,
+        ensure: bool = True,
+    ) -> dict:
+        """Pipeline: nginx → pancake_cookie_ingest → (optional) buucuc scan."""
+        return self.call_json(
+            "/v1/pancake/ingest",
+            method="POST",
+            payload={
+                "raw": raw,
+                "days": days,
+                "limit": limit,
+                "scan": scan,
+                "notify": notify,
+                "force": force,
+            },
+            timeout=180.0,
+            ensure=ensure,
+        )
+
     def token_realtime_pipeline(self, *, limit: int = 20, notify: bool = False, auto_stop: bool | None = None) -> dict:
         """Toàn bộ: bật nginx → nạp/ensure token module → gọi đơn RT → (optional) stop."""
         stop = self.auto_stop if auto_stop is None else auto_stop
@@ -593,8 +620,18 @@ class NginxOrderEmbed:
                 "once — chạy một lần rồi tắt",
                 "start/ensure_up — bật khi cần nhiều lần",
                 "token-realtime — nginx→access_token_rotate→danh sách đơn RT",
-                "orders/call_orders — lấy danh sách đơn mock",
+                "pancake-ingest — nginx→cookie/pos_jwt→secrets→quét đơn",
+                "buucuc-scan — nginx→quét bưu cục remote",
+                "orders/call_orders — lấy danh sách đơn",
                 "stop — tắt sau khi xong",
+            ],
+            "routes": [
+                "POST /v1/pancake/ingest",
+                "POST /v1/token/pancake-ingest",
+                "POST /v1/buucuc/scan",
+                "POST /v1/token/set",
+                "POST /v1/orders/realtime",
+                "GET /orders/buucuc",
             ],
             "flow": (
                 f"client → {self.base}/v1/token/*|/v1/orders/realtime|/orders "
@@ -728,6 +765,7 @@ def main(argv: list[str] | None = None) -> int:
             "order",
             "token-realtime",
             "buucuc-scan",
+            "pancake-ingest",
             "test",
             "describe",
         ],
@@ -736,7 +774,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--limit", type=int, default=20, help="limit đơn realtime")
     ap.add_argument("--days", type=int, default=3, help="số ngày quét bưu cục")
     ap.add_argument("--buucuc-limit", type=int, default=10000, help="limit quét bưu cục")
+    ap.add_argument("--raw-file", default="", help="file cookie/JWT cho pancake-ingest")
+    ap.add_argument("--raw", default="", help="chuỗi cookie/JWT cho pancake-ingest")
     ap.add_argument("--notify", action="store_true", help="gửi Telegram sau quét")
+    ap.add_argument("--no-scan", action="store_true", help="pancake-ingest chỉ nạp token, không scan")
+    ap.add_argument("--force", action="store_true", help="ép nạp cả token hết hạn (không khuyến nghị)")
     ap.add_argument("--keep", action="store_true", help="once/token-realtime không auto-stop")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--base", default=DEFAULT_BASE)
@@ -773,6 +815,39 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             if not args.keep:
                 mod.stop()
+    elif cmd == "pancake-ingest":
+        raw = args.raw
+        if args.raw_file:
+            raw = Path(args.raw_file).read_text(encoding="utf-8", errors="ignore")
+        if not raw.strip():
+            report = {
+                "ok": False,
+                "error": "cần --raw hoặc --raw-file",
+                "verdict": "❌ pancake-ingest thiếu cookie/JWT",
+                "checked_at": utc_now(),
+            }
+        else:
+            started = mod.ensure_up()
+            try:
+                report = mod.pancake_ingest(
+                    raw,
+                    days=args.days,
+                    limit=args.buucuc_limit,
+                    scan=not args.no_scan,
+                    notify=args.notify,
+                    force=args.force,
+                    ensure=False,
+                )
+                report["start"] = started
+                payload = report.get("payload") if isinstance(report.get("payload"), dict) else {}
+                report["verdict"] = payload.get("verdict") or (
+                    "✅ pancake-ingest via nginx" if report.get("ok") else "❌ pancake-ingest"
+                )
+                report["checked_at"] = utc_now()
+                write_outputs(report)
+            finally:
+                if not args.keep:
+                    mod.stop()
     elif cmd == "test":
         report = mod.test()
     elif cmd == "start":

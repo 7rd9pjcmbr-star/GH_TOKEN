@@ -163,9 +163,10 @@ def panel_keyboard() -> dict:
             ],
             [
                 {"text": "📡 Quét BC remote", "callback_data": "q:bc_scan"},
-                {"text": "🌊 Ngược·dòng chảy", "callback_data": "q:rev_q"},
+                {"text": "🍪 Nhúng POS cookie", "callback_data": "q:pancake_ingest"},
             ],
             [
+                {"text": "🌊 Ngược·dòng chảy", "callback_data": "q:rev_q"},
                 {"text": "📦 Đang giao·bảng", "callback_data": "q:dg_tbl"},
             ],
             [
@@ -563,6 +564,21 @@ def fmt_bc_scan(_a: dict | None = None) -> str:
         )
 
 
+def fmt_pancake_ingest(_a: dict | None = None) -> str:
+    """Hướng dẫn + trạng thái nhúng cookie POS qua nginx."""
+    path = ROOT / "reports" / "telegram-classify" / "pancake_cookie_ingest.txt"
+    last = path.read_text(encoding="utf-8")[:1500] if path.is_file() else "(chưa có lần nhúng nào)"
+    return (
+        "🍪 NHÚNG POS COOKIE QUA NGINX\n\n"
+        "Gửi cookie vào chat (Netscape) gồm pos_jwt còn hạn, ví dụ:\n"
+        "pos.pancake.vn\\tFALSE\\t/\\tFALSE\\t0\\tpos_jwt\\teyJ...\n"
+        "pos.pancake.vn\\tFALSE\\t/\\tFALSE\\t0\\tpos_locale\\tvi\n\n"
+        "Pipeline: client→nginx /v1/pancake/ingest → set secrets → quét 3 ngày\n"
+        "CLI: python3 scripts/nginx_order_embed.py pancake-ingest --raw-file FILE --notify --keep\n\n"
+        f"Lần nhúng gần nhất:\n{last}"
+    )[:3800]
+
+
 def fmt_pipe_fp(_a: dict | None = None) -> str:
     try:
         from order_pipe_kho_buucuc_db import build_report, format_text, write_outputs
@@ -848,6 +864,7 @@ HANDLERS = {
     "q:bc_db": fmt_bc_db,
     "q:bc_audit": fmt_bc_audit,
     "q:bc_scan": fmt_bc_scan,
+    "q:pancake_ingest": fmt_pancake_ingest,
     "q:pipe_fp": fmt_pipe_fp,
     "q:rev_q": fmt_rev_q,
     "q:dg_tbl": fmt_dg_tbl,
@@ -1036,8 +1053,50 @@ def main() -> int:
                             f"❌ Lưu file inbox lỗi: `{e}`",
                             panel_keyboard(),
                         )
-                text = (msg.get("text") or "").strip().lower()
-                if text in {"/panel", "panel", "/menu", "bang dieu khien"}:
+                text = (msg.get("text") or "").strip()
+                text_l = text.lower()
+                # Nhúng cookie/token Pancake qua nginx khi user paste vào chat
+                if text and (
+                    "pos.pancake.vn" in text_l
+                    or "pos_jwt" in text_l
+                    or (text.startswith("eyJ") and "pancake" in text_l)
+                    or (
+                        text.count("eyJ") >= 1
+                        and ("pos_locale" in text_l or "\ttoken\t" in text or " token " in text_l)
+                    )
+                ):
+                    try:
+                        from nginx_order_embed import NginxOrderEmbed
+                        from pancake_cookie_ingest import format_text as fmt_ingest
+
+                        mod = NginxOrderEmbed(auto_stop=False)
+                        mod.ensure_up()
+                        rep = mod.pancake_ingest(
+                            text,
+                            days=3,
+                            limit=10000,
+                            scan=True,
+                            notify=False,
+                            ensure=False,
+                        )
+                        payload = rep.get("payload") if isinstance(rep.get("payload"), dict) else {}
+                        body = fmt_ingest(payload) if payload else (rep.get("verdict") or str(rep))[:3500]
+                        send(
+                            token,
+                            str(msg["chat"]["id"]),
+                            "🍪 Đã nhúng qua nginx `/v1/pancake/ingest`\n\n" + body,
+                            panel_keyboard(),
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        send(
+                            token,
+                            str(msg.get("chat", {}).get("id") or chat),
+                            f"❌ Nhúng pancake cookie lỗi: `{e}`\n"
+                            "Chạy: python3 scripts/nginx_order_embed.py pancake-ingest --raw-file … --keep",
+                            panel_keyboard(),
+                        )
+                    continue
+                if text_l in {"/panel", "panel", "/menu", "bang dieu khien"}:
                     open_panel(token, str(msg["chat"]["id"]), analysis)
                 continue
             data_key = cb.get("data") or ""
