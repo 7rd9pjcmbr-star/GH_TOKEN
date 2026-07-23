@@ -29,7 +29,16 @@ MaMoLogic.vars.get("$upstream_addr") // biến nhúng nginx upstream
 MaMoLogic.nginxEmbed.describe()       // module gọi đơn qua nginx (on-demand)
 ```
 
-Docs: `docs/ICON-ATLAS.md` · `docs/LOGIC-ARCHITECTURE.md` · `docs/NGINX-UPSTREAM-VARS.md`
+Docs: `docs/ICON-ATLAS.md` · `docs/LOGIC-ARCHITECTURE.md` · `docs/NGINX-UPSTREAM-VARS.md` · `docs/ORDER-PIPE-MODULE.md`
+
+## Order Pipe (Python)
+
+Truy vấn ngược kho→bưu cục→địa chỉ (ASUMEE):
+
+```bash
+PYTHONPATH=scripts python3 -m order_pipe --run
+PYTHONPATH=scripts python3 -m order_pipe --kho ASUMEE
+```
 
 ## Lab (cô lập)
 
