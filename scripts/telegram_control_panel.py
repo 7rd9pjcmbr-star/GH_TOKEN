@@ -132,8 +132,9 @@ def panel_keyboard() -> dict:
             ],
             [
                 {"text": "🌐 URL mở rộng", "callback_data": "q:urls"},
-                {"text": "🔁 Làm mới phân tích", "callback_data": "q:refresh"},
+                {"text": "🗺 Mapper EP", "callback_data": "q:endpoints"},
             ],
+            [{"text": "🔁 Làm mới phân tích", "callback_data": "q:refresh"}],
         ]
     }
 
@@ -311,6 +312,30 @@ def fmt_urls(_a: dict | None = None) -> str:
     return "Chưa có báo cáo URL. Chạy lại truy vấn mở rộng URL trên agent."
 
 
+def fmt_endpoints(_a: dict | None = None) -> str:
+    path = ROOT / "reports" / "telegram-classify" / "endpoint_mapper_deep.txt"
+    alt = ROOT / "reports" / "telegram-classify" / "endpoint_mapper_deep.json"
+    if path.is_file():
+        return path.read_text(encoding="utf-8")[:3800]
+    if alt.is_file():
+        data = json.loads(alt.read_text(encoding="utf-8"))
+        lines = [
+            f"🗺 MAPPER ENDPOINT — {data.get('endpoint_count')} EP",
+            "",
+            "Theo role:",
+        ]
+        for k, v in (data.get("totals", {}).get("by_role") or {}).items():
+            lines.append(f"· {k}: {v}")
+        lines.append("")
+        lines.append("P0/P1:")
+        for ep in data.get("endpoints") or []:
+            if ep.get("priority") in {"P0", "P1"}:
+                lines.append(f"· [{ep['priority']}] {ep['backend']} · {ep['url_path']}")
+                lines.append(f"  {ep.get('mapper_node')} → {ep.get('action')}")
+        return "\n".join(lines)[:3800]
+    return "Chưa có endpoint_mapper_deep. Chạy mapper endpoint trên agent."
+
+
 HANDLERS = {
     "q:overview": fmt_overview,
     "q:source": fmt_source,
@@ -321,6 +346,7 @@ HANDLERS = {
     "q:pipes": fmt_pipes,
     "q:realtime": fmt_realtime,
     "q:urls": fmt_urls,
+    "q:endpoints": fmt_endpoints,
 }
 
 
@@ -364,12 +390,25 @@ def main() -> int:
 
     # Always open panel + push full query pack so nguyên nhân rõ ngay
     open_panel(token, chat, analysis)
-    for key in ["q:overview", "q:source", "q:masked", "q:missing", "q:todo", "q:paths", "q:pipes", "q:realtime", "q:urls"]:
+    for key in [
+        "q:overview",
+        "q:source",
+        "q:masked",
+        "q:missing",
+        "q:todo",
+        "q:paths",
+        "q:pipes",
+        "q:realtime",
+        "q:urls",
+        "q:endpoints",
+    ]:
         send(
             token,
             chat,
             HANDLERS[key](analysis),
-            panel_keyboard() if key in {"q:paths", "q:pipes", "q:realtime", "q:urls"} else None,
+            panel_keyboard()
+            if key in {"q:paths", "q:pipes", "q:realtime", "q:urls", "q:endpoints"}
+            else None,
         )
 
     once = "--once" in sys.argv
