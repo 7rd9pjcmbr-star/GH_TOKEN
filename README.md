@@ -26,6 +26,7 @@ MaMoLogic.callIcons("concept:aead")
 MaMoLogic.mapIconLibraries() // 17/17 icon → 27 thư viện có tài liệu
 MaMoLogic.optimize.stats()   // LRU cache · adaptive · path memo
 MaMoLogic.vars.get("$upstream_addr") // biến nhúng nginx upstream
+MaMoLogic.nginxEmbed.describe()       // module gọi đơn qua nginx (on-demand)
 ```
 
 Docs: `docs/ICON-ATLAS.md` · `docs/LOGIC-ARCHITECTURE.md` · `docs/NGINX-UPSTREAM-VARS.md`

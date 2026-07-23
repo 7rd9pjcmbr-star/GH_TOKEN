@@ -612,18 +612,21 @@ def fmt_inbox_scan(_a: dict | None = None) -> str:
 
 def fmt_ngx_order(_a: dict | None = None) -> str:
     try:
-        from nginx_order_embed_test import format_text, run_test, write_outputs
+        from nginx_order_embed import format_text, run_when_needed, write_outputs
 
-        report = run_test()
+        report = run_when_needed(keep_alive=False)
         write_outputs(report)
         return format_text(report)[:3800]
     except Exception as e:  # noqa: BLE001
-        path = ROOT / "reports" / "telegram-classify" / "nginx_order_embed_test.txt"
+        path = ROOT / "reports" / "telegram-classify" / "nginx_order_embed.txt"
+        alt = ROOT / "reports" / "telegram-classify" / "nginx_order_embed_test.txt"
         if path.is_file():
             return path.read_text(encoding="utf-8")[:3800]
+        if alt.is_file():
+            return alt.read_text(encoding="utf-8")[:3800]
         return (
             f"Nginx gọi đơn lỗi: {e}\n"
-            "Chạy: python3 scripts/nginx_order_embed_test.py"
+            "Chạy: python3 scripts/nginx_order_embed.py once"
         )
 
 

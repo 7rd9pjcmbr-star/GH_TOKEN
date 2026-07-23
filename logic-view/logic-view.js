@@ -387,6 +387,32 @@
   document.getElementById("vars-input")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") document.getElementById("btn-vars-lookup")?.click();
   });
+
+  document.getElementById("btn-ngx-desc")?.addEventListener("click", () => {
+    const out = document.getElementById("ngx-embed-out");
+    const mod = window.MaMoLogic?.nginxEmbed;
+    if (!mod) {
+      out.textContent = JSON.stringify({ error: "nginxEmbed module missing" }, null, 2);
+      return;
+    }
+    out.textContent = JSON.stringify(mod.describe(), null, 2);
+  });
+
+  document.getElementById("btn-ngx-embed")?.addEventListener("click", async () => {
+    const out = document.getElementById("ngx-embed-out");
+    const mod = window.MaMoLogic?.nginxEmbed;
+    if (!mod) {
+      out.textContent = JSON.stringify({ error: "nginxEmbed module missing" }, null, 2);
+      return;
+    }
+    out.textContent = "Đang gọi…";
+    try {
+      const result = await mod.runWhenNeeded();
+      out.textContent = JSON.stringify(result, null, 2);
+    } catch (err) {
+      out.textContent = JSON.stringify({ ok: false, error: String(err?.message || err) }, null, 2);
+    }
+  });
   document.getElementById("btn-opt-stats")?.addEventListener("click", () => {
     const out = document.getElementById("opt-stats-output");
     out.textContent = JSON.stringify(

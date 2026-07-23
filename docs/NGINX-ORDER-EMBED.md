@@ -1,38 +1,55 @@
-# Kiểm thử nhúng gọi đơn qua nginx
+# Module nhúng gọi đơn qua nginx (on-demand)
 
-Local mock — không gọi API thật, không dump-login.
+Chạy **khi cần** — không giữ nginx/mock suốt ngày trừ khi `start`.
+
+## Module
+
+| Lớp | Path |
+|-----|------|
+| Python | `scripts/nginx_order_embed.py` → `NginxOrderEmbed` · `run_when_needed()` |
+| JS | `js/logic/nginx_embed.js` → `MaMoLogic.nginxEmbed` |
+| Test | `scripts/nginx_order_embed_test.py` |
+| Conf | `docker/nginx-order/nginx.conf` + `server.conf` |
+| Mock | `docker/nginx-order/mock_orders.py` |
+
+## Khi cần
+
+```bash
+# một lần: bật → gọi /orders → tắt
+python3 scripts/nginx_order_embed.py once
+
+# giữ sống để gọi nhiều lần
+python3 scripts/nginx_order_embed.py start
+python3 scripts/nginx_order_embed.py orders
+python3 scripts/nginx_order_embed.py order --id OMS-NGX-001
+python3 scripts/nginx_order_embed.py status
+python3 scripts/nginx_order_embed.py stop
+```
+
+```python
+from nginx_order_embed import NginxOrderEmbed, run_when_needed
+
+run_when_needed()                         # once
+m = NginxOrderEmbed()
+m.ensure_up(); m.call_orders(); m.stop()  # chủ động
+```
+
+```js
+MaMoLogic.nginxEmbed.describe()
+MaMoLogic.nginxEmbed.runWhenNeeded()  // cần stack đã start
+MaMoLogic.nginxEmbed.callOrders()
+```
+
+Panel Telegram: **🧪 Nginx·gọi đơn** → `run_when_needed()`.
 
 ## Luồng
 
 ```text
-client → nginx:18080/orders → upstream order_backend (127.0.0.1:18081)
+client → nginx:18080/orders → upstream mock:18081
 ```
 
-Biến nhúng `ngx_http_upstream_module` ghi vào:
-- Response headers `X-Upstream-*`
-- `docker/nginx-order/logs/order_access.log` (`log_format order_upstream`)
+Biến nhúng `$upstream_*` → header `X-Upstream-*` + `logs/order_access.log`.
 
-## Chạy
+## Safety
 
-```bash
-python3 scripts/nginx_order_embed_test.py
-# hoặc panel Telegram: 🧪 Nginx·gọi đơn
-```
-
-## File
-
-| Path | Vai trò |
-|------|---------|
-| `docker/nginx-order/nginx.conf` | upstream + log_format `$upstream_*` |
-| `docker/nginx-order/server.conf` | `/orders` proxy + `add_header` |
-| `docker/nginx-order/mock_orders.py` | mock order API |
-| `scripts/nginx_order_embed_test.py` | orchestrate + assert |
-| `data/nginx-upstream-vars.js` | catalog biến nhúng |
-
-## Biến đã nhúng trong test
-
-`$upstream_addr` · `$upstream_status` · `$upstream_response_time` · `$upstream_connect_time` · `$upstream_header_time` · `$upstream_bytes_received` · `$upstream_bytes_sent` · `$upstream_response_length` · `$upstream_cache_status`
-
-```js
-MaMoLogic.vars.get("$upstream_addr")
-```
+Local mock only · no dump-login · no third-party order API.

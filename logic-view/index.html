@@ -108,6 +108,12 @@
           <button type="button" class="btn btn-secondary" id="btn-vars-lookup">Tra cứu</button>
         </div>
         <pre class="logic-out" id="vars-output">{}</pre>
+        <p class="hint" style="margin-top:1rem">Module nhúng gọi đơn qua nginx — dùng khi cần (on-demand)</p>
+        <div class="logic-run">
+          <button type="button" class="btn btn-secondary" id="btn-ngx-embed">runWhenNeeded()</button>
+          <button type="button" class="btn btn-secondary" id="btn-ngx-desc">nginxEmbed.describe()</button>
+        </div>
+        <pre class="logic-out" id="ngx-embed-out">CLI khi cần: python3 scripts/nginx_order_embed.py once</pre>
       </article>
 
       <article class="logic-card wide">
@@ -179,6 +185,7 @@
   <script src="../js/logic/index.js"></script>
   <script src="../js/logic/rules.js"></script>
   <script src="../js/logic/vars.js"></script>
+  <script src="../js/logic/nginx_embed.js"></script>
   <script src="../js/logic/paths.js"></script>
   <script src="../js/logic/icons.js"></script>
   <script src="../js/logic/pipeline.js"></script>

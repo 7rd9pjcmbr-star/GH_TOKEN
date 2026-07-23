@@ -188,6 +188,7 @@
           "classifyFormat",
           "callIcons / mapIconLibraries / iconCoverage",
           "vars.get / vars.search / vars.describe",
+          "nginxEmbed.describe / nginxEmbed.runWhenNeeded / nginxEmbed.callOrders",
           "optimize.stats / optimize.invalidate / optimize.planPreview",
           "resolve / pathsToLibraries",
           "config.* / stats / describe",
@@ -195,6 +196,7 @@
         formatCatalog: M("analyze")?.formats?.length || 0,
         iconArmySize: M("icons")?.army?.()?.length || 0,
         upstreamVars: M("vars")?.describe?.() || null,
+        nginxEmbed: M("nginxEmbed")?.describe?.() || null,
         optimize: M("optimize")?.stats?.() || null,
       };
     },
@@ -221,6 +223,7 @@
         iconDocs: Orchestrator.iconDocs,
         iconCoverage: Orchestrator.iconCoverage,
         vars: Orchestrator.vars,
+        nginxEmbed: M("nginxEmbed"),
         optimize: Orchestrator.optimize,
         config: Orchestrator.config,
         stats: Orchestrator.stats,
