@@ -367,9 +367,19 @@ def build_report(*, inventory: bool = True) -> dict[str, Any]:
         "mermaid": mermaid(),
         "next": [
             "python3 scripts/metasploit_suite_mapper.py --json",
+            "python3 scripts/metasploit_library_harvest.py  # rà soát toàn bộ modules/",
+            "python3 scripts/metasploit_suite_mapper.py harvest",
             "Đặt mẫu nghi vào quarantine/ → docker/lab analyze (không MSF)",
             "docs/SECURITY-LAB.md · js/lab/policy.js noExploitGeneration",
         ],
+        "knowledge_harvest": {
+            "cli": "python3 scripts/metasploit_library_harvest.py",
+            "reports": [
+                "reports/telegram-classify/metasploit_library_knowledge.txt",
+                "reports/telegram-classify/metasploit_cve_index.csv",
+            ],
+            "policy": "readonly catalog · no exploit · no payload gen",
+        },
     }
     if local.get("installed") and local.get("msfvenom"):
         report["next"].insert(
@@ -448,14 +458,37 @@ def format_text(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def run_harvest(*, refresh: bool = False, as_json: bool = False) -> int:
+    """Rà soát toàn bộ modules/ MSF → knowledge report (readonly)."""
+    from metasploit_library_harvest import format_text as fmt_k
+    from metasploit_library_harvest import harvest
+
+    report = harvest(refresh=refresh)
+    if as_json:
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+    else:
+        print(fmt_k(report) if report.get("ok") else report.get("error") or report)
+    return 0 if report.get("ok") else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="Mapper thư viện Metasploit Suite (phòng thủ — không exploit)"
     )
+    ap.add_argument(
+        "command",
+        nargs="?",
+        default="map",
+        choices=("map", "harvest"),
+        help="map=taxonomy · harvest=rà soát toàn bộ modules/",
+    )
     ap.add_argument("--no-inventory", action="store_true", help="Bỏ quét local MSF")
+    ap.add_argument("--refresh", action="store_true", help="(harvest) clone lại sparse modules/")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--mermaid", action="store_true")
     args = ap.parse_args(argv)
+    if args.command == "harvest":
+        return run_harvest(refresh=args.refresh, as_json=args.json)
     report = build_report(inventory=not args.no_inventory)
     if args.mermaid:
         print(report.get("mermaid") or "")

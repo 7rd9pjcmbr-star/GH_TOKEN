@@ -43,6 +43,19 @@ python3 scripts/metasploit_suite_mapper.py --mermaid
 Deny: msfvenom generate · exploit run · msfrpcd expose.  
 Báo cáo: `reports/telegram-classify/metasploit_suite_mapper.txt`.
 
+## Rà soát toàn bộ thư viện MSF (kiến thức)
+
+Sparse-clone `modules/` (readonly) → parse Name/Rank/CVE/Platform → báo cáo triage:
+
+```bash
+python3 scripts/metasploit_library_harvest.py
+python3 scripts/metasploit_suite_mapper.py harvest
+# làm mới clone: --refresh
+```
+
+Báo cáo: `metasploit_library_knowledge.txt|json` · `metasploit_cve_index.csv`  
+(trong `reports/telegram-classify/`, gitignored). Panel: **📚 MSF·kiến thức**.
+
 ## Quy trình an toàn
 
 1. Không mở/chạy mẫu trên máy làm việc chính.

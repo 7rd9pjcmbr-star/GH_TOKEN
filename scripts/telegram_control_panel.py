@@ -189,6 +189,10 @@ def panel_keyboard() -> dict:
             ],
             [
                 {"text": "🔐 Captcha·TG", "callback_data": "q:captcha_tg"},
+                {"text": "🛡 MSF·suite map", "callback_data": "q:msf_suite"},
+            ],
+            [
+                {"text": "📚 MSF·kiến thức", "callback_data": "q:msf_knowledge"},
             ],
             [
                 {"text": "🧪 Nginx·gọi đơn", "callback_data": "q:ngx_order"},
@@ -805,6 +809,46 @@ def fmt_captcha_tg(_a: dict | None = None) -> str:
         )
 
 
+def fmt_msf_suite(_a: dict | None = None) -> str:
+    """Mapper thư viện Metasploit Suite (phòng thủ)."""
+    try:
+        from metasploit_suite_mapper import build_report, format_text
+
+        report = build_report(inventory=True)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "metasploit_suite_mapper.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"MSF suite mapper lỗi: {e}\n"
+            "Chạy: python3 scripts/metasploit_suite_mapper.py"
+        )
+
+
+def fmt_msf_knowledge(_a: dict | None = None) -> str:
+    """Rà soát toàn bộ thư viện MSF — thu thập kiến thức (readonly)."""
+    try:
+        from metasploit_library_harvest import format_text, harvest
+
+        # Ưu tiên báo cáo sẵn nếu còn mới; không --refresh trên panel (tránh clone dài)
+        path = ROOT / "reports" / "telegram-classify" / "metasploit_library_knowledge.txt"
+        if path.is_file():
+            age = __import__("time").time() - path.stat().st_mtime
+            if age < 3600:
+                return path.read_text(encoding="utf-8")[:3800]
+        report = harvest(refresh=False)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "metasploit_library_knowledge.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"MSF knowledge harvest lỗi: {e}\n"
+            "Chạy: python3 scripts/metasploit_library_harvest.py"
+        )
+
+
 def fmt_ngx_order(_a: dict | None = None) -> str:
     try:
         from nginx_order_embed import format_text, run_when_needed, write_outputs
@@ -1001,6 +1045,8 @@ HANDLERS = {
     "q:inbox_today": fmt_inbox_today,
     "q:inbox_scan": fmt_inbox_scan,
     "q:captcha_tg": fmt_captcha_tg,
+    "q:msf_suite": fmt_msf_suite,
+    "q:msf_knowledge": fmt_msf_knowledge,
     "q:ngx_order": fmt_ngx_order,
     "q:owned_env": fmt_owned_env,
     "q:token_rotate": fmt_token_rotate,
