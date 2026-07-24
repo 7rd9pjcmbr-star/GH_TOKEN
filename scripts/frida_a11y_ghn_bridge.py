@@ -561,13 +561,23 @@ def main(argv: list[str] | None = None) -> int:
 
     p_st = sub.add_parser("status", help="Báo cáo bridge gần nhất")
     p_st.add_argument("--json", action="store_true")
+
+    p_now = sub.add_parser("now", help="Dùng Frida ngay: pending/AES → token → gọi đơn")
+    p_now.add_argument("--file", "-f", default="", help="Capture (mặc định pending/AES mới nhất)")
+    p_now.add_argument("--raw", default="", help="printA5 / Token trực tiếp")
+    p_now.add_argument("--days", type=int, default=3)
+    p_now.add_argument("--limit", type=int, default=50)
+    p_now.add_argument("--shop-id", default="")
+    p_now.add_argument("--notify", action="store_true", help="Gửi verdict lên Telegram")
+    p_now.add_argument("--json", action="store_true")
+
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
     if args.cmd == "status":
         jp = REPORTS / "frida_a11y_ghn_bridge.json"
         if not jp.is_file():
-            print("Chưa có báo cáo — chạy: python3 scripts/frida_a11y_ghn_bridge.py apply --orders")
+            print("Chưa có báo cáo — chạy: python3 scripts/frida_a11y_ghn_bridge.py now")
             return 1
         data = json.loads(jp.read_text(encoding="utf-8"))
         print(json.dumps(data, ensure_ascii=False, indent=2) if args.json else data.get("verdict"))
@@ -607,21 +617,47 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  · {_mask(c['token'])} · {c.get('source')}")
         return 0 if report.get("ok") else 1
 
-    # apply
+    # apply | now
     fetch = True
-    if args.no_orders:
-        fetch = False
-    elif args.orders:
-        fetch = True
+    if args.cmd == "apply":
+        if args.no_orders:
+            fetch = False
+        elif args.orders:
+            fetch = True
     report = apply_capture(
         path=(args.file or None),
-        raw=(args.raw or None),
-        days=int(args.days),
-        limit=int(args.limit),
+        raw=(getattr(args, "raw", None) or None),
+        days=int(getattr(args, "days", 3)),
+        limit=int(getattr(args, "limit", 50)),
         fetch_orders=fetch,
-        force=not args.no_force,
-        shop_id=(args.shop_id or None),
+        force=not bool(getattr(args, "no_force", False)),
+        shop_id=(getattr(args, "shop_id", None) or None),
     )
+    report["mode"] = args.cmd
+    if args.cmd == "now":
+        report["bridge"] = report.get("bridge") or "frida+a11y→now→orders"
+        if getattr(args, "notify", False):
+            try:
+                from owned_credentials import load_env
+
+                env = load_env(extra_files=(SECRETS / "telegram.env",))
+                tg = (env.get("TELEGRAM_BOT_TOKEN") or "").strip()
+                chat = (env.get("TELEGRAM_CHAT_ID") or "").strip()
+                if tg and chat:
+                    import urllib.request
+
+                    body = ("🧬 Frida NOW\n\n" + (report.get("verdict") or ""))[:3500]
+                    req = urllib.request.Request(
+                        f"https://api.telegram.org/bot{tg}/sendMessage",
+                        data=json.dumps({"chat_id": chat, "text": body}).encode(),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(req, timeout=20) as resp:
+                        report["notified"] = resp.status == 200
+            except Exception as e:  # noqa: BLE001
+                report["notify_error"] = str(e)[:120]
+
     if args.json:
         print(json.dumps({k: v for k, v in report.items() if k != "order_rows"}, ensure_ascii=False, indent=2, default=str))
     else:

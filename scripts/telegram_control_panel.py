@@ -166,7 +166,10 @@ def panel_keyboard() -> dict:
                 {"text": "🧬 Pipe kho·BC·FP", "callback_data": "q:pipe_fp"},
             ],
             [
+                {"text": "🗺 GHN·ống·role", "callback_data": "q:ghn_pipe_roles"},
                 {"text": "📡 Quét BC remote", "callback_data": "q:bc_scan"},
+            ],
+            [
                 {"text": "🍪 Nhúng POS cookie", "callback_data": "q:pancake_ingest"},
             ],
             [
@@ -648,34 +651,21 @@ def fmt_ghn_ingest(_a: dict | None = None) -> str:
 
 
 def fmt_frida_a11y_ghn(_a: dict | None = None) -> str:
-    """Áp dụng Frida + Accessibility → GHN access token → gọi đơn."""
-    path = ROOT / "reports" / "telegram-classify" / "frida_a11y_ghn_bridge.txt"
-    last = path.read_text(encoding="utf-8")[:1400] if path.is_file() else "(chưa chạy bridge)"
+    """Áp dụng Frida + Accessibility ngay → GHN access token → gọi đơn."""
     try:
         from frida_a11y_ghn_bridge import apply_capture, format_text
 
-        # Auto: pending / latest AES bundle nếu có token trong capture
         report = apply_capture(fetch_orders=True, days=3, limit=50, force=True)
-        write_path = ROOT / "reports" / "telegram-classify" / "frida_a11y_ghn_bridge.txt"
-        body = format_text(report)
-        if write_path.is_file():
-            last = write_path.read_text(encoding="utf-8")[:1400]
-        else:
-            last = body[:1400]
+        report["mode"] = "now"
+        return ("🧬 FRIDA DÙNG NGAY\n\n" + format_text(report))[:3800]
     except Exception as e:  # noqa: BLE001
-        last = f"(auto apply lỗi: {e})\n{last}"
-    return (
-        "🧬 FRIDA + ACCESSIBILITY → GHN TOKEN → ĐƠN\n\n"
-        "Owned capture only (không dump / không bypass SSL):\n"
-        "1) Export từ máy/app GHN sở hữu (printA5 / header Token / a11y text)\n"
-        "2) Schema: config/frida_a11y_capture.example.json\n"
-        "3) secrets/frida_a11y_ghn.pending.json hoặc gửi printA5 URL\n\n"
-        "CLI:\n"
-        "python3 scripts/frida_a11y_ghn_bridge.py apply --orders\n"
-        "python3 scripts/ghn_access_token_orders.py run --frida-a11y FILE\n"
-        "python3 scripts/nginx_order_embed.py ghn-frida-a11y --capture-file FILE --keep\n\n"
-        f"Kết quả:\n{last}"
-    )[:3800]
+        path = ROOT / "reports" / "telegram-classify" / "frida_a11y_ghn_bridge.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Frida+a11y lỗi: {e}\n"
+            "Chạy: python3 scripts/frida_a11y_ghn_bridge.py now --notify"
+        )
 
 
 def fmt_pipe_fp(_a: dict | None = None) -> str:
