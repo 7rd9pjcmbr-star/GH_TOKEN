@@ -204,6 +204,7 @@ def panel_keyboard() -> dict:
                 {"text": "📚 Catalog·BC·ext", "callback_data": "q:bc_catalog_ext"},
             ],
             [
+                {"text": "⛓ Chuỗi·FULL", "callback_data": "q:bc_chain_full"},
                 {"text": "🌿 Nhánh·pipe", "callback_data": "q:pipe_branch"},
             ],
             [
@@ -1077,6 +1078,33 @@ def fmt_bc_catalog_ext(_a: dict | None = None) -> str:
         )
 
 
+def fmt_bc_chain_full(_a: dict | None = None) -> str:
+    """Chuỗi FULL: catalog_ext → continue → expand → live → hub."""
+    try:
+        from buucuc_catalog_chain_query_mapper import (
+            build_report,
+            format_text,
+            write_outputs,
+        )
+
+        report = build_report(chain_id="full", enrich_limit=12)
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = (
+            ROOT
+            / "reports"
+            / "telegram-classify"
+            / "buucuc_catalog_chain_query_mapper.txt"
+        )
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Chuỗi·FULL lỗi: {e}\n"
+            "Chạy: python3 scripts/buucuc_catalog_chain_query_mapper.py --chain full --notify"
+        )
+
+
 def fmt_bc_chain_cont(_a: dict | None = None) -> str:
     """Tiếp tục chuỗi catalog BC → tracking · SSR · flow · next."""
     try:
@@ -1652,6 +1680,7 @@ HANDLERS = {
     "q:bc_hub": fmt_bc_hub,
     "q:bc_catalog": fmt_bc_catalog,
     "q:bc_catalog_ext": fmt_bc_catalog_ext,
+    "q:bc_chain_full": fmt_bc_chain_full,
     "q:bc_chain_cont": fmt_bc_chain_cont,
     "q:bc_chain_exp": fmt_bc_chain_exp,
     "q:pipe_branch": fmt_pipe_branch,

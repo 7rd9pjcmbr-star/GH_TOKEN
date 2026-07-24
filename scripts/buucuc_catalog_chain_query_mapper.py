@@ -136,6 +136,10 @@ CHAIN_QUERIES: dict[str, dict[str, str]] = {
         "title": "Mở rộng catalog BC thống nhất (Aship + pipe + HĐ + ConfigId)",
         "hint": "public ShippingProviderConfigs ⋃ pipe carriers ⋃ contracts ⋃ owned ConfigId",
     },
+    "full": {
+        "title": "Chuỗi đầy đủ: catalog_ext → continue → expand → live → hub",
+        "hint": "catalog thống nhất + tracking/SSR/flow + branch/shop + live probe + hub snapshot",
+    },
 }
 
 
@@ -1590,6 +1594,151 @@ def build_continue_priority(chains: list[dict[str, Any]]) -> list[dict[str, Any]
     )
 
 
+def attach_hops_to_extended(
+    extended: dict[str, Any],
+    *,
+    limit: int = 12,
+    expand: bool = True,
+    live: bool = True,
+    env: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Gắn continue/expand hops vào từng entry catalog mở rộng."""
+    env = env or load_env()
+    entries = list(extended.get("entries") or [])
+    # prioritize gaps then live volume
+    rank = {
+        "missing_secret": 0,
+        "contract_no_orders": 1,
+        "catalog_only": 2,
+        "shop_config_slot": 3,
+        "unassigned_or_unknown": 4,
+        "ok": 5,
+    }
+    entries.sort(
+        key=lambda e: (
+            rank.get(str(e.get("status")), 9),
+            -int(e.get("orders_n") or 0),
+        )
+    )
+    enriched: list[dict[str, Any]] = []
+    for i, e in enumerate(entries):
+        row = dict(e)
+        if i < limit:
+            # synthesize a mini-chain row for hop helpers
+            fake = {
+                "key": e.get("key"),
+                "status": e.get("status"),
+                "backend": e.get("backend"),
+                "provider": e.get("provider"),
+                "secret": e.get("secret"),
+                "secret_present": e.get("secret_present"),
+                "contracts_n": e.get("contracts_n"),
+                "orders_n": e.get("orders_n"),
+                "chain": e.get("chain"),
+                "buucuc_nodes": e.get("nodes") or (
+                    [{"buucuc": e.get("buucuc"), "backend": e.get("backend"), "orders": e.get("orders_n")}]
+                    if e.get("buucuc")
+                    else []
+                ),
+                "contracts": e.get("contracts") or [],
+            }
+            hopped = continue_chain_hops(
+                [fake],
+                limit=1,
+                expand=expand,
+                live=live,
+                env=env,
+            )
+            if hopped and hopped[0].get("continue_hops"):
+                row["continue_hops"] = hopped[0]["continue_hops"]
+                # merge next actions
+                nxt = list(e.get("next") or [])
+                for a in (row["continue_hops"].get("next_actions") or []):
+                    if a not in nxt:
+                        nxt.append(a)
+                row["next"] = nxt[:7]
+        enriched.append(row)
+    out = dict(extended)
+    out["entries"] = enriched
+    out["hops_attached"] = sum(1 for e in enriched if e.get("continue_hops"))
+    return out
+
+
+def load_hub_snapshot() -> dict[str, Any]:
+    """Snapshot backend·từng BC (per-hub mapper)."""
+    try:
+        from buucuc_backend_per_hub_mapper import build_report as hub_report
+
+        rep = hub_report(prefer_pipe=True)
+        hubs = rep.get("hubs") or []
+        sample: list[dict[str, Any]] = []
+        for h in hubs[:12]:
+            if not isinstance(h, dict):
+                continue
+            oms = h.get("oms") if isinstance(h.get("oms"), dict) else {}
+            contracts = h.get("contracts")
+            sample.append(
+                {
+                    "buucuc": h.get("buucuc") or h.get("name"),
+                    "primary_backend": h.get("primary_backend") or h.get("backend"),
+                    "kind": h.get("kind"),
+                    "pipe_status": h.get("pipe_status"),
+                    "orders": h.get("orders") or h.get("orders_n"),
+                    "oms": oms.get("status") or oms.get("channel") or h.get("oms_status"),
+                    "contracts_n": len(contracts)
+                    if isinstance(contracts, list)
+                    else h.get("contracts_n"),
+                    "shop_n": h.get("shop_n"),
+                    "kho_n": h.get("kho_n"),
+                }
+            )
+        return {
+            "ok": bool(rep.get("ok", True)),
+            "stats": rep.get("stats") or {},
+            "verdict": rep.get("verdict"),
+            "hubs_sample": sample,
+            "hubs_n": len(hubs),
+        }
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)[:160]}
+
+
+def record_full_events(extended: dict[str, Any], *, limit: int = 20) -> int:
+    conn = open_db(PIPE_DB)
+    if not conn:
+        return 0
+    n = 0
+    now = utc_now()
+    for e in (extended.get("entries") or [])[:limit]:
+        hops = e.get("continue_hops") or {}
+        detail = json.dumps(
+            {
+                "key": e.get("key"),
+                "status": e.get("status"),
+                "provider": e.get("provider"),
+                "backend": e.get("backend"),
+                "orders_n": e.get("orders_n"),
+                "sources": e.get("sources"),
+                "continued_chain": hops.get("continued_chain"),
+                "live_ok": (hops.get("live") or {}).get("ok_n"),
+                "branch_n": (hops.get("branches") or {}).get("branch_n"),
+                "next": (e.get("next") or [])[:3],
+            },
+            ensure_ascii=False,
+        )[:500]
+        conn.execute(
+            """
+            INSERT INTO pipe_events(at, event, van_tay, so_noi_bo, detail)
+            VALUES (?, 'bc_chain_full', NULL, ?, ?)
+            """,
+            (now, str(e.get("backend") or e.get("provider") or "")[:80], detail),
+        )
+        n += 1
+    conn.commit()
+    conn.close()
+    return n
+
+
 def build_report(
     *,
     q: str | None = None,
@@ -1609,6 +1758,12 @@ def build_report(
         return {"ok": False, "error": f"missing {PIPE_DB}", "checked_at": utc_now()}
 
     # presets
+    if chain_id == "full":
+        catalog_extend = True
+        continue_chain = True
+        expand = True
+        live = True
+        chain_id = "all"
     if chain_id == "catalog_ext":
         catalog_extend = True
         chain_id = "all"
@@ -1625,6 +1780,8 @@ def build_report(
         continue_chain = True
         catalog_extend = True
 
+    full_mode = catalog_extend and continue_chain and expand and live
+
     catalog = fetch_aship_catalog(env)
     backends = load_backends(env)
     contracts = load_contracts()
@@ -1636,6 +1793,19 @@ def build_report(
         nodes=nodes,
         env=env,
     )
+    if full_mode or (catalog_extend and expand):
+        extended = attach_hops_to_extended(
+            extended,
+            limit=max(enrich_limit, 12),
+            expand=expand,
+            live=live,
+            env=env,
+        )
+
+    hub_snap: dict[str, Any] = {}
+    if full_mode:
+        hub_snap = load_hub_snapshot()
+
     all_chains = build_chains(
         catalog=catalog, backends=backends, contracts=contracts, nodes=nodes, env=env
     )
@@ -1660,8 +1830,12 @@ def build_report(
         )
 
     events_n = 0
-    if expand and write_events:
+    if expand and write_events and not full_mode:
         events_n = record_expand_events(matched, limit=max(enrich_limit, 15))
+    full_events_n = 0
+    if full_mode and write_events:
+        full_events_n = record_full_events(extended, limit=max(enrich_limit, 15))
+        events_n = full_events_n
 
     status_c = Counter(c.get("status") for c in all_chains)
     gap_secret = [c for c in all_chains if c.get("secret") and not c.get("secret_present")]
@@ -1677,7 +1851,9 @@ def build_report(
         pipe_orders = int(conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0])
         conn.close()
 
-    if catalog_extend and not expand and not continue_chain:
+    if full_mode:
+        mode = "full"
+    elif catalog_extend and not expand and not continue_chain:
         mode = "catalog_ext"
     elif expand:
         mode = "expand"
@@ -1695,16 +1871,21 @@ def build_report(
         "expand": expand,
         "live": live,
         "catalog_extend": catalog_extend,
+        "full": full_mode,
         "chain_title": (
-            CHAIN_QUERIES["catalog_ext"]["title"]
-            if mode == "catalog_ext"
+            CHAIN_QUERIES["full"]["title"]
+            if full_mode
             else (
-                CHAIN_QUERIES["expand"]["title"]
-                if expand
+                CHAIN_QUERIES["catalog_ext"]["title"]
+                if mode == "catalog_ext"
                 else (
-                    CHAIN_QUERIES["continue"]["title"]
-                    if continue_chain
-                    else (CHAIN_QUERIES.get(chain_id or "all") or {}).get("title")
+                    CHAIN_QUERIES["expand"]["title"]
+                    if expand
+                    else (
+                        CHAIN_QUERIES["continue"]["title"]
+                        if continue_chain
+                        else (CHAIN_QUERIES.get(chain_id or "all") or {}).get("title")
+                    )
                 )
             )
         ),
@@ -1724,7 +1905,20 @@ def build_report(
         "  ORD --> KHO[kho]\n"
         "  ORD --> SHOP[shop]\n"
     )
-    if catalog_extend:
+    if full_mode:
+        atlas = (
+            "catalog_ext ⋃ owned ConfigId ⋃ pipe/HĐ → tracking → SSR/flow → "
+            "branch/shop → live probe → hub backend → next"
+        )
+        mermaid = (
+            "flowchart LR\n"
+            "  EXT[catalog_ext] --> HOP[continue hops]\n"
+            "  HOP --> BR[branch/shop]\n"
+            "  BR --> LIVE[live probe]\n"
+            "  LIVE --> HUB[per-hub backend]\n"
+            "  HUB --> NEXT[next CLI]\n"
+        )
+    elif catalog_extend:
         atlas = (
             "Aship public ⋃ owned ConfigId ⋃ pipe/HĐ carriers → backend → "
             "buucuc_nodes → orders → kho/shop"
@@ -1738,7 +1932,7 @@ def build_report(
             "  BE --> NODE[buucuc_nodes]\n"
             "  NODE --> ORD[orders]\n"
         )
-    if continue_chain:
+    if continue_chain and not full_mode:
         atlas += " → tracking → aship SSR → pipe_events/flow → next"
         mermaid += (
             "  ORD --> TRK[tracking_code/url]\n"
@@ -1748,7 +1942,7 @@ def build_report(
             "  EV --> NEXT[next CLI]\n"
             "  FLOW --> NEXT\n"
         )
-    if expand:
+    if expand and not full_mode:
         atlas += " → branch · live probe · shop/kho · bc_chain_expand"
         mermaid += (
             "  ORD --> BR[pipe_source branch]\n"
@@ -1771,14 +1965,31 @@ def build_report(
             if int(live_p.get("ok_n") or 0) > 0:
                 live_ok += 1
             branch_n += int((hops.get("branches") or {}).get("branch_n") or 0)
+        # also count from extended catalog hops in full mode
+        ext_hops_n = 0
+        if full_mode:
+            for e in extended.get("entries") or []:
+                hops = e.get("continue_hops") or {}
+                if not hops:
+                    continue
+                ext_hops_n += 1
+                for a in hops.get("next_actions") or []:
+                    act_c[a] += 1
+                if int((hops.get("live") or {}).get("ok_n") or 0) > 0:
+                    live_ok += 1
+                branch_n += int((hops.get("branches") or {}).get("branch_n") or 0)
         cont_summary = {
             "chains_continued": len(with_hops),
+            "ext_hops_attached": ext_hops_n if full_mode else extended.get("hops_attached"),
             "actions_n": sum(act_c.values()),
             "expand": expand,
             "live": live,
+            "full": full_mode,
             "live_ok_chains": live_ok,
             "branch_rows": branch_n,
             "events_written": events_n,
+            "hub_ok": hub_snap.get("ok") if full_mode else None,
+            "hubs_n": hub_snap.get("hubs_n") if full_mode else None,
             "tracking_coverages": [
                 {
                     "backend": c.get("backend"),
@@ -1796,11 +2007,13 @@ def build_report(
                 }
                 for c in with_hops[:12]
             ],
-            "top_next": [{"action": a, "n": n} for a, n in act_c.most_common(10)],
+            "top_next": [{"action": a, "n": n} for a, n in act_c.most_common(12)],
         }
 
     tag = ""
-    if mode == "catalog_ext":
+    if full_mode:
+        tag = " · FULL"
+    elif mode == "catalog_ext":
         tag = " · CATALOG MỞ RỘNG"
     elif expand:
         tag = " · MỞ RỘNG"
@@ -1828,6 +2041,7 @@ def build_report(
             "owned_in_public_catalog": catalog.get("owned_in_public_catalog"),
         },
         "catalog_extended": extended if catalog_extend else None,
+        "hub": hub_snap if full_mode else None,
         "stats": {
             "pipe_orders": pipe_orders,
             "backends": len(backends),
@@ -1841,8 +2055,10 @@ def build_report(
             "continue": continue_chain,
             "expand": expand,
             "live": live,
+            "full": full_mode,
             "catalog_extend": catalog_extend,
             "catalog_extended_n": extended.get("entries_n") if catalog_extend else 0,
+            "ext_hops_attached": extended.get("hops_attached") if catalog_extend else 0,
             "events_written": events_n,
             "continue_summary": cont_summary,
         },
@@ -1874,12 +2090,14 @@ def build_report(
             f"gap_secret={len(gap_secret)} · gap_0đơn={len(gap_orders)}"
             + (
                 f" · hops={cont_summary.get('chains_continued')} "
+                f"ext_hops={cont_summary.get('ext_hops_attached')} "
                 f"actions={cont_summary.get('actions_n')}"
                 + (
                     f" · branches={cont_summary.get('branch_rows')} "
                     f"live_ok={cont_summary.get('live_ok_chains')} "
+                    f"hubs={cont_summary.get('hubs_n')} "
                     f"events={events_n}"
-                    if expand
+                    if expand or full_mode
                     else ""
                 )
                 if continue_chain
@@ -1887,11 +2105,11 @@ def build_report(
             )
         ),
         "next": [
+            "python3 scripts/buucuc_catalog_chain_query_mapper.py --chain full --notify",
+            "python3 scripts/buucuc_catalog_chain_query_mapper.py --full --notify",
             "python3 scripts/buucuc_catalog_chain_query_mapper.py --chain catalog_ext --notify",
-            "python3 scripts/buucuc_catalog_chain_query_mapper.py --catalog-extend --notify",
-            "python3 scripts/buucuc_catalog_chain_query_mapper.py --expand --live --notify",
+            "python3 scripts/buucuc_backend_per_hub_mapper.py --notify",
             "python3 scripts/pipe_branch_mapper.py --notify",
-            "python3 scripts/tpos_ssr_pipe.py --notify",
             "python3 scripts/scan_buucuc_orders.py --days 3 --notify",
         ],
     }
@@ -1910,9 +2128,9 @@ def format_text(report: dict[str, Any]) -> str:
     A(f"Verdict: {report.get('verdict')}")
     A(f"Atlas: {report.get('atlas')}")
     A(
-        f"Query: chain={q.get('chain')} · continue={q.get('continue')} · "
-        f"expand={q.get('expand')} · live={q.get('live')} · q={q.get('q')} · "
-        f"buucuc={q.get('buucuc')} · backend={q.get('backend')} · provider={q.get('provider')}"
+        f"Query: chain={q.get('chain')} · full={q.get('full')} · continue={q.get('continue')} · "
+        f"expand={q.get('expand')} · live={q.get('live')} · catalog_extend={q.get('catalog_extend')} · "
+        f"q={q.get('q')} · buucuc={q.get('buucuc')} · backend={q.get('backend')}"
     )
     if q.get("chain_title"):
         A(f"Preset: {q.get('chain_title')}")
@@ -1925,11 +2143,12 @@ def format_text(report: dict[str, Any]) -> str:
     cont = report.get("continue") or st.get("continue_summary") or {}
     if cont:
         A(
-            f"Continue: hops={cont.get('chains_continued')} actions={cont.get('actions_n')}"
+            f"Continue: hops={cont.get('chains_continued')} ext_hops={cont.get('ext_hops_attached')} "
+            f"actions={cont.get('actions_n')}"
             + (
                 f" · branches={cont.get('branch_rows')} live_ok={cont.get('live_ok_chains')} "
-                f"events={cont.get('events_written')}"
-                if cont.get("expand")
+                f"hubs={cont.get('hubs_n')} events={cont.get('events_written')}"
+                if cont.get("expand") or cont.get("full")
                 else ""
             )
         )
@@ -1972,10 +2191,45 @@ def format_text(report: dict[str, Any]) -> str:
                 )
             if e.get("secret"):
                 A(f"      secret={e.get('secret')} present={e.get('secret_present')}")
+            hops = e.get("continue_hops") or {}
+            if hops:
+                A(f"      → hop: {hops.get('continued_chain')}")
+                live_p = hops.get("live") or {}
+                if live_p and not live_p.get("skipped"):
+                    A(f"      live: ok={live_p.get('ok_n')}/{live_p.get('probe_n')}")
+                    for p in (live_p.get("probes") or [])[:2]:
+                        A(
+                            f"        · {p.get('id')} ok={p.get('ok', p.get('status'))} "
+                            f"http={p.get('http')} order={p.get('order_code')}"
+                        )
+                br = hops.get("branches") or {}
+                if br.get("branch_n"):
+                    A(f"      branches×{br.get('branch_n')}: {br.get('pipe_sources')}")
             for a in (e.get("next") or [])[:2]:
                 A(f"      next▸ {a}")
+    hub = report.get("hub") or {}
+    if hub:
+        A("")
+        A(
+            f"=== Hub backend·từng BC === ok={hub.get('ok')} hubs={hub.get('hubs_n')} · "
+            f"{hub.get('verdict')}"
+        )
+        for h in (hub.get("hubs_sample") or [])[:10]:
+            A(
+                f"  · {h.get('buucuc')} → {h.get('primary_backend')} · "
+                f"orders={h.get('orders')} oms={h.get('oms')} HĐ={h.get('contracts_n')}"
+            )
     A("")
-    A("=== Chuỗi khớp" + (" · MỞ RỘNG" if q.get("expand") else (" · TIẾP TỤC" if q.get("continue") else (" · CATALOG EXT" if q.get("catalog_extend") else ""))) + " ===")
+    mode_label = ""
+    if q.get("full"):
+        mode_label = " · FULL"
+    elif q.get("expand"):
+        mode_label = " · MỞ RỘNG"
+    elif q.get("continue"):
+        mode_label = " · TIẾP TỤC"
+    elif q.get("catalog_extend"):
+        mode_label = " · CATALOG EXT"
+    A("=== Chuỗi khớp" + mode_label + " ===")
     icon = {
         "ok": "✅",
         "catalog_only": "⚪",
@@ -2125,11 +2379,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Mở rộng catalog thống nhất Aship+pipe+HĐ+ConfigId",
     )
     ap.add_argument(
+        "--full",
+        action="store_true",
+        help="Chuỗi đầy đủ: catalog_ext + continue + expand + live + hub",
+    )
+    ap.add_argument(
         "--live",
         action="store_true",
-        help="Trong --expand: probe GHN/SSR owned nhẹ",
+        help="Trong --expand/--full: probe GHN/SSR owned nhẹ",
     )
-    ap.add_argument("--no-events", action="store_true", help="Không ghi pipe_events khi expand")
+    ap.add_argument("--no-events", action="store_true", help="Không ghi pipe_events khi expand/full")
     ap.add_argument("--list-chains", action="store_true")
     ap.add_argument("--enrich-limit", type=int, default=12)
     ap.add_argument("--json", action="store_true")
@@ -2141,19 +2400,23 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{k:14} {v.get('title')} · {v.get('hint') or ''}")
         return 0
 
+    full = bool(args.full) or args.chain == "full"
     report = build_report(
         q=args.q,
         buucuc=args.buucuc,
         backend=args.backend,
         provider=args.provider,
-        chain_id=args.chain,
+        chain_id="full" if full else args.chain,
         enrich_limit=args.enrich_limit,
-        continue_chain=bool(args.continue_chain) or args.chain in {"continue", "expand"},
-        expand=bool(args.expand) or args.chain == "expand",
-        live=bool(args.live) or args.chain == "expand",
+        continue_chain=full
+        or bool(args.continue_chain)
+        or args.chain in {"continue", "expand", "full"},
+        expand=full or bool(args.expand) or args.chain in {"expand", "full"},
+        live=full or bool(args.live) or args.chain in {"expand", "full"},
         write_events=not args.no_events,
-        catalog_extend=bool(args.catalog_extend)
-        or args.chain in {"catalog_ext", "expand"}
+        catalog_extend=full
+        or bool(args.catalog_extend)
+        or args.chain in {"catalog_ext", "expand", "full"}
         or bool(args.expand),
     )
     paths = write_outputs(report)
