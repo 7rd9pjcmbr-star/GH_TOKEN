@@ -781,6 +781,23 @@ def fmt_inbox_scan(_a: dict | None = None) -> str:
         )
 
 
+def fmt_captcha_tg(_a: dict | None = None) -> str:
+    """Mở hộp thoại Telegram lấy captcha."""
+    try:
+        from telegram_captcha_pull import build_report, format_text
+
+        report = build_report(open_chat=True, wait=0, lookback=300, notify=False)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "telegram_captcha_pull.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Captcha TG lỗi: {e}\n"
+            "Chạy: python3 scripts/telegram_captcha_pull.py run --notify"
+        )
+
+
 def fmt_ngx_order(_a: dict | None = None) -> str:
     try:
         from nginx_order_embed import format_text, run_when_needed, write_outputs
@@ -1164,6 +1181,36 @@ def main() -> int:
                         )
                 text = (msg.get("text") or "").strip()
                 text_l = text.lower()
+                # GHN SSO JWT login / callback
+                if text and (
+                    "sso-v2.ghn.vn" in text_l
+                    or "/sso/jwt/login" in text_l
+                    or ("hopdongdientu.ghn.vn" in text_l and "id_token" in text_l)
+                    or ("app_key=" in text_l and "response_type=" in text_l and "ghn.vn" in text_l)
+                ):
+                    try:
+                        from ghn_sso_jwt_bridge import analyze_url, format_text as fmt_sso
+                        from ghn_sso_jwt_bridge import ingest as sso_ingest
+
+                        if "id_token=" in text_l or text.strip().startswith("eyJ"):
+                            payload = sso_ingest(url=text)
+                        else:
+                            payload = analyze_url(text, probe=True)
+                        send(
+                            token,
+                            str(msg["chat"]["id"]),
+                            "🔐 GHN SSO JWT\n\n" + fmt_sso(payload)[:3500],
+                            panel_keyboard(),
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        send(
+                            token,
+                            str(msg.get("chat", {}).get("id") or chat),
+                            f"❌ SSO JWT lỗi: `{e}`\n"
+                            "CLI: python3 scripts/ghn_sso_jwt_bridge.py analyze --url …",
+                            panel_keyboard(),
+                        )
+                    continue
                 # Frida + Accessibility capture → GHN token → orders
                 if text and (
                     '"source": "frida+a11y"' in text_l

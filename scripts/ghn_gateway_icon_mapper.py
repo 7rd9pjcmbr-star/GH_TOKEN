@@ -34,6 +34,8 @@ GHN_GATEWAY_ALIASES: dict[str, str] = {
     "online-gateway.ghn.vn": "online-gateway.ghn.vn",
     "dev-online-gateway.ghn.vn": "dev-online-gateway.ghn.vn",
     "sso.ghn.vn": "sso.ghn.vn",
+    "sso-v2.ghn.vn": "sso-v2.ghn.vn",
+    "hopdongdientu.ghn.vn": "hopdongdientu.ghn.vn",
     "5sao.ghn.vn": "5sao.ghn.vn",
 }
 
@@ -65,6 +67,26 @@ HOST_ICON_ROLE: dict[str, dict[str, str]] = {
         "call": "Ổ Khóa SSO",
         "motto": "portal login — không dùng dump",
         "base_paths": ("/v2/ssoLogin",),
+    },
+    "sso-v2.ghn.vn": {
+        "platform": "GHN",
+        "role": "sso_jwt_v2",
+        "icon": "lock",
+        "call": "Ổ Khóa SSO-v2",
+        "motto": "JWT login /sso/jwt/login → id_token (hopdongdientu)",
+        "base_paths": (
+            "/sso/jwt/login",
+            "/sso/jwt/logout",
+            "/auth-callback",
+        ),
+    },
+    "hopdongdientu.ghn.vn": {
+        "platform": "GHN",
+        "role": "econtract",
+        "icon": "lock",
+        "call": "Hợp Đồng Điện Tử",
+        "motto": "redirect_uri authorize nhận id_token SSO",
+        "base_paths": ("/authorize",),
     },
     "5sao.ghn.vn": {
         "platform": "GHN",
