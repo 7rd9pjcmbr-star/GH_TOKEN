@@ -200,6 +200,10 @@ def panel_keyboard() -> dict:
                 {"text": "⏭ Tiếp·chuỗi·BC", "callback_data": "q:bc_chain_cont"},
             ],
             [
+                {"text": "↗ Mở·rộng·chuỗi·BC", "callback_data": "q:bc_chain_exp"},
+                {"text": "🌿 Nhánh·pipe", "callback_data": "q:pipe_branch"},
+            ],
+            [
                 {"text": "📡 Quét BC remote", "callback_data": "q:bc_scan"},
             ],
             [
@@ -1070,6 +1074,57 @@ def fmt_bc_chain_cont(_a: dict | None = None) -> str:
         )
 
 
+def fmt_bc_chain_exp(_a: dict | None = None) -> str:
+    """Mở rộng chuỗi catalog BC → branch · live · shop/kho · events."""
+    try:
+        from buucuc_catalog_chain_query_mapper import (
+            build_report,
+            format_text,
+            write_outputs,
+        )
+
+        report = build_report(
+            chain_id="all",
+            continue_chain=True,
+            expand=True,
+            live=True,
+            enrich_limit=15,
+        )
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = (
+            ROOT
+            / "reports"
+            / "telegram-classify"
+            / "buucuc_catalog_chain_query_mapper.txt"
+        )
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Mở·rộng·chuỗi·BC lỗi: {e}\n"
+            "Chạy: python3 scripts/buucuc_catalog_chain_query_mapper.py --expand --live --notify"
+        )
+
+
+def fmt_pipe_branch(_a: dict | None = None) -> str:
+    """Mapper nhánh pipe_source → channel → backend → buucuc → kho."""
+    try:
+        from pipe_branch_mapper import build_report, format_text, write_outputs
+
+        report = build_report()
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "pipe_branch_mapper.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Nhánh·pipe lỗi: {e}\n"
+            "Chạy: python3 scripts/pipe_branch_mapper.py --notify"
+        )
+
+
 def fmt_rev_q(_a: dict | None = None) -> str:
     try:
         from order_pipe_reverse_query import build_report, format_text, write_outputs
@@ -1567,6 +1622,8 @@ HANDLERS = {
     "q:bc_hub": fmt_bc_hub,
     "q:bc_catalog": fmt_bc_catalog,
     "q:bc_chain_cont": fmt_bc_chain_cont,
+    "q:bc_chain_exp": fmt_bc_chain_exp,
+    "q:pipe_branch": fmt_pipe_branch,
     "q:rev_q": fmt_rev_q,
     "q:dg_tbl": fmt_dg_tbl,
     "q:aship": fmt_aship,

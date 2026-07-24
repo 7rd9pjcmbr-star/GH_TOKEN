@@ -12,7 +12,7 @@ Chuỗi:
 
 CLI query:
   --q TEXT | --buucuc | --backend | --provider | --chain
-  --continue | --list-chains | --notify | --json
+  --continue | --expand | --live | --list-chains | --notify | --json
 
 Policy: owned secrets only · no dump-login · reports gitignored.
 """
@@ -20,12 +20,14 @@ Policy: owned secrets only · no dump-login · reports gitignored.
 from __future__ import annotations
 
 import argparse
+import html as htmlmod
 import json
 import os
 import re
 import sqlite3
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
@@ -125,6 +127,10 @@ CHAIN_QUERIES: dict[str, dict[str, str]] = {
     "continue": {
         "title": "Tiếp tục chuỗi → tracking · SSR · flow · next",
         "hint": "hop sau orders/kho/shop: tracking_url → aship SSR → pipe_events → next CLI",
+    },
+    "expand": {
+        "title": "Mở rộng chuỗi → nhánh pipe · live probe · shop/kho · events",
+        "hint": "continue + branch paths + owned GHN/SSR probe + ghi pipe_events",
     },
 }
 
@@ -843,6 +849,274 @@ def hop_flow_samples(buucuc: str | None, *, limit: int = 5) -> list[dict[str, An
     return rows
 
 
+def hop_branch_paths(buucuc: str | None, *, limit: int = 8) -> dict[str, Any]:
+    """Nhánh pipe_source → channel → backend → buucuc → kho."""
+    conn = open_db(PIPE_DB)
+    if not conn:
+        return {"ok": False, "branches": []}
+    where = ""
+    args: list[Any] = []
+    if buucuc:
+        where = "WHERE upper(coalesce(buucuc,'')) LIKE ?"
+        args.append(f"%{buucuc.upper().split('/')[0]}%")
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            f"""
+            SELECT
+              COALESCE(pipe_source,'(null)') pipe_source,
+              COALESCE(channel,'(null)') channel,
+              COALESCE(backend,'(null)') backend,
+              COALESCE(buucuc,'(null)') buucuc,
+              COALESCE(kho,'(null)') kho,
+              COUNT(*) orders,
+              COUNT(DISTINCT shop_id) shop_n,
+              SUM(CASE WHEN tracking_code IS NOT NULL AND TRIM(tracking_code) != '' THEN 1 ELSE 0 END)
+                with_tracking
+            FROM orders
+            {where}
+            GROUP BY 1,2,3,4,5
+            ORDER BY orders DESC
+            LIMIT ?
+            """,
+            [*args, limit],
+        )
+    ]
+    conn.close()
+    for r in rows:
+        r["path"] = (
+            f"{r['pipe_source']} → {r['channel']} → {r['backend']} → "
+            f"buucuc:{r['buucuc']} → kho:{r['kho']} ×{r['orders']}"
+        )
+    return {
+        "ok": True,
+        "branch_n": len(rows),
+        "branches": rows,
+        "pipe_sources": dict(Counter(r["pipe_source"] for r in rows)),
+    }
+
+
+def hop_shop_kho_matrix(buucuc: str | None, *, limit: int = 8) -> dict[str, Any]:
+    conn = open_db(PIPE_DB)
+    if not conn:
+        return {"ok": False}
+    where = ""
+    args: list[Any] = []
+    if buucuc:
+        where = "WHERE upper(coalesce(buucuc,'')) LIKE ?"
+        args.append(f"%{buucuc.upper().split('/')[0]}%")
+    shops = [
+        dict(r)
+        for r in conn.execute(
+            f"""
+            SELECT COALESCE(shop_name, shop_id, '(no_shop)') shop, COUNT(*) n,
+                   COUNT(DISTINCT kho) kho_n
+            FROM orders {where}
+            GROUP BY 1 ORDER BY n DESC LIMIT ?
+            """,
+            [*args, limit],
+        )
+    ]
+    matrix = [
+        dict(r)
+        for r in conn.execute(
+            f"""
+            SELECT COALESCE(kho,'(none)') kho,
+                   COALESCE(shop_name, shop_id, '(no_shop)') shop,
+                   COUNT(*) n
+            FROM orders {where}
+            GROUP BY 1,2 ORDER BY n DESC LIMIT ?
+            """,
+            [*args, limit],
+        )
+    ]
+    conn.close()
+    return {"ok": True, "shops_top": shops, "kho_shop": matrix}
+
+
+def hop_live_probe(
+    c: dict[str, Any],
+    tracking: dict[str, Any],
+    env: dict[str, str],
+    *,
+    enabled: bool,
+) -> dict[str, Any]:
+    """Probe nhẹ owned: GHN token ping · Aship SSR 1 mã mẫu."""
+    if not enabled:
+        return {"ok": False, "skipped": True, "reason": "live_disabled"}
+    be = str(c.get("backend") or "")
+    probes: list[dict[str, Any]] = []
+
+    # GHN owned ping
+    if be == "GHN" and (env.get("GHN_API_TOKEN") or env.get("GHN_TOKEN") or "").strip():
+        token = (env.get("GHN_API_TOKEN") or env.get("GHN_TOKEN") or "").strip()
+        url = "https://online-gateway.ghn.vn/shiip/public-api/v2/shop/all"
+        st, body = http_json(
+            url,
+            headers={"Token": token, "Content-Type": "application/json"},
+        )
+        n_shops = None
+        if isinstance(body, dict):
+            data = body.get("data")
+            if isinstance(data, list):
+                n_shops = len(data)
+            elif isinstance(data, dict) and isinstance(data.get("shops"), list):
+                n_shops = len(data["shops"])
+        probes.append(
+            {
+                "id": "ghn_shop_all",
+                "http": st,
+                "status": "ok" if 200 <= st < 300 else ("auth_fail" if st in (401, 403) else f"http_{st}"),
+                "shops": n_shops,
+            }
+        )
+
+    # Aship SSR sample from tracking codes
+    samples = tracking.get("samples") or []
+    ssr_probe = None
+    for s in samples[:3]:
+        code = str(s.get("tracking_code") or "").strip()
+        prov = str(s.get("tracking_provider") or "").strip().lower()
+        if not code:
+            continue
+        # Prefer TPO / viettelpost / best; else use resolved provider
+        if code.upper().startswith("TPO"):
+            prov_q = "ViettelPost"
+        elif prov in {"viettelpost", "vtp", "best", "spx", "ghn", "jnt"}:
+            prov_q = {
+                "viettelpost": "ViettelPost",
+                "vtp": "ViettelPost",
+                "best": "BEST",
+            }.get(prov, prov)
+        else:
+            continue
+        url = "https://tracking.aship.app/order?" + urllib.parse.urlencode(
+            {"provider_code": code, "provider": prov_q}
+        )
+        st = 0
+        body = ""
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "OMS-bc-chain-expand", "Accept": "text/html"},
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                st = int(resp.status)
+                body = resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            st = int(e.code)
+            body = e.read().decode("utf-8", "replace") if e.fp else ""
+        except Exception as e:  # noqa: BLE001
+            ssr_probe = {"ok": False, "code": code, "provider": prov_q, "error": str(e)[:120]}
+            break
+        not_found = bool(re.search(r"(?i)không tồn tại|not found", body))
+        texts = [
+            htmlmod.unescape(t.strip())
+            for t in re.findall(r">([^<]{2,80})<", body)
+            if t.strip() and not re.search(r"[{}]|function|https?:", t)
+        ]
+        order_code = None
+        for i, t in enumerate(texts):
+            if t == "Mã đơn hàng:" and i + 1 < len(texts):
+                order_code = texts[i + 1]
+                break
+        ssr_probe = {
+            "ok": st == 200 and bool(order_code) and not not_found,
+            "http": st,
+            "code": code,
+            "provider": prov_q,
+            "order_code": order_code,
+            "not_found": not_found,
+            "url": url,
+        }
+        probes.append({"id": "aship_ssr_sample", **ssr_probe})
+        break
+
+    # Seed SSR if no sample but VTP/Best chain
+    if ssr_probe is None and be in {"ViettelPost", "Best"}:
+        code = "TPO1408375976"
+        prov_q = "ViettelPost" if be == "ViettelPost" else "BEST"
+        url = "https://tracking.aship.app/order?" + urllib.parse.urlencode(
+            {"provider_code": code, "provider": prov_q}
+        )
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "OMS-bc-chain-expand", "Accept": "text/html"}
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                st = int(resp.status)
+                body = resp.read().decode("utf-8", "replace")
+            texts = [
+                htmlmod.unescape(t.strip())
+                for t in re.findall(r">([^<]{2,80})<", body)
+                if t.strip() and not re.search(r"[{}]|function|https?:", t)
+            ]
+            order_code = None
+            for i, t in enumerate(texts):
+                if t == "Mã đơn hàng:" and i + 1 < len(texts):
+                    order_code = texts[i + 1]
+                    break
+            ssr_probe = {
+                "ok": st == 200 and bool(order_code),
+                "http": st,
+                "code": code,
+                "provider": prov_q,
+                "order_code": order_code,
+                "seed": True,
+                "url": url,
+            }
+            probes.append({"id": "aship_ssr_seed", **ssr_probe})
+        except Exception as e:  # noqa: BLE001
+            probes.append({"id": "aship_ssr_seed", "ok": False, "error": str(e)[:120]})
+
+    ok_n = sum(1 for p in probes if p.get("ok") or p.get("status") == "ok")
+    return {
+        "ok": bool(probes),
+        "skipped": False,
+        "probes": probes,
+        "ok_n": ok_n,
+        "probe_n": len(probes),
+    }
+
+
+def record_expand_events(chains: list[dict[str, Any]], *, limit: int = 20) -> int:
+    """Ghi pipe_events bc_chain_expand cho các chuỗi đã mở rộng."""
+    conn = open_db(PIPE_DB)
+    if not conn:
+        return 0
+    n = 0
+    now = utc_now()
+    for c in chains[:limit]:
+        hops = c.get("continue_hops") or {}
+        if not hops:
+            continue
+        detail = json.dumps(
+            {
+                "key": c.get("key"),
+                "status": c.get("status"),
+                "backend": c.get("backend"),
+                "orders_n": c.get("orders_n"),
+                "continued_chain": hops.get("continued_chain"),
+                "tracking_cov": (hops.get("tracking") or {}).get("coverage_pct"),
+                "branch_n": (hops.get("branches") or {}).get("branch_n"),
+                "live_ok": (hops.get("live") or {}).get("ok_n"),
+                "next": (hops.get("next_actions") or [])[:3],
+            },
+            ensure_ascii=False,
+        )[:500]
+        conn.execute(
+            """
+            INSERT INTO pipe_events(at, event, van_tay, so_noi_bo, detail)
+            VALUES (?, 'bc_chain_expand', NULL, ?, ?)
+            """,
+            (now, str(c.get("backend") or c.get("provider") or "")[:80], detail),
+        )
+        n += 1
+    conn.commit()
+    conn.close()
+    return n
+
+
 def next_actions_for_chain(c: dict[str, Any], hops: dict[str, Any]) -> list[str]:
     st = c.get("status")
     be = str(c.get("backend") or "")
@@ -862,19 +1136,27 @@ def next_actions_for_chain(c: dict[str, Any], hops: dict[str, Any]) -> list[str]
     if st == "unassigned_or_unknown":
         acts.append("python3 scripts/scan_buucuc_orders.py --days 3 --notify")
         acts.append("python3 scripts/order_pipe_reverse_query.py --continue-flow")
+        acts.append("python3 scripts/pipe_branch_mapper.py --notify")
     if int(c.get("orders_n") or 0) > 0:
         track = hops.get("tracking") or {}
         if int(track.get("with_tracking_url") or 0) < int(track.get("with_tracking_code") or 0):
             acts.append("python3 scripts/tracking_aship.py --notify  # gắn tracking_url thiếu")
         if be in {"GHN", "SPX-local", "J&T", "Pancake"} and buu:
-            acts.append(f"python3 scripts/buucuc_catalog_chain_query_mapper.py --buucuc {buu.split('/')[0]} --continue")
+            acts.append(
+                f"python3 scripts/buucuc_catalog_chain_query_mapper.py --buucuc {buu.split('/')[0]} --expand --live"
+            )
         if any(
             str(p.get("p") or "").lower() in {"viettelpost", "best", "vtp"}
             for p in (track.get("providers") or [])
         ) or be in {"ViettelPost", "Best"}:
             acts.append("python3 scripts/tpos_ssr_pipe.py --providers viettelpost,best --limit 40 --notify")
+        live = hops.get("live") or {}
+        if live.get("ok_n"):
+            acts.append("Live probe OK — giữ keepalive / scan định kỳ")
+        elif live.get("probes") and not live.get("skipped"):
+            acts.append("Live probe fail — kiểm tra token/SSR mã mẫu")
     if not acts:
-        acts.append("python3 scripts/buucuc_catalog_chain_query_mapper.py --chain all --continue --notify")
+        acts.append("python3 scripts/buucuc_catalog_chain_query_mapper.py --expand --live --notify")
     # dedupe preserve order
     seen: set[str] = set()
     out: list[str] = []
@@ -882,15 +1164,19 @@ def next_actions_for_chain(c: dict[str, Any], hops: dict[str, Any]) -> list[str]
         if a not in seen:
             seen.add(a)
             out.append(a)
-    return out[:6]
+    return out[:7]
 
 
 def continue_chain_hops(
     chains: list[dict[str, Any]],
     *,
     limit: int = 15,
+    expand: bool = False,
+    live: bool = False,
+    env: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Tiếp tục mỗi chuỗi: tracking → SSR/events → flow_path → next actions."""
+    """Tiếp tục / mở rộng mỗi chuỗi: tracking → SSR → flow → [branch·shop·live] → next."""
+    env = env or load_env()
     out: list[dict[str, Any]] = []
     for i, c in enumerate(chains[:limit]):
         buu = _primary_buucuc(c)
@@ -898,25 +1184,34 @@ def continue_chain_hops(
         tracking = hop_tracking(buu, be)
         ssr = hop_ssr_events(buu)
         flows = hop_flow_samples(buu, limit=4)
-        hops = {
+        hops: dict[str, Any] = {
             "tracking": tracking,
             "ssr_events": ssr,
             "flow_samples": flows,
         }
+        parts = [
+            c.get("chain"),
+            f"track:{tracking.get('with_tracking_code')}/{tracking.get('orders')}({tracking.get('coverage_pct')}%)",
+            f"aship_url:{tracking.get('aship_url')}",
+            f"ssr:{ssr.get('ssr_rows')}",
+            f"flow×{len(flows)}",
+        ]
+        if expand:
+            branches = hop_branch_paths(buu, limit=8)
+            shop_kho = hop_shop_kho_matrix(buu, limit=8)
+            live_p = hop_live_probe(c, tracking, env, enabled=live)
+            hops["branches"] = branches
+            hops["shop_kho"] = shop_kho
+            hops["live"] = live_p
+            parts.append(f"branch×{branches.get('branch_n')}")
+            parts.append(f"shop×{len((shop_kho.get('shops_top') or []))}")
+            if not live_p.get("skipped"):
+                parts.append(f"live:{live_p.get('ok_n')}/{live_p.get('probe_n')}")
         hops["next_actions"] = next_actions_for_chain(c, hops)
-        hops["continued_chain"] = chain_text(
-            [
-                c.get("chain"),
-                f"track:{tracking.get('with_tracking_code')}/{tracking.get('orders')}({tracking.get('coverage_pct')}%)",
-                f"aship_url:{tracking.get('aship_url')}",
-                f"ssr:{ssr.get('ssr_rows')}",
-                f"flow×{len(flows)}",
-            ]
-        )
+        hops["continued_chain"] = chain_text(parts)
         row = dict(c)
         row["continue_hops"] = hops
         out.append(row)
-    # keep remainder without deep hops
     for c in chains[limit:]:
         out.append(c)
     return out
@@ -950,15 +1245,25 @@ def build_report(
     chain_id: str | None = None,
     enrich_limit: int = 12,
     continue_chain: bool = False,
+    expand: bool = False,
+    live: bool = False,
+    write_events: bool = True,
 ) -> dict[str, Any]:
     env = load_env()
     if not PIPE_DB.is_file():
         return {"ok": False, "error": f"missing {PIPE_DB}", "checked_at": utc_now()}
 
-    # preset "continue" ⇒ continue mode on all chains
-    if chain_id == "continue":
+    # presets
+    if chain_id == "expand":
+        expand = True
+        continue_chain = True
+        live = True
+        chain_id = "all"
+    elif chain_id == "continue":
         continue_chain = True
         chain_id = "all"
+    if expand:
+        continue_chain = True
 
     catalog = fetch_aship_catalog(env)
     backends = load_backends(env)
@@ -979,7 +1284,17 @@ def build_report(
         matched = build_continue_priority(matched)
     matched = enrich_order_stats(matched, limit=enrich_limit)
     if continue_chain:
-        matched = continue_chain_hops(matched, limit=max(enrich_limit, 15))
+        matched = continue_chain_hops(
+            matched,
+            limit=max(enrich_limit, 15),
+            expand=expand,
+            live=live,
+            env=env,
+        )
+
+    events_n = 0
+    if expand and write_events:
+        events_n = record_expand_events(matched, limit=max(enrich_limit, 15))
 
     status_c = Counter(c.get("status") for c in all_chains)
     gap_secret = [c for c in all_chains if c.get("secret") and not c.get("secret_present")]
@@ -995,17 +1310,24 @@ def build_report(
         pipe_orders = int(conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0])
         conn.close()
 
+    mode = "expand" if expand else ("continue" if continue_chain else (chain_id or "all"))
     query_meta = {
         "q": q,
         "buucuc": buucuc,
         "backend": backend,
         "provider": provider,
-        "chain": "continue" if continue_chain and (chain_id or "all") == "all" else (chain_id or "all"),
+        "chain": mode,
         "continue": continue_chain,
+        "expand": expand,
+        "live": live,
         "chain_title": (
-            CHAIN_QUERIES["continue"]["title"]
-            if continue_chain
-            else (CHAIN_QUERIES.get(chain_id or "all") or {}).get("title")
+            CHAIN_QUERIES["expand"]["title"]
+            if expand
+            else (
+                CHAIN_QUERIES["continue"]["title"]
+                if continue_chain
+                else (CHAIN_QUERIES.get(chain_id or "all") or {}).get("title")
+            )
         ),
     }
 
@@ -1033,16 +1355,37 @@ def build_report(
             "  EV --> NEXT[next CLI]\n"
             "  FLOW --> NEXT\n"
         )
+    if expand:
+        atlas += " → branch · live probe · shop/kho · bc_chain_expand"
+        mermaid += (
+            "  ORD --> BR[pipe_source branch]\n"
+            "  BR --> LIVE[owned live probe]\n"
+            "  LIVE --> NEXT\n"
+            "  SHOP --> NEXT\n"
+        )
 
-    # continue summary
     cont_summary: dict[str, Any] = {}
     if continue_chain:
         with_hops = [c for c in matched if c.get("continue_hops")]
+        act_c: Counter[str] = Counter()
+        live_ok = 0
+        branch_n = 0
+        for c in with_hops:
+            hops = c.get("continue_hops") or {}
+            for a in hops.get("next_actions") or []:
+                act_c[a] += 1
+            live_p = hops.get("live") or {}
+            if int(live_p.get("ok_n") or 0) > 0:
+                live_ok += 1
+            branch_n += int((hops.get("branches") or {}).get("branch_n") or 0)
         cont_summary = {
             "chains_continued": len(with_hops),
-            "actions_n": sum(
-                len((c.get("continue_hops") or {}).get("next_actions") or []) for c in with_hops
-            ),
+            "actions_n": sum(act_c.values()),
+            "expand": expand,
+            "live": live,
+            "live_ok_chains": live_ok,
+            "branch_rows": branch_n,
+            "events_written": events_n,
             "tracking_coverages": [
                 {
                     "backend": c.get("backend"),
@@ -1053,18 +1396,17 @@ def build_report(
                     "aship_url": ((c.get("continue_hops") or {}).get("tracking") or {}).get(
                         "aship_url"
                     ),
+                    "branch_n": ((c.get("continue_hops") or {}).get("branches") or {}).get(
+                        "branch_n"
+                    ),
+                    "live_ok": ((c.get("continue_hops") or {}).get("live") or {}).get("ok_n"),
                 }
                 for c in with_hops[:12]
             ],
-            "top_next": [],
+            "top_next": [{"action": a, "n": n} for a, n in act_c.most_common(10)],
         }
-        # flatten unique next actions by frequency
-        act_c: Counter[str] = Counter()
-        for c in with_hops:
-            for a in (c.get("continue_hops") or {}).get("next_actions") or []:
-                act_c[a] += 1
-        cont_summary["top_next"] = [{"action": a, "n": n} for a, n in act_c.most_common(10)]
 
+    tag = " · MỞ RỘNG" if expand else (" · TIẾP TỤC" if continue_chain else "")
     report: dict[str, Any] = {
         "ok": True,
         "module": "buucuc_catalog_chain_query_mapper",
@@ -1096,6 +1438,9 @@ def build_report(
             "gap_secret_n": len(gap_secret),
             "gap_orders_n": len(gap_orders),
             "continue": continue_chain,
+            "expand": expand,
+            "live": live,
+            "events_written": events_n,
             "continue_summary": cont_summary,
         },
         "backends": backends,
@@ -1119,23 +1464,29 @@ def build_report(
             ],
         },
         "verdict": (
-            f"🏷 Catalog BC chuỗi{(' · TIẾP TỤC' if continue_chain else '')}: "
-            f"matched={len(matched)}/{len(all_chains)} · "
+            f"🏷 Catalog BC chuỗi{tag}: matched={len(matched)}/{len(all_chains)} · "
             f"catalog={len(catalog.get('providers') or [])} · "
             f"HĐ={len(contracts)} · nodes={len(nodes)} · "
             f"gap_secret={len(gap_secret)} · gap_0đơn={len(gap_orders)}"
             + (
                 f" · hops={cont_summary.get('chains_continued')} "
                 f"actions={cont_summary.get('actions_n')}"
+                + (
+                    f" · branches={cont_summary.get('branch_rows')} "
+                    f"live_ok={cont_summary.get('live_ok_chains')} "
+                    f"events={events_n}"
+                    if expand
+                    else ""
+                )
                 if continue_chain
                 else ""
             )
         ),
         "next": [
-            "python3 scripts/buucuc_catalog_chain_query_mapper.py --continue --notify",
-            "python3 scripts/buucuc_catalog_chain_query_mapper.py --chain continue --notify",
-            "python3 scripts/buucuc_catalog_chain_query_mapper.py --chain gap_secret --continue --notify",
-            "python3 scripts/buucuc_catalog_chain_query_mapper.py --chain ghn --continue --notify",
+            "python3 scripts/buucuc_catalog_chain_query_mapper.py --expand --live --notify",
+            "python3 scripts/buucuc_catalog_chain_query_mapper.py --chain expand --notify",
+            "python3 scripts/buucuc_catalog_chain_query_mapper.py --chain ghn --expand --live --notify",
+            "python3 scripts/pipe_branch_mapper.py --notify",
             "python3 scripts/tpos_ssr_pipe.py --notify",
             "python3 scripts/scan_buucuc_orders.py --days 3 --notify",
         ],
@@ -1155,7 +1506,8 @@ def format_text(report: dict[str, Any]) -> str:
     A(f"Verdict: {report.get('verdict')}")
     A(f"Atlas: {report.get('atlas')}")
     A(
-        f"Query: chain={q.get('chain')} · continue={q.get('continue')} · q={q.get('q')} · "
+        f"Query: chain={q.get('chain')} · continue={q.get('continue')} · "
+        f"expand={q.get('expand')} · live={q.get('live')} · q={q.get('q')} · "
         f"buucuc={q.get('buucuc')} · backend={q.get('backend')} · provider={q.get('provider')}"
     )
     if q.get("chain_title"):
@@ -1170,6 +1522,12 @@ def format_text(report: dict[str, Any]) -> str:
     if cont:
         A(
             f"Continue: hops={cont.get('chains_continued')} actions={cont.get('actions_n')}"
+            + (
+                f" · branches={cont.get('branch_rows')} live_ok={cont.get('live_ok_chains')} "
+                f"events={cont.get('events_written')}"
+                if cont.get("expand")
+                else ""
+            )
         )
     A("")
     cat = report.get("catalog") or {}
@@ -1180,7 +1538,7 @@ def format_text(report: dict[str, Any]) -> str:
     for p in cat.get("providers") or []:
         A(f"  · {p.get('provider')} id={p.get('id')} keys={p.get('config_keys')}")
     A("")
-    A("=== Chuỗi khớp" + (" · TIẾP TỤC" if q.get("continue") else "") + " ===")
+    A("=== Chuỗi khớp" + (" · MỞ RỘNG" if q.get("expand") else (" · TIẾP TỤC" if q.get("continue") else "")) + " ===")
     icon = {
         "ok": "✅",
         "catalog_only": "⚪",
@@ -1211,18 +1569,37 @@ def format_text(report: dict[str, Any]) -> str:
             )
         if hops:
             tr = hops.get("tracking") or {}
-            A(
-                f"      → continue: {hops.get('continued_chain')}"
-            )
+            A(f"      → continue: {hops.get('continued_chain')}")
             A(
                 f"      track: code={tr.get('with_tracking_code')} url={tr.get('with_tracking_url')} "
                 f"aship={tr.get('aship_url')} cov={tr.get('coverage_pct')}% · "
                 f"prov={[(x.get('p'), x.get('n')) for x in (tr.get('providers') or [])[:4]]}"
             )
             ssr = hops.get("ssr_events") or {}
-            A(f"      ssr_rows={ssr.get('ssr_rows')} · events_head={[(e.get('event'), e.get('n')) for e in (ssr.get('pipe_events_head') or [])[:4]]}")
+            A(
+                f"      ssr_rows={ssr.get('ssr_rows')} · "
+                f"events_head={[(e.get('event'), e.get('n')) for e in (ssr.get('pipe_events_head') or [])[:4]]}"
+            )
             for fl in (hops.get("flow_samples") or [])[:2]:
                 A(f"      flow×{fl.get('n')}: {(fl.get('flow_path') or '')[:140]}")
+            br = hops.get("branches") or {}
+            if br.get("branches"):
+                A(f"      branches×{br.get('branch_n')}: pipes={br.get('pipe_sources')}")
+                for b in (br.get("branches") or [])[:3]:
+                    A(f"        · {b.get('path')}")
+            sk = hops.get("shop_kho") or {}
+            if sk.get("shops_top"):
+                A(
+                    f"      shops={[(x.get('shop'), x.get('n')) for x in (sk.get('shops_top') or [])[:4]]}"
+                )
+            live_p = hops.get("live") or {}
+            if live_p and not live_p.get("skipped"):
+                A(f"      live: ok={live_p.get('ok_n')}/{live_p.get('probe_n')}")
+                for p in (live_p.get("probes") or [])[:3]:
+                    A(
+                        f"        · {p.get('id')} ok={p.get('ok', p.get('status'))} "
+                        f"http={p.get('http')} code={p.get('code')} order={p.get('order_code')}"
+                    )
             for a in (hops.get("next_actions") or [])[:3]:
                 A(f"      next▸ {a}")
     A("")
@@ -1300,6 +1677,17 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Tiếp tục chuỗi: tracking → SSR → flow → next actions",
     )
+    ap.add_argument(
+        "--expand",
+        action="store_true",
+        help="Mở rộng: continue + nhánh pipe + shop/kho + ghi events (+ --live)",
+    )
+    ap.add_argument(
+        "--live",
+        action="store_true",
+        help="Trong --expand: probe GHN/SSR owned nhẹ",
+    )
+    ap.add_argument("--no-events", action="store_true", help="Không ghi pipe_events khi expand")
     ap.add_argument("--list-chains", action="store_true")
     ap.add_argument("--enrich-limit", type=int, default=12)
     ap.add_argument("--json", action="store_true")
@@ -1318,7 +1706,10 @@ def main(argv: list[str] | None = None) -> int:
         provider=args.provider,
         chain_id=args.chain,
         enrich_limit=args.enrich_limit,
-        continue_chain=bool(args.continue_chain) or args.chain == "continue",
+        continue_chain=bool(args.continue_chain) or args.chain in {"continue", "expand"},
+        expand=bool(args.expand) or args.chain == "expand",
+        live=bool(args.live) or args.chain == "expand",
+        write_events=not args.no_events,
     )
     paths = write_outputs(report)
     text = format_text(report)
