@@ -169,6 +169,9 @@ def panel_keyboard() -> dict:
                 {"text": "🚢 Aship·TPOS ship", "callback_data": "q:aship_tpos"},
             ],
             [
+                {"text": "🔌 Pipe·TPOS·SSR", "callback_data": "q:tpos_ssr"},
+            ],
+            [
                 {"text": "🔎 Rà soát DB BC", "callback_data": "q:bc_audit"},
                 {"text": "🧬 Pipe kho·BC·FP", "callback_data": "q:pipe_fp"},
             ],
@@ -619,6 +622,24 @@ def fmt_aship_tpos(_a: dict | None = None) -> str:
         return (
             f"Aship·TPOS ship lỗi: {e}\n"
             "Chạy: python3 scripts/aship_tpos_ship_mapper.py --notify"
+        )
+
+
+def fmt_tpos_ssr(_a: dict | None = None) -> str:
+    """Pipe TPOS / Aship SSR scrape → DB."""
+    try:
+        from tpos_ssr_pipe import build_report, format_text, write_outputs
+
+        report = build_report(limit=40)
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "tpos_ssr_pipe.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Pipe TPOS SSR lỗi: {e}\n"
+            "Chạy: python3 scripts/tpos_ssr_pipe.py --notify"
         )
 
 
@@ -1440,6 +1461,7 @@ HANDLERS = {
     "q:kho_shop": fmt_kho_shop,
     "q:tpos_kho": fmt_tpos_kho,
     "q:aship_tpos": fmt_aship_tpos,
+    "q:tpos_ssr": fmt_tpos_ssr,
     "q:bc_db": fmt_bc_db,
     "q:bc_audit": fmt_bc_audit,
     "q:bc_scan": fmt_bc_scan,

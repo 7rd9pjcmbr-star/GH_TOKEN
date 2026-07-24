@@ -93,6 +93,11 @@ def resolve_provider(
         return "spx"
     if track.startswith(("GHN", "GHA")):
         return "ghn"
+    # TPOS / Aship ViettelPost mã VĐ
+    if track.startswith("TPO"):
+        return "viettelpost"
+    if track.startswith("BEST") or re.match(r"^BX\d+", track):
+        return "best"
     if re.match(r"^V\d+", track) or "VTP" in track:
         return "viettelpost"
     return None
