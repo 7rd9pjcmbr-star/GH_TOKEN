@@ -37,9 +37,17 @@ python3 scripts/access_token_rotate.py set --platform GHN --token YOUR_TOKEN
 python3 scripts/access_token_rotate.py ensure
 python3 scripts/access_token_rotate.py refresh --platform ViettelPost
 
+# Frida + Accessibility (owned) → GHN_API_TOKEN → gọi đơn
+python3 scripts/frida_a11y_ghn_bridge.py apply --raw 'https://online-gateway.ghn.vn/a5/public-api/printA5?token=UUID' --orders
+python3 scripts/ghn_access_token_orders.py run --frida-a11y secrets/frida_a11y_ghn.pending.json
+python3 scripts/access_token_rotate.py refresh --platform GHN --direct --frida-a11y FILE
+python3 scripts/nginx_order_embed.py ghn-frida-a11y --capture-file FILE --keep
+
 # Debug nội bộ (bỏ nginx) — không dùng production path
 python3 scripts/access_token_rotate.py apply-realtime --direct
 ```
+
+Schema capture: `config/frida_a11y_capture.example.json` · nginx `POST /v1/ghn/frida-a11y`.
 
 ## Env
 

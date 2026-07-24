@@ -878,6 +878,11 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="GHN: URL printA5?token=UUID → access token → gọi đơn",
     )
+    p_ref.add_argument(
+        "--frida-a11y",
+        default="",
+        help="GHN: capture Frida+Accessibility → access token → gọi đơn",
+    )
     p_ref.add_argument("--days", type=int, default=3, help="GHN orders window")
     p_ref.add_argument("--limit", type=int, default=50, help="GHN orders limit")
 
@@ -928,15 +933,33 @@ def main(argv: list[str] | None = None) -> int:
             }
         elif args.direct:
             if plat == "GHN":
-                report = refresh_ghn(
-                    fetch_orders=bool(args.orders) or bool(args.printA5),
-                    days=int(args.days),
-                    limit=int(args.limit),
-                    printA5=(args.printA5 or None),
-                )
+                if args.frida_a11y:
+                    from frida_a11y_ghn_bridge import apply_capture
+
+                    report = apply_capture(
+                        path=args.frida_a11y,
+                        days=int(args.days),
+                        limit=int(args.limit),
+                        fetch_orders=True,
+                        force=True,
+                    )
+                    report["platform"] = "GHN"
+                    report["via_nginx"] = False
+                    report["refresh"] = {
+                        "step_used": "frida+a11y→GHN_API_TOKEN→orders",
+                        "token_masked": (report.get("token") or {}).get("masked"),
+                    }
+                else:
+                    report = refresh_ghn(
+                        fetch_orders=bool(args.orders) or bool(args.printA5),
+                        days=int(args.days),
+                        limit=int(args.limit),
+                        printA5=(args.printA5 or None),
+                    )
+                    report["via_nginx"] = False
             else:
                 report = refresh_viettelpost()
-            report["via_nginx"] = False
+                report["via_nginx"] = False
         else:
             from nginx_order_embed import NginxOrderEmbed
 
@@ -946,18 +969,30 @@ def main(argv: list[str] | None = None) -> int:
                 report = {"ok": False, "error": "nginx embed chưa up", "start": started}
             else:
                 try:
-                    # GHN --orders / --printA5: chạy trực tiếp sau nginx ensure
-                    if plat == "GHN" and (args.orders or args.printA5):
-                        report = refresh_ghn(
-                            fetch_orders=True,
-                            days=int(args.days),
-                            limit=int(args.limit),
-                            printA5=(args.printA5 or None),
-                        )
-                        report["via_nginx"] = True
-                        report["pipeline"] = (
-                            "nginx→up→printA5→orders" if args.printA5 else "nginx→up→refresh_ghn+orders"
-                        )
+                    # GHN --orders / --printA5 / --frida-a11y
+                    if plat == "GHN" and (args.orders or args.printA5 or args.frida_a11y):
+                        if args.frida_a11y:
+                            res = mod.ghn_frida_a11y(
+                                path=args.frida_a11y,
+                                days=int(args.days),
+                                limit=int(args.limit),
+                                ensure=False,
+                            )
+                            payload = res.get("payload") if isinstance(res.get("payload"), dict) else {}
+                            report = dict(payload) if payload else {"ok": False, "error": res}
+                            report["via_nginx"] = True
+                            report["pipeline"] = "nginx→up→frida+a11y→orders"
+                        else:
+                            report = refresh_ghn(
+                                fetch_orders=True,
+                                days=int(args.days),
+                                limit=int(args.limit),
+                                printA5=(args.printA5 or None),
+                            )
+                            report["via_nginx"] = True
+                            report["pipeline"] = (
+                                "nginx→up→printA5→orders" if args.printA5 else "nginx→up→refresh_ghn+orders"
+                            )
                     else:
                         res = mod.token_refresh(plat)
                         payload = res.get("payload") if isinstance(res.get("payload"), dict) else {}

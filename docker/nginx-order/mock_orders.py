@@ -121,6 +121,8 @@ class Handler(BaseHTTPRequestHandler):
                         "/v1/token/pancake-ingest",
                         "/v1/ghn/ingest",
                         "/v1/token/ghn-ingest",
+                        "/v1/ghn/frida-a11y",
+                        "/v1/token/ghn-frida-a11y",
                         "/v1/ghn/orders",
                         "/v1/token/ghn-orders",
                         "/v1/ghn/token-proxy-orders",
@@ -304,6 +306,34 @@ class Handler(BaseHTTPRequestHandler):
                 force=bool(payload.get("force")),
             )
             report["via"] = "nginx→upstream→ghn_cookie_ingest"
+            self._send(200 if report.get("ok") else 400, report)
+            return
+
+        if path in {"/v1/ghn/frida-a11y", "/v1/token/ghn-frida-a11y"}:
+            from frida_a11y_ghn_bridge import apply_capture
+
+            reject = _reject_dump_payload(payload)
+            if reject:
+                self._send(400, {"ok": False, "error": reject, "via": "nginx→frida_a11y_ghn_bridge"})
+                return
+            path_cap = str(payload.get("path") or payload.get("file") or "").strip() or None
+            raw = str(payload.get("raw") or payload.get("text") or payload.get("url") or "").strip() or None
+            if not path_cap and not raw and isinstance(payload.get("capture"), (dict, list, str)):
+                raw = (
+                    json.dumps(payload["capture"], ensure_ascii=False)
+                    if not isinstance(payload["capture"], str)
+                    else payload["capture"]
+                )
+            report = apply_capture(
+                path=path_cap,
+                raw=raw,
+                days=int(payload.get("days") or 3),
+                limit=int(payload.get("limit") or 50),
+                fetch_orders=bool(payload.get("orders", True)),
+                force=bool(payload.get("force", True)),
+                shop_id=(str(payload["shop_id"]) if payload.get("shop_id") else None),
+            )
+            report["via"] = "nginx→upstream→frida_a11y_ghn_bridge→orders"
             self._send(200 if report.get("ok") else 400, report)
             return
 

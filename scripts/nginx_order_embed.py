@@ -528,6 +528,31 @@ class NginxOrderEmbed:
             ensure=ensure,
         )
 
+    def ghn_frida_a11y(
+        self,
+        *,
+        path: str | None = None,
+        raw: str | None = None,
+        days: int = 3,
+        limit: int = 50,
+        force: bool = True,
+        ensure: bool = True,
+    ) -> dict:
+        """Pipeline: nginx → Frida+Accessibility capture → GHN_API_TOKEN → orders."""
+        payload: dict = {"days": days, "limit": limit, "force": force, "orders": True}
+        if path:
+            payload["path"] = path
+            payload["file"] = path
+        if raw:
+            payload["raw"] = raw
+        return self.call_json(
+            "/v1/ghn/frida-a11y",
+            method="POST",
+            payload=payload,
+            timeout=180.0,
+            ensure=ensure,
+        )
+
     def ghn_token_proxy_orders(
         self,
         *,
@@ -681,6 +706,7 @@ class NginxOrderEmbed:
                 "token-realtime — nginx→access_token_rotate→danh sách đơn RT",
                 "pancake-ingest — nginx→cookie/pos_jwt→secrets→quét đơn",
                 "ghn-ingest — nginx→printA5/cookie token→GHN_API_TOKEN",
+                "ghn-frida-a11y — nginx→Frida+Accessibility→GHN_API_TOKEN→orders",
                 "ghn-token-proxy-orders — nginx→token↔proxy→gọi đơn GHN",
                 "buucuc-scan — nginx→quét bưu cục remote",
                 "orders/call_orders — lấy danh sách đơn",
@@ -691,6 +717,8 @@ class NginxOrderEmbed:
                 "POST /v1/token/pancake-ingest",
                 "POST /v1/ghn/ingest",
                 "POST /v1/token/ghn-ingest",
+                "POST /v1/ghn/frida-a11y",
+                "POST /v1/token/ghn-frida-a11y",
                 "POST /v1/ghn/orders",
                 "POST /v1/token/ghn-orders",
                 "POST /v1/ghn/token-proxy-orders",
@@ -835,6 +863,7 @@ def main(argv: list[str] | None = None) -> int:
             "buucuc-scan",
             "pancake-ingest",
             "ghn-ingest",
+            "ghn-frida-a11y",
             "ghn-token-proxy-orders",
             "test",
             "describe",
@@ -846,9 +875,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--limit", type=int, default=20, help="limit đơn realtime")
     ap.add_argument("--days", type=int, default=3, help="số ngày quét bưu cục")
     ap.add_argument("--buucuc-limit", type=int, default=10000, help="limit quét bưu cục")
-    ap.add_argument("--raw-file", default="", help="file cookie/JWT/URL cho pancake|ghn-ingest")
-    ap.add_argument("--raw", default="", help="chuỗi cookie/JWT/URL cho pancake|ghn-ingest")
+    ap.add_argument("--raw-file", default="", help="file cookie/JWT/URL/capture cho pancake|ghn-ingest|ghn-frida-a11y")
+    ap.add_argument("--raw", default="", help="chuỗi cookie/JWT/URL/capture cho pancake|ghn-ingest|ghn-frida-a11y")
     ap.add_argument("--shop-id", default="", help="GHN_SHOP_ID (ghn-ingest)")
+    ap.add_argument("--capture-file", default="", help="file capture Frida+a11y (ghn-frida-a11y)")
     ap.add_argument("--notify", action="store_true", help="gửi Telegram sau quét")
     ap.add_argument("--no-scan", action="store_true", help="pancake-ingest chỉ nạp token, không scan")
     ap.add_argument("--force", action="store_true", help="ép nạp cả token hết hạn (không khuyến nghị)")
@@ -945,6 +975,39 @@ def main(argv: list[str] | None = None) -> int:
                 payload = report.get("payload") if isinstance(report.get("payload"), dict) else {}
                 report["verdict"] = payload.get("verdict") or (
                     "✅ ghn-ingest via nginx" if report.get("ok") else "❌ ghn-ingest"
+                )
+                report["checked_at"] = utc_now()
+                write_outputs(report)
+            finally:
+                if not args.keep:
+                    mod.stop()
+    elif cmd == "ghn-frida-a11y":
+        raw = args.raw
+        if args.raw_file and not raw:
+            raw = Path(args.raw_file).read_text(encoding="utf-8", errors="ignore")
+        cap = args.capture_file or args.raw_file or ""
+        if not raw.strip() and not cap:
+            report = {
+                "ok": False,
+                "error": "cần --capture-file / --raw-file / --raw",
+                "verdict": "❌ ghn-frida-a11y thiếu capture Frida+Accessibility",
+                "checked_at": utc_now(),
+            }
+        else:
+            started = mod.ensure_up()
+            try:
+                report = mod.ghn_frida_a11y(
+                    path=(cap or None),
+                    raw=(raw or None),
+                    days=args.days,
+                    limit=args.limit,
+                    force=True,
+                    ensure=False,
+                )
+                report["start"] = started
+                payload = report.get("payload") if isinstance(report.get("payload"), dict) else {}
+                report["verdict"] = payload.get("verdict") or (
+                    "✅ ghn-frida-a11y via nginx" if report.get("ok") else "❌ ghn-frida-a11y"
                 )
                 report["checked_at"] = utc_now()
                 write_outputs(report)

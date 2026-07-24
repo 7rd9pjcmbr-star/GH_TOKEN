@@ -171,6 +171,9 @@ def panel_keyboard() -> dict:
             ],
             [
                 {"text": "📦 Nhúng GHN token", "callback_data": "q:ghn_ingest"},
+                {"text": "🧬 Frida·a11y·GHN", "callback_data": "q:frida_a11y_ghn"},
+            ],
+            [
                 {"text": "🌊 Ngược·dòng chảy", "callback_data": "q:rev_q"},
             ],
             [
@@ -641,6 +644,37 @@ def fmt_ghn_ingest(_a: dict | None = None) -> str:
     )[:3800]
 
 
+def fmt_frida_a11y_ghn(_a: dict | None = None) -> str:
+    """Áp dụng Frida + Accessibility → GHN access token → gọi đơn."""
+    path = ROOT / "reports" / "telegram-classify" / "frida_a11y_ghn_bridge.txt"
+    last = path.read_text(encoding="utf-8")[:1400] if path.is_file() else "(chưa chạy bridge)"
+    try:
+        from frida_a11y_ghn_bridge import apply_capture, format_text
+
+        # Auto: pending / latest AES bundle nếu có token trong capture
+        report = apply_capture(fetch_orders=True, days=3, limit=50, force=True)
+        write_path = ROOT / "reports" / "telegram-classify" / "frida_a11y_ghn_bridge.txt"
+        body = format_text(report)
+        if write_path.is_file():
+            last = write_path.read_text(encoding="utf-8")[:1400]
+        else:
+            last = body[:1400]
+    except Exception as e:  # noqa: BLE001
+        last = f"(auto apply lỗi: {e})\n{last}"
+    return (
+        "🧬 FRIDA + ACCESSIBILITY → GHN TOKEN → ĐƠN\n\n"
+        "Owned capture only (không dump / không bypass SSL):\n"
+        "1) Export từ máy/app GHN sở hữu (printA5 / header Token / a11y text)\n"
+        "2) Schema: config/frida_a11y_capture.example.json\n"
+        "3) secrets/frida_a11y_ghn.pending.json hoặc gửi printA5 URL\n\n"
+        "CLI:\n"
+        "python3 scripts/frida_a11y_ghn_bridge.py apply --orders\n"
+        "python3 scripts/ghn_access_token_orders.py run --frida-a11y FILE\n"
+        "python3 scripts/nginx_order_embed.py ghn-frida-a11y --capture-file FILE --keep\n\n"
+        f"Kết quả:\n{last}"
+    )[:3800]
+
+
 def fmt_pipe_fp(_a: dict | None = None) -> str:
     try:
         from order_pipe_kho_buucuc_db import build_report, format_text, write_outputs
@@ -931,6 +965,7 @@ HANDLERS = {
     "q:bc_scan": fmt_bc_scan,
     "q:pancake_ingest": fmt_pancake_ingest,
     "q:ghn_ingest": fmt_ghn_ingest,
+    "q:frida_a11y_ghn": fmt_frida_a11y_ghn,
     "q:pipe_fp": fmt_pipe_fp,
     "q:rev_q": fmt_rev_q,
     "q:dg_tbl": fmt_dg_tbl,
@@ -1125,6 +1160,31 @@ def main() -> int:
                         )
                 text = (msg.get("text") or "").strip()
                 text_l = text.lower()
+                # Frida + Accessibility capture → GHN token → orders
+                if text and (
+                    '"source": "frida+a11y"' in text_l
+                    or '"source":"frida+a11y"' in text_l
+                    or ("frida" in text_l and "a11y" in text_l and ("printa5" in text_l or "ghn" in text_l))
+                ):
+                    try:
+                        from frida_a11y_ghn_bridge import apply_capture, format_text as fmt_bridge
+
+                        payload = apply_capture(raw=text, fetch_orders=True, days=3, limit=50, force=True)
+                        send(
+                            token,
+                            str(msg["chat"]["id"]),
+                            "🧬 Frida+a11y → GHN\n\n" + fmt_bridge(payload)[:3500],
+                            panel_keyboard(),
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        send(
+                            token,
+                            str(msg.get("chat", {}).get("id") or chat),
+                            f"❌ Frida+a11y bridge lỗi: `{e}`\n"
+                            "CLI: python3 scripts/frida_a11y_ghn_bridge.py apply --orders",
+                            panel_keyboard(),
+                        )
+                    continue
                 # Nhúng GHN printA5 / cookie token
                 if text and (
                     "printa5" in text_l

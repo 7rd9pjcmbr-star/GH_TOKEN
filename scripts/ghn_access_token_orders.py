@@ -480,6 +480,11 @@ def main(argv: list[str] | None = None) -> int:
         help="URL printA5?token=UUID → lấy access token → gọi đơn",
     )
     p_run.add_argument(
+        "--frida-a11y",
+        default="",
+        help="Capture Frida+Accessibility (file JSON/text/AES) → token → gọi đơn",
+    )
+    p_run.add_argument(
         "--no-force-printA5",
         action="store_true",
         help="Không ghi token nếu printA5 probe fail",
@@ -545,6 +550,16 @@ def main(argv: list[str] | None = None) -> int:
                     else f"status={orders.get('status')} · {orders.get('detail')}"
                 ),
             }
+    elif getattr(args, "frida_a11y", None):
+        from frida_a11y_ghn_bridge import apply_capture
+
+        report = apply_capture(
+            path=args.frida_a11y,
+            days=args.days,
+            limit=args.limit,
+            fetch_orders=True,
+            force=not args.no_force_printA5,
+        )
     else:
         report = get_token_and_fetch_orders(
             days=args.days,
