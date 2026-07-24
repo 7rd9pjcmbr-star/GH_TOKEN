@@ -538,6 +538,29 @@ def pull_documents(token: str, *, chat_id: str | None = None, wait: int = 0) -> 
         dest_name = safe if safe.startswith(day) else f"{day}_{safe}"
         dest_dir = DUMPS if is_dump_kind(kind) else INBOX
         dest = dest_dir / dest_name
+        size_hint = int(doc.get("file_size") or 0)
+        # Bot API ~20MB — stealer archives GB-size: metadata stub only
+        if size_hint > 20 * 1024 * 1024 or is_dump_kind(kind) and size_hint > 5 * 1024 * 1024:
+            stub_dir = DUMPS / "_large_meta"
+            stub_dir.mkdir(parents=True, exist_ok=True)
+            stub = stub_dir / f"{upd['update_id']}_{safe}.STUB.txt"
+            stub.write_text(
+                "STUB — Telegram Bot API cannot download this file (size/limit)\n"
+                f"orig_name={name}\nfile_id={doc.get('file_id')}\n"
+                f"size_bytes={size_hint}\nkind={kind}\n"
+                f"policy=no_dump_login no_execute\nat={utc_now()}\n",
+                encoding="utf-8",
+            )
+            skipped.append(
+                {
+                    "file": name,
+                    "reason": f"too_large_or_dump_meta size={size_hint}",
+                    "stub": str(stub),
+                    "kind": kind,
+                    "dump": True,
+                }
+            )
+            continue
         try:
             download_file(token, doc["file_id"], dest)
             meta = {
