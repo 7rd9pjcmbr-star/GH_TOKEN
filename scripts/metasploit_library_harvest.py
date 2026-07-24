@@ -289,7 +289,8 @@ def harvest(*, modules_root: Path | None = None, refresh: bool = False) -> dict[
         ROLE_MAP[c]: knowledge["totals"].get(c, 0) for c in CLASSES
     }
     knowledge["knowledge_notes"] = [
-        "MSF = catalog kỹ thuật tấn công khai → triage CVE/TTP, không chạy exploit.",
+        "KIỂM THỬ: python3 scripts/metasploit_testing_knowledge.py (playbook P1–P6)",
+        "MSF = catalog kỹ thuật attack công khai → triage CVE/TTP, không chạy exploit.",
         "exploit/* → CVE → patch/detection backlog (malware-static).",
         "auxiliary/scanner|gather → harden checklist (security-audit) — không scan prod.",
         "payloads|encoders|evasion → signature/YARA only (noExploitGeneration).",
@@ -304,6 +305,8 @@ def harvest(*, modules_root: Path | None = None, refresh: bool = False) -> dict[
         f"auxiliary={knowledge['totals'].get('auxiliary')}"
     )
     knowledge["next"] = [
+        "⭐ python3 scripts/metasploit_testing_knowledge.py  # KIẾN THỨC KIỂM THỬ",
+        "Đọc reports/telegram-classify/metasploit_testing_knowledge.txt",
         "Đọc reports/telegram-classify/metasploit_library_knowledge.txt",
         "CVE triage: reports/telegram-classify/metasploit_cve_index.csv",
         "python3 scripts/metasploit_suite_mapper.py",
@@ -341,6 +344,11 @@ def format_text(knowledge: dict[str, Any]) -> str:
         f"modules có CVE: {s.get('modules_with_cve')}"
     )
     L("Policy: readonly catalog · no exploit run · no payload gen")
+    L("")
+    L("⭐ KIẾN THỨC KIỂM THỬ (playbook):")
+    L("   python3 scripts/metasploit_testing_knowledge.py")
+    L("   Panel: 🧪 MSF·kiểm thử")
+    L("   File: reports/telegram-classify/metasploit_testing_knowledge.txt")
     L("")
     L("=== Theo class ===")
     for c in CLASSES:

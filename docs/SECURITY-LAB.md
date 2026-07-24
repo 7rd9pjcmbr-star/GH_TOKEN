@@ -56,6 +56,18 @@ python3 scripts/metasploit_suite_mapper.py harvest
 Báo cáo: `metasploit_library_knowledge.txt|json` · `metasploit_cve_index.csv`  
 (trong `reports/telegram-classify/`, gitignored). Panel: **📚 MSF·kiến thức**.
 
+## Kiến thức kiểm thử (playbook)
+
+Đây mới là **kiểm thử** — phases P1–P6, checklist scanner family, CVE backlog, MaMoLab audit:
+
+```bash
+python3 scripts/metasploit_testing_knowledge.py
+python3 scripts/metasploit_testing_knowledge.py --with-harvest
+```
+
+Báo cáo: `reports/telegram-classify/metasploit_testing_knowledge.txt`  
+Panel: **🧪 MSF·kiểm thử**. Không chạy exploit / msfvenom / scan prod.
+
 ## Quy trình an toàn
 
 1. Không mở/chạy mẫu trên máy làm việc chính.

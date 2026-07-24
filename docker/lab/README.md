@@ -36,4 +36,6 @@ Mapper taxonomy (host, phòng thủ):
 ```bash
 python3 scripts/metasploit_suite_mapper.py
 python3 scripts/metasploit_library_harvest.py   # full library knowledge (readonly)
+python3 scripts/metasploit_testing_knowledge.py # playbook kiểm thử P1–P6
+python3 scripts/metasploit_suite_mapper.py test
 ```

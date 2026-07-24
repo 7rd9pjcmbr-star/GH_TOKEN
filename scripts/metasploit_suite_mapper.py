@@ -366,6 +366,8 @@ def build_report(*, inventory: bool = True) -> dict[str, Any]:
         },
         "mermaid": mermaid(),
         "next": [
+            "⭐ python3 scripts/metasploit_testing_knowledge.py  # KIẾN THỨC KIỂM THỬ",
+            "python3 scripts/metasploit_suite_mapper.py test",
             "python3 scripts/metasploit_suite_mapper.py --json",
             "python3 scripts/metasploit_library_harvest.py  # rà soát toàn bộ modules/",
             "python3 scripts/metasploit_suite_mapper.py harvest",
@@ -374,7 +376,9 @@ def build_report(*, inventory: bool = True) -> dict[str, Any]:
         ],
         "knowledge_harvest": {
             "cli": "python3 scripts/metasploit_library_harvest.py",
+            "testing_cli": "python3 scripts/metasploit_testing_knowledge.py",
             "reports": [
+                "reports/telegram-classify/metasploit_testing_knowledge.txt",
                 "reports/telegram-classify/metasploit_library_knowledge.txt",
                 "reports/telegram-classify/metasploit_cve_index.csv",
             ],
@@ -471,6 +475,22 @@ def run_harvest(*, refresh: bool = False, as_json: bool = False) -> int:
     return 0 if report.get("ok") else 1
 
 
+def run_testing(*, as_json: bool = False, with_harvest: bool = False) -> int:
+    """Playbook kiến thức kiểm thử (P1–P6)."""
+    from metasploit_testing_knowledge import build_report, format_text
+
+    if with_harvest:
+        from metasploit_library_harvest import harvest
+
+        harvest(refresh=False)
+    report = build_report()
+    if as_json:
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+    else:
+        print(format_text(report))
+    return 0 if report.get("ok") else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="Mapper thư viện Metasploit Suite (phòng thủ — không exploit)"
@@ -479,16 +499,19 @@ def main(argv: list[str] | None = None) -> int:
         "command",
         nargs="?",
         default="map",
-        choices=("map", "harvest"),
-        help="map=taxonomy · harvest=rà soát toàn bộ modules/",
+        choices=("map", "harvest", "test", "testing"),
+        help="map=taxonomy · harvest=catalog · test=kiến thức kiểm thử",
     )
     ap.add_argument("--no-inventory", action="store_true", help="Bỏ quét local MSF")
     ap.add_argument("--refresh", action="store_true", help="(harvest) clone lại sparse modules/")
+    ap.add_argument("--with-harvest", action="store_true", help="(test) chạy harvest trước")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--mermaid", action="store_true")
     args = ap.parse_args(argv)
     if args.command == "harvest":
         return run_harvest(refresh=args.refresh, as_json=args.json)
+    if args.command in ("test", "testing"):
+        return run_testing(as_json=args.json, with_harvest=args.with_harvest)
     report = build_report(inventory=not args.no_inventory)
     if args.mermaid:
         print(report.get("mermaid") or "")
