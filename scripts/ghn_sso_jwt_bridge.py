@@ -40,10 +40,13 @@ PENDING_URL = SECRETS / "ghn_sso_login.url"
 READY_URL = SECRETS / "ghn_sso_login.ready.url"
 APP_META = SECRETS / "ghn_sso_app.json"
 PENDING_TOKEN = SECRETS / "ghn_sso_id_token.pending"
+PENDING_CODE = SECRETS / "ghn_sso_auth_code.pending"
 STATE_PATH = SECRETS / "ghn_sso_jwt.state.json"
 
 SSO_HOST = "sso-v2.ghn.vn"
 DEFAULT_REDIRECT_URI = "http://hopdongdientu.ghn.vn/authorize"
+# app_key chính thức từ Portal247 ServerSSOLoginUrl (hopdongdientu)
+HOPDONG_APP_KEY = "e2b09bde-9b9d-41aa-bc89-7289eaff48ea"
 GATEWAY = "https://online-gateway.ghn.vn"
 API = {
     "login": f"{GATEWAY}/sso-v2/public-api/staff/login",
@@ -133,6 +136,8 @@ def parse_sso_login_url(raw: str) -> dict[str, Any]:
         "redirect_uri_empty": False,
         "id_token": None,
         "code": None,
+        "previous_path": None,
+        "previous_path_decoded": None,
         "state": None,
         "nonce": None,
         "scope": None,
@@ -148,13 +153,20 @@ def parse_sso_login_url(raw: str) -> dict[str, Any]:
         out.update({"ok": True, "kind": "bare_jwt", "id_token": text})
         return out
 
+    # bare auth code (UUID) — không nhầm với JWT
+    if UUID_RE.fullmatch(text) and not text.startswith("eyJ"):
+        out.update({"ok": True, "kind": "bare_auth_code", "code": text})
+        return out
+
+    # relative authorize?code=… → giả lập hopdong host
+    if text.lower().startswith("authorize?") or text.lower().startswith("/authorize?"):
+        text = "http://hopdongdientu.ghn.vn/" + text.lstrip("/")
+
     # fragment may hold id_token
-    if "#" in text and "://" in text:
+    if "#" in text and ("://" in text or text.startswith("authorize")):
         base, frag = text.split("#", 1)
-        qs = parse_qs(frag)
     else:
         base, frag = text, ""
-        qs = {}
 
     try:
         u = urlparse(base)
@@ -163,7 +175,7 @@ def parse_sso_login_url(raw: str) -> dict[str, Any]:
         return out
 
     q = parse_qs(u.query)
-    # merge fragment params
+    # merge fragment params (id_token thường nằm ở hash)
     for k, v in parse_qs(frag).items():
         q.setdefault(k, v)
 
@@ -190,17 +202,38 @@ def parse_sso_login_url(raw: str) -> dict[str, Any]:
     out["redirect_uri_empty"] = not bool(out["redirect_uri"])
     out["id_token"] = first("id_token", "idToken", "token")
     out["code"] = first("code")
+    out["previous_path"] = first("previous_path", "previousPath")
     out["state"] = first("state")
     out["nonce"] = first("nonce")
     out["scope"] = first("scope")
 
+    if out["previous_path"]:
+        try:
+            import base64
+
+            raw_pp = out["previous_path"]
+            pad = "=" * ((4 - len(raw_pp) % 4) % 4)
+            out["previous_path_decoded"] = base64.urlsafe_b64decode(
+                (raw_pp + pad).encode()
+            ).decode("utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            out["previous_path_decoded"] = None
+
+    # UUID trong id_token field → coi là auth code, không phải JWT
+    if out["id_token"] and not JWT_RE.search(out["id_token"]) and UUID_RE.fullmatch(out["id_token"]):
+        out["code"] = out["code"] or out["id_token"]
+        out["id_token"] = None
+
     if out["id_token"] and JWT_RE.search(out["id_token"]):
         out["ok"] = True
         out["kind"] = "callback_id_token"
+    elif out["code"] and UUID_RE.fullmatch(out["code"]):
+        out["ok"] = True
+        out["kind"] = "callback_auth_code"
     elif host == SSO_HOST or "sso" in host:
         out["ok"] = True
         out["kind"] = "sso_login_page"
-    elif out["app_key"] or "hopdongdientu" in host:
+    elif out["app_key"] or "hopdongdientu" in host or path.rstrip("/").endswith("authorize"):
         out["ok"] = True
         out["kind"] = "authorize_redirect"
     else:
@@ -220,6 +253,81 @@ def parse_sso_login_url(raw: str) -> dict[str, Any]:
     rt = (out.get("response_type") or "").lower()
     out["response_type_api"] = RESPONSE_TYPE_MAP.get(rt, rt or None)
     return out
+
+
+def hopdong_login_url() -> str:
+    return (
+        f"https://{SSO_HOST}/sso/jwt/login?"
+        + urlencode(
+            {
+                "app_key": HOPDONG_APP_KEY,
+                "response_type": "id_token",
+                "redirect_uri": DEFAULT_REDIRECT_URI,
+            }
+        )
+    )
+
+
+def stage_auth_code(code: str, *, meta: dict | None = None) -> dict[str, Any]:
+    """Stage OAuth/SSO authorization code (UUID) — không phải JWT, không dùng làm shiip Token."""
+    SECRETS.mkdir(parents=True, exist_ok=True)
+    c = (code or "").strip()
+    if not c:
+        return {"ok": False, "error": "code trống"}
+    PENDING_CODE.write_text(c + "\n", encoding="utf-8")
+    try:
+        os.chmod(PENDING_CODE, 0o600)
+    except OSError:
+        pass
+    try:
+        from access_token_rotate import upsert_env_values
+
+        upsert_env_values({"GHN_SSO_AUTH_CODE": c})
+    except Exception:  # noqa: BLE001
+        pass
+    # probe nhanh: code UUID ≠ staff Token / shiip Token
+    probe = {"staff_detail": None, "shiip_shop": None}
+    try:
+        code_h, body = http_json(
+            API["detail"],
+            method="GET",
+            headers={"Token": c},
+        )
+        probe["staff_detail"] = {
+            "http": code_h,
+            "message": (body.get("code_message_value") or body.get("message") or "")[:120]
+            if isinstance(body, dict)
+            else str(body)[:80],
+        }
+    except Exception as e:  # noqa: BLE001
+        probe["staff_detail"] = {"error": str(e)[:120]}
+    try:
+        code_h, body = http_json(
+            f"{GATEWAY}/shiip/public-api/v2/shop/all",
+            method="GET",
+            headers={"Token": c},
+        )
+        probe["shiip_shop"] = {
+            "http": code_h,
+            "message": (body.get("code_message_value") or body.get("message") or "")[:120]
+            if isinstance(body, dict)
+            else str(body)[:80],
+        }
+    except Exception as e:  # noqa: BLE001
+        probe["shiip_shop"] = {"error": str(e)[:120]}
+    return {
+        "ok": True,
+        "code_masked": _mask(c),
+        "staged": str(PENDING_CODE),
+        "probe": probe,
+        "usable_as_shiip_token": False,
+        "usable_as_staff_token": (probe.get("staff_detail") or {}).get("http") == 200,
+        "meta": meta or {},
+        "note": (
+            "authorization_code / OIDC code — app backend đổi code→token. "
+            "Hopdongdientu cần id_token JWT (eyJ…), không phải UUID code."
+        ),
+    }
 
 
 def with_redirect_uri(url: str, redirect_uri: str = DEFAULT_REDIRECT_URI) -> str:
@@ -447,6 +555,8 @@ def analyze_url(url: str, *, probe: bool = True) -> dict[str, Any]:
     }
     if parsed.get("id_token"):
         report["parsed"]["id_token_masked"] = _mask(parsed["id_token"])
+    if parsed.get("code"):
+        report["parsed"]["code_masked"] = _mask(parsed["code"])
     if parsed.get("ok") and parsed.get("kind") == "sso_login_page":
         staged = stage_login_url(url)
         report["staged"] = staged.get("staged")
@@ -472,9 +582,26 @@ def analyze_url(url: str, *, probe: bool = True) -> dict[str, Any]:
                 "python3 scripts/ghn_sso_jwt_bridge.py ingest --url '<callback>'",
                 "hoặc dán JWT: python3 scripts/ghn_sso_jwt_bridge.py ingest --id-token '<JWT>'",
             ]
+    if parsed.get("ok") and parsed.get("kind") in {"callback_auth_code", "bare_auth_code"}:
+        staged = stage_auth_code(
+            parsed.get("code") or "",
+            meta={"via": "analyze", "previous_path_decoded": parsed.get("previous_path_decoded")},
+        )
+        report["auth_code"] = {k: v for k, v in staged.items() if k != "meta"}
+        report["warning"] = (
+            "Callback có authorization code (UUID), không phải id_token JWT. "
+            "Hopdongdientu ParseJwt cần eyJ… — dùng đúng app_key Portal247."
+        )
+        report["next"] = [
+            f"Login hopdong đúng app: {hopdong_login_url()}",
+            "Copy FULL callback có #id_token=eyJ… (không chỉ ?code=UUID)",
+            "python3 scripts/ghn_sso_jwt_bridge.py ingest --url '<full-callback>'",
+        ]
     if probe:
         report["probe"] = probe_sso_apis()
         report["ok"] = bool(parsed.get("ok") and report["probe"].get("ok"))
+    elif parsed.get("ok"):
+        report["ok"] = True
     if parsed.get("ok"):
         report["verdict"] = (
             f"✅ SSO JWT URL · kind={parsed.get('kind')} · "
@@ -482,6 +609,12 @@ def analyze_url(url: str, *, probe: bool = True) -> dict[str, Any]:
             f"rt={parsed.get('response_type')}→{parsed.get('response_type_api')} · "
             f"redirect={parsed.get('redirect_uri') or ('(empty→fixed)' if report.get('redirect_fixed') else None)}"
         )
+        if parsed.get("kind") in {"callback_auth_code", "bare_auth_code"}:
+            report["verdict"] = (
+                f"✅ Auth code staged · {_mask(parsed.get('code'))} · "
+                f"prev={parsed.get('previous_path_decoded') or parsed.get('previous_path') or '—'} · "
+                "chưa phải id_token JWT"
+            )
         if not report.get("next"):
             report["next"] = [
                 "Đăng nhập owned trên trình duyệt (mã NV + mật khẩu + OTP nếu có)",
@@ -534,6 +667,34 @@ def ingest(
                 "Mở ready URL, login owned, copy redirect có id_token",
                 f"Ready: {staged.get('ready_url')}",
                 "python3 scripts/ghn_sso_jwt_bridge.py ingest --url '<callback>'",
+            ]
+            write_outputs(report)
+            return report
+        if parsed.get("kind") in {"callback_auth_code", "bare_auth_code"} or (
+            parsed.get("code") and not token
+        ):
+            staged = stage_auth_code(
+                parsed.get("code") or "",
+                meta={
+                    "via": "ingest",
+                    "previous_path": parsed.get("previous_path"),
+                    "previous_path_decoded": parsed.get("previous_path_decoded"),
+                    "host": parsed.get("host"),
+                },
+            )
+            report["auth_code"] = {
+                k: v for k, v in staged.items() if k != "meta"
+            }
+            report["ok"] = bool(staged.get("ok"))
+            report["verdict"] = (
+                f"✅ Đã stage authorization code · {staged.get('code_masked')} — "
+                "KHÔNG phải id_token JWT / KHÔNG dùng được làm Token shiip"
+            )
+            report["next"] = [
+                "Hopdongdientu cần callback có id_token=eyJ… (JWT), không phải code=UUID",
+                f"Login đúng app hopdong: {hopdong_login_url()}",
+                "Sau login: copy FULL URL (kể cả phần #id_token=eyJ…) rồi ingest lại",
+                "Hoặc DevTools → Application → Cookie `Token` / printA5 owned cho shiip orders",
             ]
             write_outputs(report)
             return report
@@ -596,9 +757,16 @@ def write_outputs(report: dict[str, Any]) -> dict[str, str]:
     REPORTS.mkdir(parents=True, exist_ok=True)
     SECRETS.mkdir(parents=True, exist_ok=True)
     slim = json.loads(json.dumps(report, ensure_ascii=False, default=str))
-    # never persist raw id_token in reports
+    # never persist raw id_token / auth code in reports
     if isinstance(slim.get("apply"), dict):
         slim["apply"].pop("id_token", None)
+    parsed = slim.get("parsed")
+    if isinstance(parsed, dict) and parsed.get("code"):
+        parsed["code_masked"] = _mask(parsed.get("code"))
+        parsed.pop("code", None)
+    if isinstance(parsed, dict) and parsed.get("id_token"):
+        parsed["id_token_masked"] = _mask(parsed.get("id_token"))
+        parsed.pop("id_token", None)
     jp = REPORTS / "ghn_sso_jwt_bridge.json"
     tp = REPORTS / "ghn_sso_jwt_bridge.txt"
     jp.write_text(json.dumps(slim, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -633,8 +801,21 @@ def format_text(report: dict[str, Any]) -> str:
         lines.append(f"redirect={p.get('redirect_uri')}")
         if p.get("id_token_masked"):
             lines.append(f"id_token={p.get('id_token_masked')}")
+        if p.get("code_masked") or p.get("code"):
+            lines.append(f"code={p.get('code_masked') or _mask(p.get('code'))}")
+        if p.get("previous_path_decoded") or p.get("previous_path"):
+            lines.append(
+                f"previous_path={p.get('previous_path_decoded') or p.get('previous_path')}"
+            )
     if report.get("staged"):
         lines.append(f"staged: {report.get('staged')}")
+    if report.get("auth_code"):
+        ac = report["auth_code"]
+        lines.append(f"auth_code_staged={ac.get('staged')} usable_shiip={ac.get('usable_as_shiip_token')}")
+        for name, info in (ac.get("probe") or {}).items():
+            lines.append(
+                f"  · probe {name}: http={info.get('http')} {info.get('message') or info.get('error') or ''}"
+            )
     if report.get("ready_url"):
         lines.append(f"ready: {report.get('ready_url')[:220]}")
     if report.get("warning"):
