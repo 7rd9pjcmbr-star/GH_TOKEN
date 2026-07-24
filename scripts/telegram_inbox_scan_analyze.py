@@ -50,6 +50,7 @@ DUMP_HINTS = (
     "otp",
     "dump",
     "stealer",
+    "onlylogs",
     "internal_search",
     "leaks.",
     "leak_",
