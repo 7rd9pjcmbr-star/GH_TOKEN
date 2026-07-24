@@ -29,6 +29,20 @@ def interconnect_ghn(*, notify: bool = False, scan: bool = True, days: int = 3, 
 
     steps: dict[str, Any] = {}
 
+    # 0) Pipe + role atlas
+    try:
+        from ghn_pipe_role_mapper import build_report as pipe_role_map
+
+        atlas = pipe_role_map(apply=True, probe_gateway=False)
+        steps["pipe_roles"] = {
+            "ok": atlas.get("ok"),
+            "verdict": atlas.get("verdict"),
+            "summary": atlas.get("summary"),
+            "fetch_roles": (atlas.get("roles") or {}).get("fetch"),
+        }
+    except Exception as e:  # noqa: BLE001
+        steps["pipe_roles"] = {"ok": False, "error": str(e)[:160]}
+
     # 1) Gateway icon alias
     try:
         from ghn_gateway_icon_mapper import map_host, upsert_order_api_hosts
@@ -250,7 +264,7 @@ def format_text(report: dict[str, Any]) -> str:
     lines.append(f"Feedback: {ic.get('feedback')}")
     lines.append("")
     steps = report.get("steps") or {}
-    for name in ("gateway", "roles", "deep", "maintain", "oms", "keepalive", "scan"):
+    for name in ("pipe_roles", "gateway", "roles", "deep", "maintain", "oms", "keepalive", "scan", "orders"):
         st = steps.get(name)
         if not st:
             continue
@@ -266,6 +280,8 @@ def format_text(report: dict[str, Any]) -> str:
                 lines.append(f"  · {c.get('id')}: {c.get('status')} — {c.get('detail')}")
         if name == "scan" and st.get("roles"):
             lines.append(f"  roles: {st.get('roles')}")
+        if name == "pipe_roles" and st.get("fetch_roles"):
+            lines.append(f"  fetch_roles: {st.get('fetch_roles')}")
     lines.append("")
     lines.append("Policy: owned-only · no dump-login")
     return "\n".join(lines)

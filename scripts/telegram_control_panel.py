@@ -695,6 +695,23 @@ def fmt_pipe_fp(_a: dict | None = None) -> str:
         )
 
 
+def fmt_ghn_pipe_roles(_a: dict | None = None) -> str:
+    """Mapper đường ống dẫn + role GHN."""
+    try:
+        from ghn_pipe_role_mapper import build_report, format_text
+
+        report = build_report(apply=True, probe_gateway=True)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "ghn_pipe_role_mapper.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"GHN ống·role lỗi: {e}\n"
+            "Chạy: python3 scripts/ghn_pipe_role_mapper.py --apply"
+        )
+
+
 def fmt_rev_q(_a: dict | None = None) -> str:
     try:
         from order_pipe_reverse_query import build_report, format_text, write_outputs
@@ -987,6 +1004,7 @@ HANDLERS = {
     "q:ghn_ingest": fmt_ghn_ingest,
     "q:frida_a11y_ghn": fmt_frida_a11y_ghn,
     "q:pipe_fp": fmt_pipe_fp,
+    "q:ghn_pipe_roles": fmt_ghn_pipe_roles,
     "q:rev_q": fmt_rev_q,
     "q:dg_tbl": fmt_dg_tbl,
     "q:aship": fmt_aship,
