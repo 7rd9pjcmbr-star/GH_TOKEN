@@ -132,6 +132,10 @@ CHAIN_QUERIES: dict[str, dict[str, str]] = {
         "title": "Mở rộng chuỗi → nhánh pipe · live probe · shop/kho · events",
         "hint": "continue + branch paths + owned GHN/SSR probe + ghi pipe_events",
     },
+    "catalog_ext": {
+        "title": "Mở rộng catalog BC thống nhất (Aship + pipe + HĐ + ConfigId)",
+        "hint": "public ShippingProviderConfigs ⋃ pipe carriers ⋃ contracts ⋃ owned ConfigId",
+    },
 }
 
 
@@ -232,6 +236,340 @@ def fetch_aship_catalog(env: dict[str, str]) -> dict[str, Any]:
         "owned_config_ids": owned,
         "owned_in_public_catalog": in_catalog,
         "ok": st == 200 and bool(providers),
+    }
+
+
+def build_extended_catalog(
+    *,
+    catalog: dict[str, Any],
+    backends: list[dict[str, Any]],
+    contracts: list[dict[str, Any]],
+    nodes: list[dict[str, Any]],
+    env: dict[str, str],
+) -> dict[str, Any]:
+    """Catalog BC thống nhất: Aship public ⋃ pipe/HĐ ⋃ owned ConfigId shop."""
+    be_by_id = {str(b.get("id")): b for b in backends}
+    contracts_by_be: dict[str, list[dict]] = defaultdict(list)
+    for c in contracts:
+        contracts_by_be[str(c.get("backend") or "")].append(c)
+
+    nodes_by_root: dict[str, list[dict]] = defaultdict(list)
+    for n in nodes:
+        buu = str(n.get("buucuc") or "")
+        root = buu.split("/")[0]
+        nodes_by_root[root].append(n)
+        if buu != root:
+            nodes_by_root[buu].append(n)
+
+    entries: dict[str, dict[str, Any]] = {}
+
+    def upsert(key: str, **fields: Any) -> dict[str, Any]:
+        row = entries.get(key) or {
+            "key": key,
+            "sources": [],
+            "provider": None,
+            "catalog_id": None,
+            "config_keys": [],
+            "backend": None,
+            "buucuc": None,
+            "in_aship_public": False,
+            "owned_config_slot": None,
+            "owned_config_id": None,
+            "contracts_n": 0,
+            "contracts": [],
+            "orders_n": 0,
+            "nodes": [],
+            "secret": None,
+            "secret_present": None,
+            "status": "unknown",
+            "chain": None,
+            "next": [],
+        }
+        for k, v in fields.items():
+            if k == "sources" and isinstance(v, str):
+                if v not in row["sources"]:
+                    row["sources"].append(v)
+            elif k == "sources" and isinstance(v, list):
+                for s in v:
+                    if s not in row["sources"]:
+                        row["sources"].append(s)
+            elif k == "nodes" and isinstance(v, list):
+                # merge unique by buucuc+backend
+                seen = {(x.get("buucuc"), x.get("backend")) for x in row["nodes"]}
+                for x in v:
+                    sig = (x.get("buucuc"), x.get("backend"))
+                    if sig not in seen:
+                        row["nodes"].append(x)
+                        seen.add(sig)
+            elif k == "contracts" and isinstance(v, list):
+                seen = {x.get("contract_id") for x in row["contracts"]}
+                for x in v:
+                    if x.get("contract_id") not in seen:
+                        row["contracts"].append(x)
+                        seen.add(x.get("contract_id"))
+            elif k == "config_keys" and isinstance(v, list):
+                for ck in v:
+                    if ck not in row["config_keys"]:
+                        row["config_keys"].append(ck)
+            elif v is not None and (row.get(k) in (None, [], 0, False, "") or k in {
+                "status", "chain", "orders_n", "contracts_n", "secret", "secret_present",
+                "backend", "buucuc", "provider", "catalog_id", "owned_config_slot",
+                "owned_config_id", "in_aship_public",
+            }):
+                if k == "orders_n":
+                    # sum unique node orders if nodes present later; keep max of explicit values as floor
+                    row[k] = max(int(row.get(k) or 0), int(v or 0))
+                elif k == "in_aship_public":
+                    row[k] = bool(row.get(k) or v)
+                else:
+                    row[k] = v
+        entries[key] = row
+        return row
+
+    # 1) Aship public
+    for p in catalog.get("providers") or []:
+        prov = str(p.get("provider") or "")
+        be_id = PROVIDER_TO_BACKEND.get(prov) or PROVIDER_TO_BACKEND.get(prov.upper()) or prov
+        be = be_by_id.get(be_id)
+        confs = contracts_by_be.get(be_id) or []
+        node_list = nodes_by_root.get(prov) or nodes_by_root.get(be_id) or []
+        if prov == "ViettelPost" and not node_list:
+            node_list = nodes_by_root.get("VTP") or []
+        orders_n = sum(int(n.get("orders") or 0) for n in node_list)
+        secret = (be or {}).get("secret")
+        secret_present = (be or {}).get("secret_present")
+        if secret is None and be_id == "ViettelPost":
+            secret = "VIETTELPOST_TOKEN"
+            secret_present = bool((env.get(secret) or "").strip())
+        status = "ok"
+        if secret and not secret_present:
+            status = "missing_secret"
+        elif orders_n == 0 and confs:
+            status = "contract_no_orders"
+        elif orders_n == 0 and not confs:
+            status = "catalog_only"
+        upsert(
+            f"aship:{prov}",
+            sources="aship_public",
+            provider=prov,
+            catalog_id=p.get("id"),
+            config_keys=p.get("config_keys") or [],
+            backend=be_id,
+            buucuc=prov,
+            in_aship_public=True,
+            contracts_n=len(confs),
+            contracts=[
+                {
+                    "contract_id": c.get("contract_id"),
+                    "shop_id": c.get("shop_id"),
+                    "shop_name": c.get("shop_name"),
+                    "account_name": c.get("account_name"),
+                }
+                for c in confs[:5]
+            ],
+            orders_n=orders_n,
+            nodes=[
+                {
+                    "buucuc": n.get("buucuc"),
+                    "backend": n.get("backend"),
+                    "orders": n.get("orders"),
+                }
+                for n in node_list[:5]
+            ],
+            secret=secret,
+            secret_present=secret_present,
+            status=status,
+        )
+
+    # 2) Owned ConfigId shop-side slots
+    owned = catalog.get("owned_config_ids") or {}
+    owned_map = {
+        "user": ("ASHIP_CONFIG_ID", None, "shop_config"),
+        "vtp": ("ASHIP_CARRIER_VTP_CONFIG_ID", "ViettelPost", "carrier_config"),
+        "best": ("ASHIP_CARRIER_BEST_KONTUM_CONFIG_ID", "Best", "carrier_config"),
+    }
+    in_pub = catalog.get("owned_in_public_catalog") or {}
+    for slot, (env_key, prov_hint, kind) in owned_map.items():
+        cid = owned.get(slot)
+        if not cid:
+            continue
+        be_id = PROVIDER_TO_BACKEND.get(prov_hint or "") if prov_hint else None
+        upsert(
+            f"owned_cfg:{slot}",
+            sources="owned_config_id",
+            provider=prov_hint or "AshipShop",
+            catalog_id=cid,
+            backend=be_id or "aship_shop",
+            buucuc=prov_hint,
+            owned_config_slot=slot,
+            owned_config_id=cid,
+            in_aship_public=bool(in_pub.get(slot)),
+            status="shop_config_slot" if not in_pub.get(slot) else "ok",
+            secret="ASHIP_TOKEN_SHIP",
+            secret_present=bool((env.get("ASHIP_TOKEN_SHIP") or "").strip()),
+        )
+
+    # 3) Pipe / contract carriers not in Aship public
+    aship_names = {str(p.get("provider") or "") for p in (catalog.get("providers") or [])}
+    # from contracts
+    for c in contracts:
+        be_id = str(c.get("backend") or "")
+        buu = str(c.get("buucuc") or be_id)
+        prov = str(c.get("carrier") or c.get("partner_name") or buu)
+        if prov in aship_names or be_id in {"GHN", "ViettelPost"} and prov in {"GHN", "VTP", "ViettelPost"}:
+            # already covered via aship key — still enrich
+            key = f"aship:{'ViettelPost' if prov in {'VTP', 'ViettelPost'} else prov if prov in aship_names else be_id}"
+            if key not in entries:
+                key = f"pipe:{be_id or buu}"
+        else:
+            key = f"pipe:{be_id or buu}"
+        be = be_by_id.get(be_id)
+        node_list = nodes_by_root.get(buu) or nodes_by_root.get(be_id) or []
+        orders_n = sum(int(n.get("orders") or 0) for n in node_list)
+        secret = c.get("secret") or (be or {}).get("secret")
+        secret_present = (
+            bool((env.get(str(secret)) or "").strip())
+            if secret
+            else (be or {}).get("secret_present")
+        )
+        status = "ok" if orders_n > 0 else "contract_no_orders"
+        if secret and not secret_present:
+            status = "missing_secret"
+        upsert(
+            key,
+            sources="contract",
+            provider=prov,
+            backend=be_id,
+            buucuc=buu,
+            contracts_n=1,
+            contracts=[
+                {
+                    "contract_id": c.get("contract_id"),
+                    "shop_id": c.get("shop_id"),
+                    "shop_name": c.get("shop_name"),
+                    "account_name": c.get("account_name"),
+                }
+            ],
+            orders_n=orders_n,
+            nodes=[
+                {
+                    "buucuc": n.get("buucuc"),
+                    "backend": n.get("backend"),
+                    "orders": n.get("orders"),
+                }
+                for n in node_list[:5]
+            ],
+            secret=secret,
+            secret_present=secret_present,
+            status=status,
+        )
+
+    # from nodes (Pancake, J&T, UNASSIGNED…)
+    for n in nodes:
+        buu = str(n.get("buucuc") or "")
+        root = buu.split("/")[0]
+        if root in aship_names or root in {"VTP"}:
+            continue
+        be_pipe = str(n.get("backend") or "")
+        be_id = BUUCUC_TO_BACKEND.get(root) or be_pipe or root
+        key = f"pipe:{root}"
+        be = be_by_id.get(be_id)
+        status = "ok"
+        if root.startswith("UNASSIGNED") or root.startswith("UNKNOWN"):
+            status = "unassigned_or_unknown"
+        upsert(
+            key,
+            sources="buucuc_node",
+            provider=root,
+            backend=be_id,
+            buucuc=root,
+            orders_n=int(n.get("orders") or 0),
+            nodes=[
+                {
+                    "buucuc": n.get("buucuc"),
+                    "backend": n.get("backend"),
+                    "orders": n.get("orders"),
+                }
+            ],
+            secret=(be or {}).get("secret"),
+            secret_present=(be or {}).get("secret_present"),
+            status=status,
+            in_aship_public=False,
+        )
+
+    # finalize chain + next
+    out_list: list[dict[str, Any]] = []
+    for row in entries.values():
+        row["contracts_n"] = len(row.get("contracts") or []) or int(row.get("contracts_n") or 0)
+        # recompute orders from unique nodes (avoid double-count)
+        node_orders = 0
+        seen_nb: set[tuple] = set()
+        for n in row.get("nodes") or []:
+            sig = (n.get("buucuc"), n.get("backend"))
+            if sig in seen_nb:
+                continue
+            seen_nb.add(sig)
+            node_orders += int(n.get("orders") or 0)
+        if node_orders:
+            row["orders_n"] = node_orders
+        elif not row.get("orders_n"):
+            row["orders_n"] = 0
+        row["chain"] = chain_text(
+            [
+                "+".join(row.get("sources") or []) or "catalog",
+                f"provider:{row.get('provider')}",
+                f"cfg:{row.get('catalog_id')}" if row.get("catalog_id") else None,
+                f"backend:{row.get('backend')}",
+                f"HĐ×{row.get('contracts_n')}",
+                f"orders={row.get('orders_n')}",
+            ]
+        )
+        acts: list[str] = []
+        st = row.get("status")
+        if st == "missing_secret":
+            acts.append(f"Điền {row.get('secret')} owned")
+        if st == "catalog_only":
+            acts.append("Catalog public chưa có đơn/HĐ — chờ ship qua Aship hoặc bỏ qua")
+        if st == "contract_no_orders":
+            acts.append("HĐ có tip nhưng 0 đơn — scan/remap carrier")
+        if st == "shop_config_slot":
+            acts.append("ConfigId shop-side — dùng tokenShip/Aship API tạo đơn, không khớp public Id")
+        if st == "unassigned_or_unknown":
+            acts.append("Gán ĐVVC / quét BC remote")
+        if row.get("in_aship_public") and int(row.get("orders_n") or 0) > 0:
+            acts.append("Chuỗi catalog→pipe OK — keepalive")
+        if not acts:
+            acts.append("python3 scripts/buucuc_catalog_chain_query_mapper.py --chain catalog_ext --notify")
+        row["next"] = acts[:4]
+        out_list.append(row)
+
+    out_list.sort(
+        key=lambda r: (
+            0 if r.get("in_aship_public") else 1,
+            0 if r.get("owned_config_slot") else 1,
+            -int(r.get("orders_n") or 0),
+            str(r.get("provider") or ""),
+        )
+    )
+    by_status = dict(Counter(r.get("status") for r in out_list))
+    by_source = Counter()
+    for r in out_list:
+        for s in r.get("sources") or []:
+            by_source[s] += 1
+    return {
+        "ok": True,
+        "entries_n": len(out_list),
+        "entries": out_list,
+        "by_status": by_status,
+        "by_source": dict(by_source),
+        "aship_public_n": sum(1 for r in out_list if r.get("in_aship_public")),
+        "pipe_only_n": sum(
+            1
+            for r in out_list
+            if not r.get("in_aship_public") and "owned_config_id" not in (r.get("sources") or [])
+            and not r.get("owned_config_slot")
+        ),
+        "owned_slots_n": sum(1 for r in out_list if r.get("owned_config_slot")),
     }
 
 
@@ -1248,27 +1586,40 @@ def build_report(
     expand: bool = False,
     live: bool = False,
     write_events: bool = True,
+    catalog_extend: bool = False,
 ) -> dict[str, Any]:
     env = load_env()
     if not PIPE_DB.is_file():
         return {"ok": False, "error": f"missing {PIPE_DB}", "checked_at": utc_now()}
 
     # presets
+    if chain_id == "catalog_ext":
+        catalog_extend = True
+        chain_id = "all"
     if chain_id == "expand":
         expand = True
         continue_chain = True
         live = True
+        catalog_extend = True
         chain_id = "all"
     elif chain_id == "continue":
         continue_chain = True
         chain_id = "all"
     if expand:
         continue_chain = True
+        catalog_extend = True
 
     catalog = fetch_aship_catalog(env)
     backends = load_backends(env)
     contracts = load_contracts()
     nodes = load_buucuc_nodes()
+    extended = build_extended_catalog(
+        catalog=catalog,
+        backends=backends,
+        contracts=contracts,
+        nodes=nodes,
+        env=env,
+    )
     all_chains = build_chains(
         catalog=catalog, backends=backends, contracts=contracts, nodes=nodes, env=env
     )
@@ -1310,7 +1661,14 @@ def build_report(
         pipe_orders = int(conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0])
         conn.close()
 
-    mode = "expand" if expand else ("continue" if continue_chain else (chain_id or "all"))
+    if catalog_extend and not expand and not continue_chain:
+        mode = "catalog_ext"
+    elif expand:
+        mode = "expand"
+    elif continue_chain:
+        mode = "continue"
+    else:
+        mode = chain_id or "all"
     query_meta = {
         "q": q,
         "buucuc": buucuc,
@@ -1320,13 +1678,18 @@ def build_report(
         "continue": continue_chain,
         "expand": expand,
         "live": live,
+        "catalog_extend": catalog_extend,
         "chain_title": (
-            CHAIN_QUERIES["expand"]["title"]
-            if expand
+            CHAIN_QUERIES["catalog_ext"]["title"]
+            if mode == "catalog_ext"
             else (
-                CHAIN_QUERIES["continue"]["title"]
-                if continue_chain
-                else (CHAIN_QUERIES.get(chain_id or "all") or {}).get("title")
+                CHAIN_QUERIES["expand"]["title"]
+                if expand
+                else (
+                    CHAIN_QUERIES["continue"]["title"]
+                    if continue_chain
+                    else (CHAIN_QUERIES.get(chain_id or "all") or {}).get("title")
+                )
             )
         ),
     }
@@ -1345,6 +1708,20 @@ def build_report(
         "  ORD --> KHO[kho]\n"
         "  ORD --> SHOP[shop]\n"
     )
+    if catalog_extend:
+        atlas = (
+            "Aship public ⋃ owned ConfigId ⋃ pipe/HĐ carriers → backend → "
+            "buucuc_nodes → orders → kho/shop"
+        )
+        mermaid = (
+            "flowchart LR\n"
+            "  AP[Aship public] --> EXT[extended catalog BC]\n"
+            "  OWN[owned ConfigId] --> EXT\n"
+            "  PIPE[pipe nodes / HĐ] --> EXT\n"
+            "  EXT --> BE[backends]\n"
+            "  BE --> NODE[buucuc_nodes]\n"
+            "  NODE --> ORD[orders]\n"
+        )
     if continue_chain:
         atlas += " → tracking → aship SSR → pipe_events/flow → next"
         mermaid += (
@@ -1406,7 +1783,14 @@ def build_report(
             "top_next": [{"action": a, "n": n} for a, n in act_c.most_common(10)],
         }
 
-    tag = " · MỞ RỘNG" if expand else (" · TIẾP TỤC" if continue_chain else "")
+    tag = ""
+    if mode == "catalog_ext":
+        tag = " · CATALOG MỞ RỘNG"
+    elif expand:
+        tag = " · MỞ RỘNG"
+    elif continue_chain:
+        tag = " · TIẾP TỤC"
+
     report: dict[str, Any] = {
         "ok": True,
         "module": "buucuc_catalog_chain_query_mapper",
@@ -1427,6 +1811,7 @@ def build_report(
             "owned_config_ids": catalog.get("owned_config_ids"),
             "owned_in_public_catalog": catalog.get("owned_in_public_catalog"),
         },
+        "catalog_extended": extended if catalog_extend else None,
         "stats": {
             "pipe_orders": pipe_orders,
             "backends": len(backends),
@@ -1440,6 +1825,8 @@ def build_report(
             "continue": continue_chain,
             "expand": expand,
             "live": live,
+            "catalog_extend": catalog_extend,
+            "catalog_extended_n": extended.get("entries_n") if catalog_extend else 0,
             "events_written": events_n,
             "continue_summary": cont_summary,
         },
@@ -1465,7 +1852,8 @@ def build_report(
         },
         "verdict": (
             f"🏷 Catalog BC chuỗi{tag}: matched={len(matched)}/{len(all_chains)} · "
-            f"catalog={len(catalog.get('providers') or [])} · "
+            f"aship={len(catalog.get('providers') or [])} · "
+            f"ext={extended.get('entries_n') if catalog_extend else 0} · "
             f"HĐ={len(contracts)} · nodes={len(nodes)} · "
             f"gap_secret={len(gap_secret)} · gap_0đơn={len(gap_orders)}"
             + (
@@ -1483,9 +1871,9 @@ def build_report(
             )
         ),
         "next": [
+            "python3 scripts/buucuc_catalog_chain_query_mapper.py --chain catalog_ext --notify",
+            "python3 scripts/buucuc_catalog_chain_query_mapper.py --catalog-extend --notify",
             "python3 scripts/buucuc_catalog_chain_query_mapper.py --expand --live --notify",
-            "python3 scripts/buucuc_catalog_chain_query_mapper.py --chain expand --notify",
-            "python3 scripts/buucuc_catalog_chain_query_mapper.py --chain ghn --expand --live --notify",
             "python3 scripts/pipe_branch_mapper.py --notify",
             "python3 scripts/tpos_ssr_pipe.py --notify",
             "python3 scripts/scan_buucuc_orders.py --days 3 --notify",
@@ -1537,8 +1925,41 @@ def format_text(report: dict[str, Any]) -> str:
     )
     for p in cat.get("providers") or []:
         A(f"  · {p.get('provider')} id={p.get('id')} keys={p.get('config_keys')}")
+    ext = report.get("catalog_extended") or {}
+    if ext.get("entries"):
+        A("")
+        A(
+            f"=== Catalog BC mở rộng (thống nhất) === entries={ext.get('entries_n')} · "
+            f"aship_public={ext.get('aship_public_n')} · pipe_only={ext.get('pipe_only_n')} · "
+            f"owned_slots={ext.get('owned_slots_n')} · by_status={ext.get('by_status')} · "
+            f"by_source={ext.get('by_source')}"
+        )
+        icon_e = {
+            "ok": "✅",
+            "catalog_only": "⚪",
+            "missing_secret": "❌",
+            "contract_no_orders": "🟠",
+            "unassigned_or_unknown": "🟠",
+            "shop_config_slot": "🟡",
+            "unknown": "·",
+        }
+        for e in (ext.get("entries") or [])[:25]:
+            ic = icon_e.get(str(e.get("status")), "·")
+            A(
+                f"  {ic} [{e.get('status')}] {e.get('key')} · src={'+'.join(e.get('sources') or [])}"
+            )
+            A(f"      {e.get('chain')}")
+            if e.get("owned_config_slot"):
+                A(
+                    f"      owned_slot={e.get('owned_config_slot')} "
+                    f"id={e.get('owned_config_id')} in_public={e.get('in_aship_public')}"
+                )
+            if e.get("secret"):
+                A(f"      secret={e.get('secret')} present={e.get('secret_present')}")
+            for a in (e.get("next") or [])[:2]:
+                A(f"      next▸ {a}")
     A("")
-    A("=== Chuỗi khớp" + (" · MỞ RỘNG" if q.get("expand") else (" · TIẾP TỤC" if q.get("continue") else "")) + " ===")
+    A("=== Chuỗi khớp" + (" · MỞ RỘNG" if q.get("expand") else (" · TIẾP TỤC" if q.get("continue") else (" · CATALOG EXT" if q.get("catalog_extend") else ""))) + " ===")
     icon = {
         "ok": "✅",
         "catalog_only": "⚪",
@@ -1683,6 +2104,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Mở rộng: continue + nhánh pipe + shop/kho + ghi events (+ --live)",
     )
     ap.add_argument(
+        "--catalog-extend",
+        action="store_true",
+        help="Mở rộng catalog thống nhất Aship+pipe+HĐ+ConfigId",
+    )
+    ap.add_argument(
         "--live",
         action="store_true",
         help="Trong --expand: probe GHN/SSR owned nhẹ",
@@ -1710,6 +2136,9 @@ def main(argv: list[str] | None = None) -> int:
         expand=bool(args.expand) or args.chain == "expand",
         live=bool(args.live) or args.chain == "expand",
         write_events=not args.no_events,
+        catalog_extend=bool(args.catalog_extend)
+        or args.chain in {"catalog_ext", "expand"}
+        or bool(args.expand),
     )
     paths = write_outputs(report)
     text = format_text(report)

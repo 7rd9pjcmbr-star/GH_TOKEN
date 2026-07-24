@@ -201,6 +201,9 @@ def panel_keyboard() -> dict:
             ],
             [
                 {"text": "↗ Mở·rộng·chuỗi·BC", "callback_data": "q:bc_chain_exp"},
+                {"text": "📚 Catalog·BC·ext", "callback_data": "q:bc_catalog_ext"},
+            ],
+            [
                 {"text": "🌿 Nhánh·pipe", "callback_data": "q:pipe_branch"},
             ],
             [
@@ -1029,7 +1032,7 @@ def fmt_bc_catalog(_a: dict | None = None) -> str:
             write_outputs,
         )
 
-        report = build_report(chain_id="all")
+        report = build_report(chain_id="all", catalog_extend=True)
         write_outputs(report)
         return format_text(report)[:3800]
     except Exception as e:  # noqa: BLE001
@@ -1044,6 +1047,33 @@ def fmt_bc_catalog(_a: dict | None = None) -> str:
         return (
             f"Catalog·BC·chuỗi lỗi: {e}\n"
             "Chạy: python3 scripts/buucuc_catalog_chain_query_mapper.py --notify"
+        )
+
+
+def fmt_bc_catalog_ext(_a: dict | None = None) -> str:
+    """Catalog BC mở rộng thống nhất Aship + pipe + HĐ + ConfigId."""
+    try:
+        from buucuc_catalog_chain_query_mapper import (
+            build_report,
+            format_text,
+            write_outputs,
+        )
+
+        report = build_report(chain_id="catalog_ext", catalog_extend=True)
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = (
+            ROOT
+            / "reports"
+            / "telegram-classify"
+            / "buucuc_catalog_chain_query_mapper.txt"
+        )
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Catalog·BC·ext lỗi: {e}\n"
+            "Chạy: python3 scripts/buucuc_catalog_chain_query_mapper.py --chain catalog_ext --notify"
         )
 
 
@@ -1621,6 +1651,7 @@ HANDLERS = {
     "q:jnt_enable": fmt_jnt_enable,
     "q:bc_hub": fmt_bc_hub,
     "q:bc_catalog": fmt_bc_catalog,
+    "q:bc_catalog_ext": fmt_bc_catalog_ext,
     "q:bc_chain_cont": fmt_bc_chain_cont,
     "q:bc_chain_exp": fmt_bc_chain_exp,
     "q:pipe_branch": fmt_pipe_branch,
