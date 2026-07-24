@@ -15,15 +15,15 @@ Nguồn tham chiếu: cấu trúc Metasploit Framework (catalog) + MaMoLab + Doc
 ## Vào nhanh
 
 ```bash
-python3 scripts/knowledge_library_build.py          # build/index
-python3 scripts/knowledge_library_build.py status   # tình trạng thư viện
-python3 scripts/metasploit_testing_knowledge.py     # playbook kiểm thử
-python3 scripts/metasploit_library_harvest.py       # catalog MSF → enrich
+python3 scripts/metasploit_full_atlas.py                 # MSF có những gì (đủ)
+python3 scripts/knowledge_library_build.py --with-atlas
+python3 scripts/knowledge_library_build.py status
+python3 scripts/metasploit_testing_knowledge.py
 ```
 
-1. Đọc [CURRICULUM.md](./CURRICULUM.md)
-2. Học lần lượt chương `00` → `12`
-3. Làm thí nghiệm trong `experiments/`
-4. Xem `generated/` sau khi harvest
+1. Đọc [13-msf-full-atlas.md](./13-msf-full-atlas.md) — **Metasploit có những gì**
+2. Đọc [CURRICULUM.md](./CURRICULUM.md)
+3. Học chương `00` → `13` + `generated/atlas-*.md`
+4. Làm EXP-01…08
 
-Panel Telegram: **📖 Thư viện·KT**
+Panel: **📖 Thư viện·KT** · **📦 MSF·atlas đủ**

@@ -1,5 +1,5 @@
 # Generated — MSF summary (readonly)
-Built: 2026-07-24T05:20:46Z
+Built: 2026-07-24T05:23:28Z
 Modules: 5043 · CVE unique: 1004
 
 ## Totals

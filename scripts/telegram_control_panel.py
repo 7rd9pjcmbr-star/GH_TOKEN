@@ -189,14 +189,17 @@ def panel_keyboard() -> dict:
             ],
             [
                 {"text": "📖 Thư viện·KT", "callback_data": "q:knowledge"},
+                {"text": "📦 MSF·atlas đủ", "callback_data": "q:msf_atlas"},
+            ],
+            [
                 {"text": "🧪 MSF·kiểm thử", "callback_data": "q:msf_test"},
-            ],
-            [
                 {"text": "📚 MSF·kiến thức", "callback_data": "q:msf_knowledge"},
-                {"text": "🛡 MSF·suite map", "callback_data": "q:msf_suite"},
             ],
             [
+                {"text": "🛡 MSF·suite map", "callback_data": "q:msf_suite"},
                 {"text": "🔐 Captcha·TG", "callback_data": "q:captcha_tg"},
+            ],
+            [
                 {"text": "🧪 Nginx·gọi đơn", "callback_data": "q:ngx_order"},
             ],
             [
@@ -873,7 +876,7 @@ def fmt_knowledge_lib(_a: dict | None = None) -> str:
     try:
         from knowledge_library_build import build, format_status
 
-        build(force_seeds=False, with_harvest=False)
+        build(force_seeds=False, with_harvest=False, with_atlas=False)
         return format_status()[:3800]
     except Exception as e:  # noqa: BLE001
         path = ROOT / "reports" / "telegram-classify" / "knowledge_library_status.txt"
@@ -885,6 +888,32 @@ def fmt_knowledge_lib(_a: dict | None = None) -> str:
         return (
             f"Thư viện kiến thức lỗi: {e}\n"
             "Chạy: python3 scripts/knowledge_library_build.py"
+        )
+
+
+def fmt_msf_atlas(_a: dict | None = None) -> str:
+    """Atlas toàn bộ Metasploit — không bỏ sót nhánh."""
+    try:
+        from metasploit_full_atlas import build_atlas, format_atlas_txt
+
+        # Dùng báo cáo sẵn nếu <1h; atlas full parse ~1s
+        path = ROOT / "reports" / "telegram-classify" / "metasploit_full_atlas.txt"
+        if path.is_file():
+            age = __import__("time").time() - path.stat().st_mtime
+            if age < 3600:
+                return path.read_text(encoding="utf-8")[:3800]
+        atlas = build_atlas(with_module_index=True)
+        return format_atlas_txt(atlas)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "metasploit_full_atlas.txt"
+        alt = ROOT / "knowledge" / "generated" / "msf-full-atlas.md"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        if alt.is_file():
+            return alt.read_text(encoding="utf-8")[:3800]
+        return (
+            f"MSF atlas lỗi: {e}\n"
+            "Chạy: python3 scripts/metasploit_full_atlas.py"
         )
 
 
@@ -1088,6 +1117,7 @@ HANDLERS = {
     "q:msf_knowledge": fmt_msf_knowledge,
     "q:msf_test": fmt_msf_test,
     "q:knowledge": fmt_knowledge_lib,
+    "q:msf_atlas": fmt_msf_atlas,
     "q:ngx_order": fmt_ngx_order,
     "q:owned_env": fmt_owned_env,
     "q:token_rotate": fmt_token_rotate,

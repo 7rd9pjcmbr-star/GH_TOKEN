@@ -32,16 +32,17 @@ Owns (không chồng a11y/crypto recommend): `malware-static`, `security-audit`,
 
 ## Thư viện kiến thức học tập & thí nghiệm
 
-Curriculum + chương + EXP + catalog MSF (phòng thủ):
+Curriculum + chương + EXP + **atlas MSF đầy đủ** (không bỏ sót nhánh):
 
 ```bash
-python3 scripts/knowledge_library_build.py
+python3 scripts/metasploit_full_atlas.py              # Metasploit có những gì
+python3 scripts/knowledge_library_build.py --with-atlas
 python3 scripts/knowledge_library_build.py status
 python3 scripts/knowledge_library_build.py --with-harvest
 ```
 
-Vào: `knowledge/README.md` · `knowledge/CURRICULUM.md` · `knowledge/experiments/`  
-Panel: **📖 Thư viện·KT**.
+Vào: `knowledge/13-msf-full-atlas.md` · `knowledge/generated/msf-full-atlas.md` · `msf-module-index.csv`  
+Panel: **📖 Thư viện·KT** · **📦 MSF·atlas đủ**.
 
 ## Mapper thư viện Metasploit Suite
 

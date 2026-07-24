@@ -35,6 +35,7 @@ CHAPTERS: list[dict[str, str]] = [
     {"id": "10", "file": "10-static-malware-lab.md", "title": "Lab phân tích mã tĩnh"},
     {"id": "11", "file": "11-mamolab-api.md", "title": "API MaMoLab & tự kiểm thử"},
     {"id": "12", "file": "12-study-path.md", "title": "Lộ trình học 7–14 buổi"},
+    {"id": "13", "file": "13-msf-full-atlas.md", "title": "Atlas Metasploit đầy đủ — có những gì (không bỏ sót)"},
 ]
 
 EXPERIMENTS: list[dict[str, str]] = [
@@ -45,6 +46,7 @@ EXPERIMENTS: list[dict[str, str]] = [
     {"id": "EXP-05", "file": "EXP-05-ioc-patterns.md", "title": "Ánh xạ post-TTP → IOC"},
     {"id": "EXP-06", "file": "EXP-06-rank-priority.md", "title": "Ưu tiên vá theo Rank MSF"},
     {"id": "EXP-07", "file": "EXP-07-policy-deny.md", "title": "Xác minh deny-list lab"},
+    {"id": "EXP-08", "file": "EXP-08-atlas-coverage.md", "title": "Đối chiếu đủ 86 nhánh atlas MSF"},
 ]
 
 
@@ -572,6 +574,23 @@ Danh sách ≥5 mục P1/P2 có lý do.
 ## Pass
 Biên bản “deny còn hiệu lực” ký ngày.
 """,
+        "EXP-08": """# EXP-08 — Đối chiếu đủ nhánh atlas MSF
+
+## Mục tiêu
+Chứng minh không bỏ sót nhánh depth-1.
+
+## Bước
+```bash
+python3 scripts/metasploit_full_atlas.py
+python3 scripts/knowledge_library_build.py --with-atlas
+```
+1. Đếm checklist trong `msf-coverage-checklist.md` (~86)
+2. Spot-check 7 file `atlas-*.md` + CSV ≈5043 dòng module
+3. Ghi biên bản số nhánh/module/CVE
+
+## Pass
+Đủ 7 lớp · checklist ≥80 · không chạy exploit.
+""",
     }
     return bodies.get(exp["id"], f"# {exp['id']} — {exp['title']}\n\nTODO\n")
 
@@ -683,7 +702,13 @@ def write_generated(harvest: dict[str, Any]) -> dict[str, str]:
     return paths
 
 
-def write_index(harvest: dict[str, Any], generated: dict[str, str]) -> Path:
+def write_index(
+    harvest: dict[str, Any],
+    generated: dict[str, str],
+    *,
+    atlas_info: dict[str, Any] | None = None,
+) -> Path:
+    atlas_info = atlas_info or {}
     idx = {
         "ok": True,
         "module": "knowledge_library",
@@ -694,12 +719,14 @@ def write_index(harvest: dict[str, Any], generated: dict[str, str]) -> Path:
             "no_exploit": True,
             "no_payload_gen": True,
             "lab_only": True,
+            "msf_complete_atlas": True,
         },
         "roots": {
             "knowledge": str(KROOT),
             "curriculum": str(KROOT / "CURRICULUM.md"),
             "experiments": str(KROOT / "experiments"),
             "generated": str(GEN),
+            "msf_atlas": str(GEN / "msf-full-atlas.md"),
         },
         "chapters": CHAPTERS,
         "experiments": EXPERIMENTS,
@@ -708,18 +735,38 @@ def write_index(harvest: dict[str, Any], generated: dict[str, str]) -> Path:
             "unique_cves": (harvest.get("summary") or {}).get("unique_cves"),
             "checked_at": harvest.get("checked_at"),
         },
+        "atlas": {
+            "modules": atlas_info.get("grand_total_rb"),
+            "branches_depth1": atlas_info.get("coverage_branches"),
+            "unique_cves": atlas_info.get("unique_cves"),
+            "verdict": atlas_info.get("verdict"),
+            "files": [
+                "generated/msf-full-atlas.md",
+                "generated/msf-coverage-checklist.md",
+                "generated/msf-module-index.csv",
+                "generated/atlas-exploits.md",
+                "generated/atlas-auxiliary.md",
+                "generated/atlas-post.md",
+                "generated/atlas-payloads.md",
+                "generated/atlas-encoders.md",
+                "generated/atlas-nops.md",
+                "generated/atlas-evasion.md",
+            ],
+        },
         "generated_files": generated,
         "cli": [
             "python3 scripts/knowledge_library_build.py",
-            "python3 scripts/knowledge_library_build.py status",
+            "python3 scripts/knowledge_library_build.py --with-atlas",
             "python3 scripts/knowledge_library_build.py --with-harvest",
+            "python3 scripts/metasploit_full_atlas.py",
             "python3 scripts/metasploit_testing_knowledge.py",
         ],
         "verdict": (
             f"✅ Thư viện kiến thức · chương={len(CHAPTERS)} · "
             f"EXP={len(EXPERIMENTS)} · "
-            f"MSF modules={((harvest.get('summary') or {}).get('modules_total') or 'chưa harvest')} · "
-            f"CVE={((harvest.get('summary') or {}).get('unique_cves') or '-')}"
+            f"MSF modules={atlas_info.get('grand_total_rb') or (harvest.get('summary') or {}).get('modules_total') or 'chưa atlas'} · "
+            f"nhánh={atlas_info.get('coverage_branches') or '-'} · "
+            f"CVE={atlas_info.get('unique_cves') or (harvest.get('summary') or {}).get('unique_cves') or '-'}"
         ),
     }
     ip = KROOT / "INDEX.json"
@@ -761,16 +808,30 @@ def format_status(idx: dict[str, Any] | None = None) -> str:
     L("")
     h = idx.get("harvest") or {}
     L(f"=== Harvest MSF === modules={h.get('modules_total')} CVE={h.get('unique_cves')}")
+    a = idx.get("atlas") or {}
+    L(
+        f"=== Atlas đầy đủ === modules={a.get('modules')} · "
+        f"nhánh_d1={a.get('branches_depth1')} · CVE={a.get('unique_cves')}"
+    )
+    if a.get("verdict"):
+        L(f"  {a.get('verdict')}")
+    L("  Đọc: knowledge/generated/msf-full-atlas.md · chương 13 · EXP-08")
     L("")
     L("=== Bắt đầu ===")
     L("  1. knowledge/README.md")
-    L("  2. knowledge/CURRICULUM.md")
-    L("  3. EXP-01 → rồi theo curriculum")
-    L("  $ python3 scripts/knowledge_library_build.py --with-harvest")
+    L("  2. knowledge/13-msf-full-atlas.md  ← Metasploit có những gì")
+    L("  3. knowledge/CURRICULUM.md → EXP-01")
+    L("  $ python3 scripts/metasploit_full_atlas.py")
+    L("  $ python3 scripts/knowledge_library_build.py --with-atlas")
     return "\n".join(lines)
 
 
-def build(*, force_seeds: bool = False, with_harvest: bool = False) -> dict[str, Any]:
+def build(
+    *,
+    force_seeds: bool = False,
+    with_harvest: bool = False,
+    with_atlas: bool = False,
+) -> dict[str, Any]:
     ensure_dirs()
     if with_harvest:
         from metasploit_library_harvest import harvest
@@ -783,14 +844,18 @@ def build(*, force_seeds: bool = False, with_harvest: bool = False) -> dict[str,
         except Exception:  # noqa: BLE001
             pass
 
+    atlas_info: dict[str, Any] = {}
+    if with_atlas or with_harvest:
+        try:
+            from metasploit_full_atlas import build_atlas
+
+            atlas_info = build_atlas(with_module_index=True)
+        except Exception as e:  # noqa: BLE001
+            atlas_info = {"ok": False, "error": str(e)}
+
     written = []
-    for name, body in SEEDS.items():
-        if name.endswith(".md") and name not in {"README.md", "CURRICULUM.md", "glossary.md"}:
-            # chapter files keyed by filename in CHAPTERS
-            pass
-    # README + curriculum + glossary
     for fname in ("README.md", "CURRICULUM.md", "glossary.md"):
-        if write_if_absent(KROOT / fname, SEEDS[fname], force=force_seeds):
+        if fname in SEEDS and write_if_absent(KROOT / fname, SEEDS[fname], force=force_seeds):
             written.append(fname)
 
     for ch in CHAPTERS:
@@ -807,11 +872,21 @@ def build(*, force_seeds: bool = False, with_harvest: bool = False) -> dict[str,
 
     harvest = load_harvest()
     generated = write_generated(harvest) if harvest else write_generated({})
-    idx_path = write_index(harvest, generated)
+    if (GEN / "msf-full-atlas.md").is_file():
+        generated["full_atlas"] = str(GEN / "msf-full-atlas.md")
+        generated["coverage"] = str(GEN / "msf-coverage-checklist.md")
+        generated["module_index_csv"] = str(GEN / "msf-module-index.csv")
+    idx_path = write_index(harvest, generated, atlas_info=atlas_info)
     return {
         "ok": True,
         "written_seeds": written,
         "index": str(idx_path),
+        "atlas": {
+            "modules": atlas_info.get("grand_total_rb"),
+            "branches": atlas_info.get("coverage_branches"),
+            "cves": atlas_info.get("unique_cves"),
+            "verdict": atlas_info.get("verdict"),
+        },
         "status": format_status(),
     }
 
@@ -821,13 +896,21 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("command", nargs="?", default="build", choices=("build", "status"))
     ap.add_argument("--force-seeds", action="store_true", help="Ghi đè chapter seeds")
     ap.add_argument("--with-harvest", action="store_true")
+    ap.add_argument(
+        "--with-atlas",
+        action="store_true",
+        help="Rà soát toàn bộ MSF modules/ → atlas không bỏ sót",
+    )
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
     if args.command == "status":
-        # ensure index exists
         if not (KROOT / "INDEX.json").is_file():
-            build(force_seeds=False, with_harvest=args.with_harvest)
+            build(
+                force_seeds=False,
+                with_harvest=args.with_harvest,
+                with_atlas=args.with_atlas,
+            )
         text = format_status()
         if args.json:
             print((KROOT / "INDEX.json").read_text(encoding="utf-8"))
@@ -835,7 +918,11 @@ def main(argv: list[str] | None = None) -> int:
             print(text)
         return 0
 
-    result = build(force_seeds=args.force_seeds, with_harvest=args.with_harvest)
+    result = build(
+        force_seeds=args.force_seeds,
+        with_harvest=args.with_harvest,
+        with_atlas=args.with_atlas,
+    )
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
