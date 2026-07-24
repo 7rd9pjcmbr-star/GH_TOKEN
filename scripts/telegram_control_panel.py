@@ -185,6 +185,9 @@ def panel_keyboard() -> dict:
                 {"text": "🔍 Quét·phân tích", "callback_data": "q:inbox_scan"},
             ],
             [
+                {"text": "🔐 Captcha·TG", "callback_data": "q:captcha_tg"},
+            ],
+            [
                 {"text": "🧪 Nginx·gọi đơn", "callback_data": "q:ngx_order"},
             ],
             [
@@ -972,6 +975,7 @@ HANDLERS = {
     "q:aship": fmt_aship,
     "q:inbox_today": fmt_inbox_today,
     "q:inbox_scan": fmt_inbox_scan,
+    "q:captcha_tg": fmt_captcha_tg,
     "q:ngx_order": fmt_ngx_order,
     "q:owned_env": fmt_owned_env,
     "q:token_rotate": fmt_token_rotate,
