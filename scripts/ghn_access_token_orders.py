@@ -171,14 +171,140 @@ def fetch_orders(
     }
 
 
+def from_printA5(
+    printA5: str,
+    *,
+    days: int = 3,
+    limit: int = 50,
+    force: bool = True,
+    resolve_shop: bool = True,
+) -> dict[str, Any]:
+    """URL printA5?token=UUID → GHN_API_TOKEN → gọi đơn."""
+    from ghn_cookie_ingest import extract_from_text, ingest_printA5
+
+    report: dict[str, Any] = {
+        "ok": False,
+        "module": "ghn_access_token_orders.from_printA5",
+        "checked_at": utc_now(),
+        "printA5": True,
+        "token": None,
+        "shop_id": None,
+        "orders": None,
+        "verdict": "",
+        "next": [],
+        "policy": {"owned_only": True, "no_dump_login": True},
+    }
+    raw = (printA5 or "").strip()
+    if not raw:
+        report["verdict"] = "❌ Thiếu URL printA5"
+        return report
+
+    ing = ingest_printA5(raw, force=force, stage=True)
+    report["ingest"] = {
+        "ok": ing.get("ok"),
+        "verdict": ing.get("verdict"),
+        "staged": ing.get("staged"),
+        "probe": ing.get("probe"),
+        "chosen_source": (ing.get("extracted") or {}).get("chosen_source"),
+        "chosen_masked": (ing.get("extracted") or {}).get("chosen_masked"),
+    }
+    extracted = extract_from_text(raw)
+    token = ((extracted.get("chosen") or {}).get("token") or "").strip()
+    if not token:
+        report["verdict"] = "❌ printA5 không chứa token UUID"
+        report["next"] = [
+            "Dán URL dạng https://online-gateway.ghn.vn/a5/public-api/printA5?token=<UUID>"
+        ]
+        return report
+
+    alive = bool((ing.get("probe") or {}).get("success"))
+    report["token"] = {
+        "ok": bool(ing.get("ok")),
+        "alive": alive,
+        "token_masked": _mask(token),
+        "source": "printA5",
+        "ensure": {"ok": ing.get("ok"), "verdict": ing.get("verdict"), "reingested": True},
+    }
+
+    env = load_env()
+    shop_id = (env.get("GHN_SHOP_ID") or "").strip() or None
+    shop_info: dict[str, Any] = {"ok": bool(shop_id), "shop_id": shop_id, "detail": "from_env"}
+    if resolve_shop and alive:
+        shop_info = resolve_shop_id(token, shop_id=shop_id, persist=True)
+    elif resolve_shop and not alive:
+        shop_info = {"ok": False, "shop_id": shop_id, "detail": "skip_shop_all_auth_fail"}
+    report["shop"] = shop_info
+    shop_id = shop_info.get("shop_id") or shop_id
+    report["shop_id"] = shop_id
+
+    try:
+        from ghn_order_endpoint_deep_mapper import apply_roles
+
+        roles = apply_roles(host="online-gateway.ghn.vn", ensure_token=False)
+        report["roles"] = {
+            "ok": roles.get("ok"),
+            "fetch_roles": (roles.get("plan") or {}).get("fetch_roles"),
+            "verdict": roles.get("verdict"),
+        }
+    except Exception as e:  # noqa: BLE001
+        report["roles"] = {"ok": False, "error": str(e)[:120]}
+
+    orders = fetch_orders(token=token, shop_id=shop_id, days=days, limit=limit)
+    report["orders"] = {
+        "ok": orders.get("ok"),
+        "status": orders.get("status"),
+        "fetched": orders.get("fetched"),
+        "detail": orders.get("detail"),
+        "roles": orders.get("roles"),
+        "attempts": orders.get("attempts"),
+        "preview": orders.get("orders_preview"),
+    }
+    report["order_rows"] = orders.get("orders") or []
+
+    status = orders.get("status")
+    fetched = int(orders.get("fetched") or 0)
+    if status == "auth_fail" or not alive:
+        report["verdict"] = (
+            f"❌ printA5 → access token auth_fail · {_mask(token)} · "
+            f"probe_http={(ing.get('probe') or {}).get('http')} · {orders.get('detail') or ''}"
+        )
+        report["next"] = [
+            "Cần printA5?token=<UUID> owned còn hạn (probe province = 200)",
+            "python3 scripts/ghn_access_token_orders.py run --printA5 '<URL>' --days 3 --limit 50",
+        ]
+        return report
+
+    report["ok"] = True
+    report["verdict"] = (
+        f"✅ printA5 → access token → gọi đơn · fetched={fetched} · "
+        f"shop={shop_id or '—'} · token={_mask(token)} · days={days}"
+    )
+    report["next"] = [
+        "python3 scripts/ghn_access_token_orders.py run --days 3 --limit 50",
+        "python3 scripts/scan_buucuc_orders.py --backends GHN --days 3 --limit 50",
+    ]
+    return report
+
+
 def get_token_and_fetch_orders(
     *,
     days: int = 3,
     limit: int = 50,
     try_pending: bool = True,
     resolve_shop: bool = True,
+    printA5: str | None = None,
+    force_printA5: bool = True,
 ) -> dict[str, Any]:
     """Đổi/lấy access token → gọi đơn hàng GHN."""
+    if printA5 and str(printA5).strip():
+        return from_printA5(
+            str(printA5).strip(),
+            days=days,
+            limit=limit,
+            force=force_printA5,
+            resolve_shop=resolve_shop,
+        )
+
     report: dict[str, Any] = {
         "ok": False,
         "module": "ghn_access_token_orders",
@@ -205,9 +331,10 @@ def get_token_and_fetch_orders(
             "secrets/ghn_session.raw rồi chạy lại"
         )
         report["next"] = [
-            "echo 'https://online-gateway.ghn.vn/.../printA5?token=UUID' > secrets/ghn_session.raw",
-            "python3 scripts/ghn_access_token_orders.py run --days 3 --limit 50",
-            "hoặc: python3 scripts/access_token_rotate.py set --platform GHN --token <OWNED> --direct",
+            "python3 scripts/ghn_access_token_orders.py run --printA5 "
+            "'https://online-gateway.ghn.vn/a5/public-api/printA5?token=UUID'",
+            "hoặc: echo '<printA5>' > secrets/ghn_session.raw && "
+            "python3 scripts/ghn_cookie_ingest.py ensure",
         ]
         return report
 
@@ -251,7 +378,7 @@ def get_token_and_fetch_orders(
         report["verdict"] = f"❌ Token GHN auth_fail · {_mask(token)} · {orders.get('detail')}"
         report["next"] = [
             "Cập nhật printA5/cookie owned mới → secrets/ghn_session.raw",
-            "python3 scripts/ghn_cookie_ingest.py ensure",
+            "python3 scripts/ghn_access_token_orders.py run --printA5 '<URL>'",
         ]
         return report
 
@@ -281,9 +408,16 @@ def format_text(report: dict[str, Any]) -> str:
     L("📦 GHN ACCESS TOKEN → GỌI ĐƠN")
     L(f"Lúc: {report.get('checked_at') or utc_now()}")
     L(report.get("verdict") or "")
+    if report.get("printA5") or report.get("ingest"):
+        ing = report.get("ingest") or {}
+        L(
+            f"printA5: staged={ing.get('staged') or '—'} · "
+            f"source={ing.get('chosen_source') or '—'} · "
+            f"probe_http={(ing.get('probe') or {}).get('http')}"
+        )
     tok = report.get("token") or {}
     if tok:
-        L(f"token: alive={tok.get('alive')} masked={tok.get('token_masked')}")
+        L(f"token: alive={tok.get('alive')} masked={tok.get('token_masked')} source={tok.get('source') or 'env'}")
     if report.get("shop_id") or report.get("shop"):
         shop = report.get("shop") or {}
         L(f"shop_id: {report.get('shop_id')} · {shop.get('detail')} · shops_n={shop.get('shops_n')}")
@@ -340,6 +474,17 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--limit", type=int, default=50)
     p_run.add_argument("--no-pending", action="store_true")
     p_run.add_argument("--no-shop", action="store_true")
+    p_run.add_argument(
+        "--printA5",
+        default="",
+        help="URL printA5?token=UUID → lấy access token → gọi đơn",
+    )
+    p_run.add_argument(
+        "--no-force-printA5",
+        action="store_true",
+        help="Không ghi token nếu printA5 probe fail",
+    )
+    p_run.add_argument("--json", action="store_true")
 
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
@@ -406,6 +551,8 @@ def main(argv: list[str] | None = None) -> int:
             limit=args.limit,
             try_pending=not args.no_pending,
             resolve_shop=not args.no_shop,
+            printA5=(args.printA5 or None),
+            force_printA5=not args.no_force_printA5,
         )
 
     write_outputs(report)

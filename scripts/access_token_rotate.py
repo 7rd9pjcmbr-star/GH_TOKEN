@@ -281,7 +281,14 @@ def set_access_token(
 # —— refresh per platform ————————————————————
 
 
-def refresh_ghn(env: dict[str, str] | None = None, *, fetch_orders: bool = False, days: int = 3, limit: int = 50) -> dict:
+def refresh_ghn(
+    env: dict[str, str] | None = None,
+    *,
+    fetch_orders: bool = False,
+    days: int = 3,
+    limit: int = 50,
+    printA5: str | None = None,
+) -> dict:
     """Lấy/duy trì GHN_API_TOKEN (owned) → resolve shop → (optional) gọi đơn.
 
     GHN public API không có login USER/PASSWORD như ViettelPost — token lấy từ
@@ -289,6 +296,38 @@ def refresh_ghn(env: dict[str, str] | None = None, *, fetch_orders: bool = False
     """
     env = env or load_env()
     from ghn_access_token_orders import get_token_and_fetch_orders, resolve_access_token, resolve_shop_id
+
+    if printA5 and str(printA5).strip():
+        report = get_token_and_fetch_orders(
+            days=days,
+            limit=limit,
+            try_pending=True,
+            resolve_shop=True,
+            printA5=str(printA5).strip(),
+            force_printA5=True,
+        )
+        return {
+            "ok": bool(report.get("ok")),
+            "platform": "GHN",
+            "checked_at": utc_now(),
+            "printA5": True,
+            "token_masked": (report.get("token") or {}).get("token_masked"),
+            "shop_id": report.get("shop_id"),
+            "orders": report.get("orders"),
+            "roles": report.get("roles"),
+            "ingest": report.get("ingest"),
+            "verdict": report.get("verdict"),
+            "next": report.get("next"),
+            "refresh": {
+                "step_used": "printA5→GHN_API_TOKEN→orders",
+                "token_masked": (report.get("token") or {}).get("token_masked"),
+            },
+            "source_report": {
+                "ensure": (report.get("token") or {}).get("ensure"),
+                "shop": report.get("shop"),
+                "ingest": report.get("ingest"),
+            },
+        }
 
     if fetch_orders:
         report = get_token_and_fetch_orders(days=days, limit=limit, try_pending=True, resolve_shop=True)
@@ -834,6 +873,11 @@ def main(argv: list[str] | None = None) -> int:
     p_ref.add_argument("--direct", action="store_true")
     p_ref.add_argument("--keep", action="store_true")
     p_ref.add_argument("--orders", action="store_true", help="GHN: sau khi lấy token → gọi đơn")
+    p_ref.add_argument(
+        "--printA5",
+        default="",
+        help="GHN: URL printA5?token=UUID → access token → gọi đơn",
+    )
     p_ref.add_argument("--days", type=int, default=3, help="GHN orders window")
     p_ref.add_argument("--limit", type=int, default=50, help="GHN orders limit")
 
@@ -885,9 +929,10 @@ def main(argv: list[str] | None = None) -> int:
         elif args.direct:
             if plat == "GHN":
                 report = refresh_ghn(
-                    fetch_orders=bool(args.orders),
+                    fetch_orders=bool(args.orders) or bool(args.printA5),
                     days=int(args.days),
                     limit=int(args.limit),
+                    printA5=(args.printA5 or None),
                 )
             else:
                 report = refresh_viettelpost()
@@ -901,15 +946,18 @@ def main(argv: list[str] | None = None) -> int:
                 report = {"ok": False, "error": "nginx embed chưa up", "start": started}
             else:
                 try:
-                    # GHN --orders: chạy trực tiếp sau nginx ensure (payload đầy đủ)
-                    if plat == "GHN" and args.orders:
+                    # GHN --orders / --printA5: chạy trực tiếp sau nginx ensure
+                    if plat == "GHN" and (args.orders or args.printA5):
                         report = refresh_ghn(
                             fetch_orders=True,
                             days=int(args.days),
                             limit=int(args.limit),
+                            printA5=(args.printA5 or None),
                         )
                         report["via_nginx"] = True
-                        report["pipeline"] = "nginx→up→refresh_ghn+orders"
+                        report["pipeline"] = (
+                            "nginx→up→printA5→orders" if args.printA5 else "nginx→up→refresh_ghn+orders"
+                        )
                     else:
                         res = mod.token_refresh(plat)
                         payload = res.get("payload") if isinstance(res.get("payload"), dict) else {}

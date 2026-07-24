@@ -226,6 +226,23 @@ PENDING_FILES = (
     ROOT / "secrets" / "ghn_ingest.pending",
 )
 GHN_STATE = ROOT / "secrets" / "ghn_session.state.json"
+SESSION_RAW = PENDING_FILES[0]
+
+
+def stage_session_raw(raw: str) -> Path:
+    """Ghi printA5/cookie owned vào secrets/ghn_session.raw (chmod 600)."""
+    text = (raw or "").strip()
+    if not text:
+        raise ValueError("stage_session_raw: raw trống")
+    SESSION_RAW.parent.mkdir(parents=True, exist_ok=True)
+    SESSION_RAW.write_text(text + "\n", encoding="utf-8")
+    try:
+        import os
+
+        os.chmod(SESSION_RAW, 0o600)
+    except OSError:
+        pass
+    return SESSION_RAW
 
 
 def _load_env_token() -> tuple[str, str | None]:
@@ -235,6 +252,50 @@ def _load_env_token() -> tuple[str, str | None]:
     token = (env.get("GHN_API_TOKEN") or env.get("GHN_TOKEN") or "").strip()
     shop = (env.get("GHN_SHOP_ID") or "").strip() or None
     return token, shop
+
+
+def ingest_printA5(
+    url_or_raw: str,
+    *,
+    shop_id: str | None = None,
+    force: bool = True,
+    stage: bool = True,
+) -> dict[str, Any]:
+    """printA5 URL → extract UUID → GHN_API_TOKEN (header Token).
+
+    Mặc định force=True khi user chủ động dán printA5 để vẫn ghi token
+    rồi gọi đơn (auth_fail sẽ hiện rõ nếu token hết hạn).
+    """
+    raw = (url_or_raw or "").strip()
+    if not raw:
+        return {
+            "ok": False,
+            "module": "ghn_cookie_ingest.ingest_printA5",
+            "error": "Thiếu printA5 URL / raw",
+            "checked_at": utc_now(),
+            "verdict": "❌ Thiếu printA5",
+        }
+    staged = None
+    if stage:
+        staged = stage_session_raw(raw)
+    report = ingest(raw, shop_id=shop_id, force=force)
+    report["module"] = "ghn_cookie_ingest.ingest_printA5"
+    report["staged"] = str(staged) if staged else None
+    report["printA5"] = True
+    # Đồng bộ process env để load_env cùng process thấy token ngay
+    chosen = ((report.get("extracted") or {}).get("chosen_masked"))
+    token = None
+    extracted = extract_from_text(raw)
+    token = ((extracted.get("chosen") or {}).get("token") or "").strip() or None
+    if token and report.get("ok"):
+        import os
+
+        os.environ["GHN_API_TOKEN"] = token
+        if shop_id:
+            os.environ["GHN_SHOP_ID"] = str(shop_id)
+    if chosen:
+        report["token_masked"] = chosen
+    return report
 
 
 def ensure_ghn_session(*, try_pending: bool = True) -> dict[str, Any]:
@@ -502,6 +563,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--raw-file", help="File cookie Netscape / URL printA5")
     ap.add_argument("--raw", help="Chuỗi cookie/URL trực tiếp")
+    ap.add_argument(
+        "--printA5",
+        default="",
+        help="URL printA5?token=UUID → stage + ingest → GHN_API_TOKEN",
+    )
     ap.add_argument("--shop-id", default="", help="GHN_SHOP_ID (optional)")
     ap.add_argument("--force", action="store_true", help="Ghi dù probe fail (không khuyến nghị)")
     ap.add_argument("--json", action="store_true")
@@ -523,13 +589,22 @@ def main(argv: list[str] | None = None) -> int:
             print(format_text(report))
         return 0 if report.get("ok") else 1
 
-    raw = args.raw or ""
+    raw = args.raw or args.printA5 or ""
     if args.raw_file:
         raw = Path(args.raw_file).read_text(encoding="utf-8", errors="ignore")
     if not raw.strip():
-        print("Cần --raw hoặc --raw-file (hoặc: ensure)", file=sys.stderr)
+        print("Cần --printA5 / --raw / --raw-file (hoặc: ensure)", file=sys.stderr)
         return 2
-    report = ingest(raw, shop_id=(args.shop_id or None), force=args.force)
+    if args.printA5 and not args.raw and not args.raw_file:
+        # printA5 CLI: force ghi token để pipeline gọi đơn báo auth_fail rõ
+        report = ingest_printA5(
+            raw,
+            shop_id=(args.shop_id or None),
+            force=True,
+            stage=True,
+        )
+    else:
+        report = ingest(raw, shop_id=(args.shop_id or None), force=args.force)
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
     else:

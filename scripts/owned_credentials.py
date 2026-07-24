@@ -135,7 +135,11 @@ def utc_now() -> str:
 
 
 def load_env(extra_files: tuple[Path, ...] | None = None) -> dict[str, str]:
-    """Nạp os.environ + secrets/*.env (owned)."""
+    """Nạp os.environ + secrets/*.env (owned).
+
+    Giá trị rỗng trong os.environ (GHN_API_TOKEN="") không chặn đọc từ file secrets.
+    File sau ghi đè file trước nếu key đang trống.
+    """
     env = dict(os.environ)
     files = ENV_FILES + (extra_files or ())
     for path in files:
@@ -146,7 +150,11 @@ def load_env(extra_files: tuple[Path, ...] | None = None) -> dict[str, str]:
             if not t or t.startswith("#") or "=" not in t:
                 continue
             k, v = t.split("=", 1)
-            env.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+            key = k.strip()
+            val = v.strip().strip('"').strip("'")
+            cur = env.get(key)
+            if cur is None or not str(cur).strip():
+                env[key] = val
     return env
 
 
