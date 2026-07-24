@@ -201,10 +201,13 @@ def panel_keyboard() -> dict:
             ],
             [
                 {"text": "📚 MSF·kiến thức", "callback_data": "q:msf_knowledge"},
-                {"text": "🛡 MSF·suite map", "callback_data": "q:msf_suite"},
+                {"text": "🧪 MSF·kiểm thử", "callback_data": "q:msf_test"},
             ],
             [
+                {"text": "🛡 MSF·suite map", "callback_data": "q:msf_suite"},
                 {"text": "🔐 Captcha·TG", "callback_data": "q:captcha_tg"},
+            ],
+            [
                 {"text": "🧪 Nginx·gọi đơn", "callback_data": "q:ngx_order"},
             ],
             [
