@@ -188,18 +188,19 @@ def panel_keyboard() -> dict:
                 {"text": "🔍 Quét·phân tích", "callback_data": "q:inbox_scan"},
             ],
             [
+                {"text": "🧪 TG→Lab·phân tích", "callback_data": "q:tg_lab"},
                 {"text": "📖 Thư viện·KT", "callback_data": "q:knowledge"},
+            ],
+            [
                 {"text": "📦 MSF·atlas đủ", "callback_data": "q:msf_atlas"},
-            ],
-            [
                 {"text": "🧪 MSF·kiểm thử", "callback_data": "q:msf_test"},
+            ],
+            [
                 {"text": "📚 MSF·kiến thức", "callback_data": "q:msf_knowledge"},
-            ],
-            [
                 {"text": "🛡 MSF·suite map", "callback_data": "q:msf_suite"},
-                {"text": "🔐 Captcha·TG", "callback_data": "q:captcha_tg"},
             ],
             [
+                {"text": "🔐 Captcha·TG", "callback_data": "q:captcha_tg"},
                 {"text": "🧪 Nginx·gọi đơn", "callback_data": "q:ngx_order"},
             ],
             [
@@ -917,6 +918,23 @@ def fmt_msf_atlas(_a: dict | None = None) -> str:
         )
 
 
+def fmt_tg_lab(_a: dict | None = None) -> str:
+    """Mở TG → quarantine/lab → phân tích tĩnh."""
+    try:
+        from telegram_to_lab_analyze import build_report, format_text
+
+        report = build_report(wait=2, open_chat=True, notify=False)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "telegram_to_lab_analyze.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"TG→Lab lỗi: {e}\n"
+            "Chạy: python3 scripts/telegram_to_lab_analyze.py"
+        )
+
+
 def fmt_ngx_order(_a: dict | None = None) -> str:
     try:
         from nginx_order_embed import format_text, run_when_needed, write_outputs
@@ -1118,6 +1136,7 @@ HANDLERS = {
     "q:msf_test": fmt_msf_test,
     "q:knowledge": fmt_knowledge_lib,
     "q:msf_atlas": fmt_msf_atlas,
+    "q:tg_lab": fmt_tg_lab,
     "q:ngx_order": fmt_ngx_order,
     "q:owned_env": fmt_owned_env,
     "q:token_rotate": fmt_token_rotate,
