@@ -8,10 +8,11 @@ Chuỗi:
     → contracts (HĐ ĐVVC · shop · account)
     → buucuc_nodes
     → orders → kho → shop
+    → [--continue] tracking → aship SSR → pipe_events/flow_path → next
 
 CLI query:
   --q TEXT | --buucuc | --backend | --provider | --chain
-  --list-chains | --notify | --json
+  --continue | --list-chains | --notify | --json
 
 Policy: owned secrets only · no dump-login · reports gitignored.
 """
@@ -120,6 +121,10 @@ CHAIN_QUERIES: dict[str, dict[str, str]] = {
     "gap_orders": {
         "title": "Catalog/HĐ có tip nhưng 0 đơn pipe",
         "hint": "contracts/backends không khớp buucuc_nodes.orders",
+    },
+    "continue": {
+        "title": "Tiếp tục chuỗi → tracking · SSR · flow · next",
+        "hint": "hop sau orders/kho/shop: tracking_url → aship SSR → pipe_events → next CLI",
     },
 }
 
@@ -681,6 +686,261 @@ def enrich_order_stats(chains: list[dict[str, Any]], *, limit: int = 12) -> list
     return enriched
 
 
+def _primary_buucuc(c: dict[str, Any]) -> str | None:
+    nodes = c.get("buucuc_nodes") or []
+    if nodes:
+        return str(nodes[0].get("buucuc") or "") or None
+    if c.get("provider"):
+        return str(c.get("provider"))
+    return None
+
+
+def hop_tracking(buucuc: str | None, backend: str | None) -> dict[str, Any]:
+    conn = open_db(PIPE_DB)
+    if not conn:
+        return {"ok": False, "error": "no_db"}
+    where: list[str] = []
+    args: list[Any] = []
+    if buucuc:
+        where.append("upper(coalesce(buucuc,'')) LIKE ?")
+        args.append(f"%{buucuc.upper().split('/')[0]}%")
+    if backend and backend not in {"OMS-pipe-bus", "direct_api"}:
+        # soft: also accept when backend on row matches catalog backend tip
+        pass
+    clause = ("WHERE " + " AND ".join(where)) if where else ""
+    total = int(conn.execute(f"SELECT COUNT(*) FROM orders {clause}", args).fetchone()[0])
+    with_code = int(
+        conn.execute(
+            f"SELECT COUNT(*) FROM orders {clause} "
+            f"{'AND' if where else 'WHERE'} tracking_code IS NOT NULL AND TRIM(tracking_code) != ''",
+            args,
+        ).fetchone()[0]
+    )
+    with_url = int(
+        conn.execute(
+            f"SELECT COUNT(*) FROM orders {clause} "
+            f"{'AND' if where else 'WHERE'} tracking_url IS NOT NULL AND TRIM(tracking_url) != ''",
+            args,
+        ).fetchone()[0]
+    )
+    aship_n = int(
+        conn.execute(
+            f"SELECT COUNT(*) FROM orders {clause} "
+            f"{'AND' if where else 'WHERE'} tracking_url LIKE '%aship%'",
+            args,
+        ).fetchone()[0]
+    )
+    provs = [
+        dict(r)
+        for r in conn.execute(
+            f"""
+            SELECT COALESCE(tracking_provider,'(none)') p, COUNT(*) n
+            FROM orders {clause}
+            GROUP BY 1 ORDER BY n DESC LIMIT 8
+            """,
+            args,
+        )
+    ]
+    samples_where = list(where) + [
+        "tracking_code IS NOT NULL",
+        "TRIM(tracking_code) != ''",
+    ]
+    samples_clause = "WHERE " + " AND ".join(samples_where)
+    samples = [
+        dict(r)
+        for r in conn.execute(
+            f"""
+            SELECT tracking_code, tracking_provider, tracking_url, status, carrier
+            FROM orders {samples_clause}
+            ORDER BY piped_at DESC LIMIT 5
+            """,
+            args,
+        )
+    ]
+    conn.close()
+    return {
+        "ok": True,
+        "orders": total,
+        "with_tracking_code": with_code,
+        "with_tracking_url": with_url,
+        "aship_url": aship_n,
+        "providers": provs,
+        "samples": samples,
+        "coverage_pct": round(100.0 * with_code / total, 1) if total else 0.0,
+    }
+
+
+def hop_ssr_events(buucuc: str | None) -> dict[str, Any]:
+    conn = open_db(PIPE_DB)
+    if not conn:
+        return {"ok": False}
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(orders)")}
+    where: list[str] = []
+    args: list[Any] = []
+    if buucuc:
+        where.append("upper(coalesce(buucuc,'')) LIKE ?")
+        args.append(f"%{buucuc.upper().split('/')[0]}%")
+    clause = ("WHERE " + " AND ".join(where)) if where else ""
+    ssr_n = 0
+    ssr_by: list[dict[str, Any]] = []
+    if "ssr_scraped_at" in cols:
+        ssr_conds = list(where) + [
+            "ssr_scraped_at IS NOT NULL",
+            "ssr_scraped_at != ''",
+        ]
+        ssr_clause = "WHERE " + " AND ".join(ssr_conds)
+        ssr_n = int(conn.execute(f"SELECT COUNT(*) FROM orders {ssr_clause}", args).fetchone()[0])
+        if "ssr_status" in cols:
+            ssr_by = [
+                dict(r)
+                for r in conn.execute(
+                    f"""
+                    SELECT COALESCE(ssr_status,'(none)') s, COUNT(*) n
+                    FROM orders {ssr_clause}
+                    GROUP BY 1 ORDER BY n DESC LIMIT 8
+                    """,
+                    args,
+                )
+            ]
+    # recent related events (global SSR + buucuc remap)
+    events = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT event, COUNT(*) n, MAX(at) last_at
+            FROM pipe_events
+            WHERE event LIKE 'tpos_ssr%'
+               OR event IN ('aship_url_sync','carrier_buucuc_remap','upsert')
+            GROUP BY 1 ORDER BY n DESC LIMIT 10
+            """
+        )
+    ]
+    conn.close()
+    return {"ok": True, "ssr_rows": ssr_n, "ssr_status": ssr_by, "pipe_events_head": events}
+
+
+def hop_flow_samples(buucuc: str | None, *, limit: int = 5) -> list[dict[str, Any]]:
+    conn = open_db(PIPE_DB)
+    if not conn:
+        return []
+    where = "WHERE flow_path IS NOT NULL AND TRIM(flow_path) != ''"
+    args: list[Any] = []
+    if buucuc:
+        where += " AND upper(coalesce(buucuc,'')) LIKE ?"
+        args.append(f"%{buucuc.upper().split('/')[0]}%")
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            f"""
+            SELECT flow_path, COUNT(*) n
+            FROM orders {where}
+            GROUP BY 1 ORDER BY n DESC LIMIT ?
+            """,
+            [*args, limit],
+        )
+    ]
+    conn.close()
+    return rows
+
+
+def next_actions_for_chain(c: dict[str, Any], hops: dict[str, Any]) -> list[str]:
+    st = c.get("status")
+    be = str(c.get("backend") or "")
+    buu = _primary_buucuc(c) or ""
+    acts: list[str] = []
+    if st == "missing_secret" or (c.get("secret") and not c.get("secret_present")):
+        acts.append(f"Điền owned secret {c.get('secret')} vào secrets/backend_pipes.env")
+        if be == "ViettelPost":
+            acts.append("Sau khi có VIETTELPOST_TOKEN: python3 scripts/scan_buucuc_orders.py --backend ViettelPost --notify")
+            acts.append("SSR TPO seed: python3 scripts/tpos_ssr_pipe.py --code TPO1408375976 --provider viettelpost --notify")
+    if st in {"contract_no_orders", "catalog_only"}:
+        acts.append(f"HĐ/catalog {be} chưa đổ đơn — kiểm tra partner scan hoặc remap carrier→buucuc")
+        if be in {"Best", "GHTK", "J&T"}:
+            acts.append("python3 scripts/contract_buucuc_backend_mapper.py --notify")
+        if be == "ViettelPost":
+            acts.append("python3 scripts/aship_tpos_ship_mapper.py --notify")
+    if st == "unassigned_or_unknown":
+        acts.append("python3 scripts/scan_buucuc_orders.py --days 3 --notify")
+        acts.append("python3 scripts/order_pipe_reverse_query.py --continue-flow")
+    if int(c.get("orders_n") or 0) > 0:
+        track = hops.get("tracking") or {}
+        if int(track.get("with_tracking_url") or 0) < int(track.get("with_tracking_code") or 0):
+            acts.append("python3 scripts/tracking_aship.py --notify  # gắn tracking_url thiếu")
+        if be in {"GHN", "SPX-local", "J&T", "Pancake"} and buu:
+            acts.append(f"python3 scripts/buucuc_catalog_chain_query_mapper.py --buucuc {buu.split('/')[0]} --continue")
+        if any(
+            str(p.get("p") or "").lower() in {"viettelpost", "best", "vtp"}
+            for p in (track.get("providers") or [])
+        ) or be in {"ViettelPost", "Best"}:
+            acts.append("python3 scripts/tpos_ssr_pipe.py --providers viettelpost,best --limit 40 --notify")
+    if not acts:
+        acts.append("python3 scripts/buucuc_catalog_chain_query_mapper.py --chain all --continue --notify")
+    # dedupe preserve order
+    seen: set[str] = set()
+    out: list[str] = []
+    for a in acts:
+        if a not in seen:
+            seen.add(a)
+            out.append(a)
+    return out[:6]
+
+
+def continue_chain_hops(
+    chains: list[dict[str, Any]],
+    *,
+    limit: int = 15,
+) -> list[dict[str, Any]]:
+    """Tiếp tục mỗi chuỗi: tracking → SSR/events → flow_path → next actions."""
+    out: list[dict[str, Any]] = []
+    for i, c in enumerate(chains[:limit]):
+        buu = _primary_buucuc(c)
+        be = str(c.get("backend") or "") if c.get("backend") else None
+        tracking = hop_tracking(buu, be)
+        ssr = hop_ssr_events(buu)
+        flows = hop_flow_samples(buu, limit=4)
+        hops = {
+            "tracking": tracking,
+            "ssr_events": ssr,
+            "flow_samples": flows,
+        }
+        hops["next_actions"] = next_actions_for_chain(c, hops)
+        hops["continued_chain"] = chain_text(
+            [
+                c.get("chain"),
+                f"track:{tracking.get('with_tracking_code')}/{tracking.get('orders')}({tracking.get('coverage_pct')}%)",
+                f"aship_url:{tracking.get('aship_url')}",
+                f"ssr:{ssr.get('ssr_rows')}",
+                f"flow×{len(flows)}",
+            ]
+        )
+        row = dict(c)
+        row["continue_hops"] = hops
+        out.append(row)
+    # keep remainder without deep hops
+    for c in chains[limit:]:
+        out.append(c)
+    return out
+
+
+def build_continue_priority(chains: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Ưu tiên gap → unassigned → live có đơn."""
+    rank = {
+        "missing_secret": 0,
+        "contract_no_orders": 1,
+        "catalog_only": 2,
+        "unassigned_or_unknown": 3,
+        "empty_node": 4,
+        "ok": 5,
+    }
+    return sorted(
+        chains,
+        key=lambda c: (
+            rank.get(str(c.get("status")), 9),
+            -int(c.get("orders_n") or 0),
+        ),
+    )
+
+
 def build_report(
     *,
     q: str | None = None,
@@ -689,10 +949,16 @@ def build_report(
     provider: str | None = None,
     chain_id: str | None = None,
     enrich_limit: int = 12,
+    continue_chain: bool = False,
 ) -> dict[str, Any]:
     env = load_env()
     if not PIPE_DB.is_file():
         return {"ok": False, "error": f"missing {PIPE_DB}", "checked_at": utc_now()}
+
+    # preset "continue" ⇒ continue mode on all chains
+    if chain_id == "continue":
+        continue_chain = True
+        chain_id = "all"
 
     catalog = fetch_aship_catalog(env)
     backends = load_backends(env)
@@ -709,7 +975,11 @@ def build_report(
         provider=provider,
         chain_id=chain_id or "all",
     )
+    if continue_chain:
+        matched = build_continue_priority(matched)
     matched = enrich_order_stats(matched, limit=enrich_limit)
+    if continue_chain:
+        matched = continue_chain_hops(matched, limit=max(enrich_limit, 15))
 
     status_c = Counter(c.get("status") for c in all_chains)
     gap_secret = [c for c in all_chains if c.get("secret") and not c.get("secret_present")]
@@ -730,29 +1000,78 @@ def build_report(
         "buucuc": buucuc,
         "backend": backend,
         "provider": provider,
-        "chain": chain_id or "all",
-        "chain_title": (CHAIN_QUERIES.get(chain_id or "all") or {}).get("title"),
+        "chain": "continue" if continue_chain and (chain_id or "all") == "all" else (chain_id or "all"),
+        "continue": continue_chain,
+        "chain_title": (
+            CHAIN_QUERIES["continue"]["title"]
+            if continue_chain
+            else (CHAIN_QUERIES.get(chain_id or "all") or {}).get("title")
+        ),
     }
+
+    atlas = (
+        "ShippingProviderConfigs → ConfigId/secret → backends → contracts → "
+        "buucuc_nodes → orders → kho/shop"
+    )
+    mermaid = (
+        "flowchart LR\n"
+        "  CAT[Aship ShippingProviderConfigs] --> CFG[ConfigId / secret]\n"
+        "  CFG --> BE[backends catalog]\n"
+        "  BE --> HD[contracts HĐ]\n"
+        "  HD --> NODE[buucuc_nodes]\n"
+        "  NODE --> ORD[orders]\n"
+        "  ORD --> KHO[kho]\n"
+        "  ORD --> SHOP[shop]\n"
+    )
+    if continue_chain:
+        atlas += " → tracking → aship SSR → pipe_events/flow → next"
+        mermaid += (
+            "  ORD --> TRK[tracking_code/url]\n"
+            "  TRK --> SSR[tracking.aship SSR]\n"
+            "  SSR --> EV[pipe_events]\n"
+            "  ORD --> FLOW[flow_path]\n"
+            "  EV --> NEXT[next CLI]\n"
+            "  FLOW --> NEXT\n"
+        )
+
+    # continue summary
+    cont_summary: dict[str, Any] = {}
+    if continue_chain:
+        with_hops = [c for c in matched if c.get("continue_hops")]
+        cont_summary = {
+            "chains_continued": len(with_hops),
+            "actions_n": sum(
+                len((c.get("continue_hops") or {}).get("next_actions") or []) for c in with_hops
+            ),
+            "tracking_coverages": [
+                {
+                    "backend": c.get("backend"),
+                    "buucuc": _primary_buucuc(c),
+                    "coverage_pct": ((c.get("continue_hops") or {}).get("tracking") or {}).get(
+                        "coverage_pct"
+                    ),
+                    "aship_url": ((c.get("continue_hops") or {}).get("tracking") or {}).get(
+                        "aship_url"
+                    ),
+                }
+                for c in with_hops[:12]
+            ],
+            "top_next": [],
+        }
+        # flatten unique next actions by frequency
+        act_c: Counter[str] = Counter()
+        for c in with_hops:
+            for a in (c.get("continue_hops") or {}).get("next_actions") or []:
+                act_c[a] += 1
+        cont_summary["top_next"] = [{"action": a, "n": n} for a, n in act_c.most_common(10)]
 
     report: dict[str, Any] = {
         "ok": True,
         "module": "buucuc_catalog_chain_query_mapper",
         "checked_at": utc_now(),
         "policy": "owned secrets only · no dump-login · reports gitignored",
-        "atlas": (
-            "ShippingProviderConfigs → ConfigId/secret → backends → contracts → "
-            "buucuc_nodes → orders → kho/shop"
-        ),
-        "mermaid": (
-            "flowchart LR\n"
-            "  CAT[Aship ShippingProviderConfigs] --> CFG[ConfigId / secret]\n"
-            "  CFG --> BE[backends catalog]\n"
-            "  BE --> HD[contracts HĐ]\n"
-            "  HD --> NODE[buucuc_nodes]\n"
-            "  NODE --> ORD[orders]\n"
-            "  ORD --> KHO[kho]\n"
-            "  ORD --> SHOP[shop]\n"
-        ),
+        "atlas": atlas,
+        "mermaid": mermaid,
         "query": query_meta,
         "chain_presets": {
             k: {"title": v.get("title"), "hint": v.get("hint")}
@@ -776,11 +1095,14 @@ def build_report(
             "by_status": dict(status_c),
             "gap_secret_n": len(gap_secret),
             "gap_orders_n": len(gap_orders),
+            "continue": continue_chain,
+            "continue_summary": cont_summary,
         },
         "backends": backends,
         "contracts_sample": contracts[:12],
         "buucuc_nodes": nodes,
         "chains": matched,
+        "continue": cont_summary if continue_chain else None,
         "gaps": {
             "missing_secret": [
                 {"backend": c.get("backend"), "secret": c.get("secret"), "chain": c.get("chain")}
@@ -797,17 +1119,25 @@ def build_report(
             ],
         },
         "verdict": (
-            f"🏷 Catalog BC chuỗi: matched={len(matched)}/{len(all_chains)} · "
+            f"🏷 Catalog BC chuỗi{(' · TIẾP TỤC' if continue_chain else '')}: "
+            f"matched={len(matched)}/{len(all_chains)} · "
             f"catalog={len(catalog.get('providers') or [])} · "
             f"HĐ={len(contracts)} · nodes={len(nodes)} · "
             f"gap_secret={len(gap_secret)} · gap_0đơn={len(gap_orders)}"
+            + (
+                f" · hops={cont_summary.get('chains_continued')} "
+                f"actions={cont_summary.get('actions_n')}"
+                if continue_chain
+                else ""
+            )
         ),
         "next": [
-            "python3 scripts/buucuc_catalog_chain_query_mapper.py --chain ghn --notify",
-            "python3 scripts/buucuc_catalog_chain_query_mapper.py --q Viettel --notify",
-            "python3 scripts/buucuc_catalog_chain_query_mapper.py --chain gap_secret --notify",
-            "python3 scripts/buucuc_catalog_chain_query_mapper.py --buucuc J&T --notify",
-            "python3 scripts/buucuc_catalog_chain_query_mapper.py --list-chains",
+            "python3 scripts/buucuc_catalog_chain_query_mapper.py --continue --notify",
+            "python3 scripts/buucuc_catalog_chain_query_mapper.py --chain continue --notify",
+            "python3 scripts/buucuc_catalog_chain_query_mapper.py --chain gap_secret --continue --notify",
+            "python3 scripts/buucuc_catalog_chain_query_mapper.py --chain ghn --continue --notify",
+            "python3 scripts/tpos_ssr_pipe.py --notify",
+            "python3 scripts/scan_buucuc_orders.py --days 3 --notify",
         ],
     }
     return report
@@ -825,7 +1155,7 @@ def format_text(report: dict[str, Any]) -> str:
     A(f"Verdict: {report.get('verdict')}")
     A(f"Atlas: {report.get('atlas')}")
     A(
-        f"Query: chain={q.get('chain')} · q={q.get('q')} · "
+        f"Query: chain={q.get('chain')} · continue={q.get('continue')} · q={q.get('q')} · "
         f"buucuc={q.get('buucuc')} · backend={q.get('backend')} · provider={q.get('provider')}"
     )
     if q.get("chain_title"):
@@ -836,6 +1166,11 @@ def format_text(report: dict[str, Any]) -> str:
         f"chains={st.get('chains_matched')}/{st.get('chains_total')} · "
         f"gap_secret={st.get('gap_secret_n')} gap_0đơn={st.get('gap_orders_n')}"
     )
+    cont = report.get("continue") or st.get("continue_summary") or {}
+    if cont:
+        A(
+            f"Continue: hops={cont.get('chains_continued')} actions={cont.get('actions_n')}"
+        )
     A("")
     cat = report.get("catalog") or {}
     A(
@@ -845,7 +1180,7 @@ def format_text(report: dict[str, Any]) -> str:
     for p in cat.get("providers") or []:
         A(f"  · {p.get('provider')} id={p.get('id')} keys={p.get('config_keys')}")
     A("")
-    A("=== Chuỗi khớp ===")
+    A("=== Chuỗi khớp" + (" · TIẾP TỤC" if q.get("continue") else "") + " ===")
     icon = {
         "ok": "✅",
         "catalog_only": "⚪",
@@ -856,6 +1191,7 @@ def format_text(report: dict[str, Any]) -> str:
     }
     for c in (report.get("chains") or [])[:20]:
         ic = icon.get(str(c.get("status")), "·")
+        hops = c.get("continue_hops") or {}
         A(f"  {ic} [{c.get('status')}] {c.get('chain')}")
         A(
             f"      backend={c.get('backend')} secret={c.get('secret')} "
@@ -873,7 +1209,28 @@ def format_text(report: dict[str, Any]) -> str:
                 f"      order_stats: n={os_.get('orders')} track={os_.get('with_tracking')} · "
                 f"kho={[(x.get('kho'), x.get('n')) for x in (os_.get('kho_top') or [])[:3]]}"
             )
+        if hops:
+            tr = hops.get("tracking") or {}
+            A(
+                f"      → continue: {hops.get('continued_chain')}"
+            )
+            A(
+                f"      track: code={tr.get('with_tracking_code')} url={tr.get('with_tracking_url')} "
+                f"aship={tr.get('aship_url')} cov={tr.get('coverage_pct')}% · "
+                f"prov={[(x.get('p'), x.get('n')) for x in (tr.get('providers') or [])[:4]]}"
+            )
+            ssr = hops.get("ssr_events") or {}
+            A(f"      ssr_rows={ssr.get('ssr_rows')} · events_head={[(e.get('event'), e.get('n')) for e in (ssr.get('pipe_events_head') or [])[:4]]}")
+            for fl in (hops.get("flow_samples") or [])[:2]:
+                A(f"      flow×{fl.get('n')}: {(fl.get('flow_path') or '')[:140]}")
+            for a in (hops.get("next_actions") or [])[:3]:
+                A(f"      next▸ {a}")
     A("")
+    if cont.get("top_next"):
+        A("=== Next ưu tiên (gộp) ===")
+        for a in cont["top_next"][:8]:
+            A(f"  · ×{a.get('n')} {a.get('action')}")
+        A("")
     gaps = report.get("gaps") or {}
     if gaps.get("missing_secret"):
         A("=== Gap secret ===")
@@ -937,6 +1294,12 @@ def main(argv: list[str] | None = None) -> int:
         default="all",
         help="Preset chuỗi query",
     )
+    ap.add_argument(
+        "--continue",
+        dest="continue_chain",
+        action="store_true",
+        help="Tiếp tục chuỗi: tracking → SSR → flow → next actions",
+    )
     ap.add_argument("--list-chains", action="store_true")
     ap.add_argument("--enrich-limit", type=int, default=12)
     ap.add_argument("--json", action="store_true")
@@ -955,6 +1318,7 @@ def main(argv: list[str] | None = None) -> int:
         provider=args.provider,
         chain_id=args.chain,
         enrich_limit=args.enrich_limit,
+        continue_chain=bool(args.continue_chain) or args.chain == "continue",
     )
     paths = write_outputs(report)
     text = format_text(report)
