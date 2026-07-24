@@ -188,16 +188,16 @@ def panel_keyboard() -> dict:
                 {"text": "🔍 Quét·phân tích", "callback_data": "q:inbox_scan"},
             ],
             [
+                {"text": "🗺 TMDT·VN icon", "callback_data": "q:tmdt_vn"},
                 {"text": "🚀 Lab·nâng cấp", "callback_data": "q:lab_upgrade"},
+            ],
+            [
                 {"text": "🧬 Lab·status", "callback_data": "q:lab_status"},
-            ],
-            [
                 {"text": "🧪 TG→Lab·phân tích", "callback_data": "q:tg_lab"},
-                {"text": "📖 Thư viện·KT", "callback_data": "q:knowledge"},
             ],
             [
+                {"text": "📖 Thư viện·KT", "callback_data": "q:knowledge"},
                 {"text": "📦 MSF·atlas đủ", "callback_data": "q:msf_atlas"},
-                {"text": "🧪 MSF·kiểm thử", "callback_data": "q:msf_test"},
             ],
             [
                 {"text": "📚 MSF·kiến thức", "callback_data": "q:msf_knowledge"},
@@ -960,6 +960,18 @@ def fmt_lab_status(_a: dict | None = None) -> str:
         return f"Lab status lỗi: {e}\nChạy: python3 scripts/lab_control.py status"
 
 
+def fmt_tmdt_vn(_a: dict | None = None) -> str:
+    try:
+        from tmdt_vn_icon_order_mapper import build_report, format_text
+
+        return format_text(build_report(scan_lab=True))[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "tmdt_vn_icon_order_mapper.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return f"TMDT VN mapper lỗi: {e}\nChạy: python3 scripts/tmdt_vn_icon_order_mapper.py"
+
+
 def fmt_ngx_order(_a: dict | None = None) -> str:
     try:
         from nginx_order_embed import format_text, run_when_needed, write_outputs
@@ -1164,6 +1176,7 @@ HANDLERS = {
     "q:tg_lab": fmt_tg_lab,
     "q:lab_upgrade": fmt_lab_upgrade,
     "q:lab_status": fmt_lab_status,
+    "q:tmdt_vn": fmt_tmdt_vn,
     "q:ngx_order": fmt_ngx_order,
     "q:owned_env": fmt_owned_env,
     "q:token_rotate": fmt_token_rotate,
