@@ -167,6 +167,9 @@ def panel_keyboard() -> dict:
             ],
             [
                 {"text": "🗺 GHN·ống·role", "callback_data": "q:ghn_pipe_roles"},
+                {"text": "📜 Ống·hợp đồng", "callback_data": "q:contract_pipe"},
+            ],
+            [
                 {"text": "📡 Quét BC remote", "callback_data": "q:bc_scan"},
             ],
             [
@@ -719,6 +722,24 @@ def fmt_ghn_pipe_roles(_a: dict | None = None) -> str:
         )
 
 
+def fmt_contract_pipe(_a: dict | None = None) -> str:
+    """Mapper đường ống dẫn các hợp đồng ĐVVC / HDDT."""
+    try:
+        from contract_pipe_mapper import build_report, format_text, write_outputs
+
+        report = build_report(probe=True)
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "contract_pipe_mapper.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Ống hợp đồng lỗi: {e}\n"
+            "Chạy: python3 scripts/contract_pipe_mapper.py --notify"
+        )
+
+
 def fmt_rev_q(_a: dict | None = None) -> str:
     try:
         from order_pipe_reverse_query import build_report, format_text, write_outputs
@@ -1165,6 +1186,7 @@ HANDLERS = {
     "q:frida_a11y_ghn": fmt_frida_a11y_ghn,
     "q:pipe_fp": fmt_pipe_fp,
     "q:ghn_pipe_roles": fmt_ghn_pipe_roles,
+    "q:contract_pipe": fmt_contract_pipe,
     "q:rev_q": fmt_rev_q,
     "q:dg_tbl": fmt_dg_tbl,
     "q:aship": fmt_aship,
