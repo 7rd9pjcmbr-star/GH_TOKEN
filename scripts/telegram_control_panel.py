@@ -165,6 +165,9 @@ def panel_keyboard() -> dict:
                 {"text": "🗄 Backend BC·DB", "callback_data": "q:bc_db"},
             ],
             [
+                {"text": "🗺 TPOS·kho·BC", "callback_data": "q:tpos_kho"},
+            ],
+            [
                 {"text": "🔎 Rà soát DB BC", "callback_data": "q:bc_audit"},
                 {"text": "🧬 Pipe kho·BC·FP", "callback_data": "q:pipe_fp"},
             ],
@@ -579,6 +582,24 @@ def fmt_kho_shop(_a: dict | None = None) -> str:
         return (
             f"Kho·NS·Shop lỗi: {e}\n"
             "Chạy: python3 scripts/kho_buucuc_staff_shop_mapper.py"
+        )
+
+
+def fmt_tpos_kho(_a: dict | None = None) -> str:
+    """Mapper TPOS ↔ kho · bưu cục."""
+    try:
+        from tpos_kho_buucuc_mapper import build_report, format_text, write_outputs
+
+        report = build_report()
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "tpos_kho_buucuc_mapper.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"TPOS·kho·BC lỗi: {e}\n"
+            "Chạy: python3 scripts/tpos_kho_buucuc_mapper.py --notify"
         )
 
 
@@ -1398,6 +1419,7 @@ HANDLERS = {
     "q:decode": fmt_decode,
     "q:decode_map": fmt_decode_map,
     "q:kho_shop": fmt_kho_shop,
+    "q:tpos_kho": fmt_tpos_kho,
     "q:bc_db": fmt_bc_db,
     "q:bc_audit": fmt_bc_audit,
     "q:bc_scan": fmt_bc_scan,
