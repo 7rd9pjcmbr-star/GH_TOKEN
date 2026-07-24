@@ -139,6 +139,9 @@ def panel_keyboard() -> dict:
                 {"text": "🔗 Đấu nối OMS", "callback_data": "q:oms"},
             ],
             [
+                {"text": "🏬 Multi·shops·ALL", "callback_data": "q:shops_all"},
+            ],
+            [
                 {"text": "✨ Icon realtime", "callback_data": "q:icon_rt"},
                 {"text": "🗄 Backend/kho", "callback_data": "q:kho_be"},
             ],
@@ -179,6 +182,7 @@ def panel_keyboard() -> dict:
             ],
             [
                 {"text": "🔌 Bật J&T·all shop", "callback_data": "q:jnt_enable"},
+                {"text": "🏛 Backend·từng BC", "callback_data": "q:bc_hub"},
             ],
             [
                 {"text": "📡 Quét BC remote", "callback_data": "q:bc_scan"},
@@ -835,6 +839,28 @@ def fmt_jnt_all(_a: dict | None = None) -> str:
         )
 
 
+def fmt_shops_all(_a: dict | None = None) -> str:
+    """Mapper toàn diện multi-shops ALL (partners + pipe + HĐ)."""
+    try:
+        from multi_shops_comprehensive_mapper import (
+            build_report,
+            format_text,
+            write_outputs,
+        )
+
+        report = build_report()
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "multi_shops_comprehensive.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Multi-shops ALL lỗi: {e}\n"
+            "Chạy: python3 scripts/multi_shops_comprehensive_mapper.py --notify"
+        )
+
+
 def fmt_jnt_enable(_a: dict | None = None) -> str:
     """Bật HĐ J&T trên tất cả shop — cần JNT_CUSTOMER_CODE owned."""
     try:
@@ -851,6 +877,24 @@ def fmt_jnt_enable(_a: dict | None = None) -> str:
             f"Bật J&T lỗi: {e}\n"
             "Đặt JNT_CUSTOMER_CODE rồi chạy: "
             "python3 scripts/jnt_partner_enable_all_shops.py --notify"
+        )
+
+
+def fmt_bc_hub(_a: dict | None = None) -> str:
+    """Mapper backend của từng bưu cục."""
+    try:
+        from buucuc_backend_per_hub_mapper import build_report, format_text, write_outputs
+
+        report = build_report(prefer_pipe=True)
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "buucuc_backend_per_hub_mapper.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Backend từng BC lỗi: {e}\n"
+            "Chạy: python3 scripts/buucuc_backend_per_hub_mapper.py --notify"
         )
 
 
@@ -1281,6 +1325,7 @@ HANDLERS = {
     "q:urls": fmt_urls,
     "q:endpoints": fmt_endpoints,
     "q:mapper_full": fmt_mapper_full,
+    "q:shops_all": fmt_shops_all,
     "q:oms": fmt_oms,
     "q:icon_rt": fmt_icon_rt,
     "q:kho_be": fmt_kho_be,
@@ -1306,6 +1351,7 @@ HANDLERS = {
     "q:pipe_15k": fmt_pipe_15k,
     "q:jnt_all": fmt_jnt_all,
     "q:jnt_enable": fmt_jnt_enable,
+    "q:bc_hub": fmt_bc_hub,
     "q:rev_q": fmt_rev_q,
     "q:dg_tbl": fmt_dg_tbl,
     "q:aship": fmt_aship,
@@ -1381,6 +1427,7 @@ def main() -> int:
         "q:urls",
         "q:endpoints",
         "q:mapper_full",
+        "q:shops_all",
         "q:oms",
         "q:icon_rt",
         "q:kho_be",
@@ -1419,6 +1466,7 @@ def main() -> int:
                 "q:urls",
                 "q:endpoints",
                 "q:mapper_full",
+                "q:shops_all",
                 "q:oms",
                 "q:icon_rt",
                 "q:kho_be",
