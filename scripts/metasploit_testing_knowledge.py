@@ -147,6 +147,8 @@ DENY = [
 ]
 
 CLI_NOW = [
+    "python3 scripts/knowledge_library_build.py",
+    "python3 scripts/knowledge_library_build.py --with-harvest",
     "python3 scripts/metasploit_testing_knowledge.py",
     "python3 scripts/metasploit_library_harvest.py",
     "python3 scripts/metasploit_suite_mapper.py",

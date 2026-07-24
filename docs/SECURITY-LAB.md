@@ -30,6 +30,19 @@ MaMoLab.describe()
 
 Owns (không chồng a11y/crypto recommend): `malware-static`, `security-audit`, `sandbox-policy`, `ioc-triage`.
 
+## Thư viện kiến thức học tập & thí nghiệm
+
+Curriculum + chương + EXP + catalog MSF (phòng thủ):
+
+```bash
+python3 scripts/knowledge_library_build.py
+python3 scripts/knowledge_library_build.py status
+python3 scripts/knowledge_library_build.py --with-harvest
+```
+
+Vào: `knowledge/README.md` · `knowledge/CURRICULUM.md` · `knowledge/experiments/`  
+Panel: **📖 Thư viện·KT**.
+
 ## Mapper thư viện Metasploit Suite
 
 Catalog phòng thủ (taxonomy modules / suite) — **không** generate payload:

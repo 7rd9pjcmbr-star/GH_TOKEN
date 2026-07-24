@@ -38,4 +38,5 @@ python3 scripts/metasploit_suite_mapper.py
 python3 scripts/metasploit_library_harvest.py   # full library knowledge (readonly)
 python3 scripts/metasploit_testing_knowledge.py # playbook kiểm thử P1–P6
 python3 scripts/metasploit_suite_mapper.py test
+python3 scripts/knowledge_library_build.py      # thư viện học tập/thí nghiệm
 ```
