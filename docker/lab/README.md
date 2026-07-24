@@ -30,3 +30,9 @@ Báo cáo JSON ghi vào `reports/`.
 - `list` / `wipe` / `shell` / `help`
 
 Không cài Metasploit, không generate payload, không reverse-shell helper.
+
+Mapper taxonomy (host, phòng thủ):
+
+```bash
+python3 scripts/metasploit_suite_mapper.py
+```

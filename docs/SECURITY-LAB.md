@@ -30,6 +30,19 @@ MaMoLab.describe()
 
 Owns (không chồng a11y/crypto recommend): `malware-static`, `security-audit`, `sandbox-policy`, `ioc-triage`.
 
+## Mapper thư viện Metasploit Suite
+
+Catalog phòng thủ (taxonomy modules / suite) — **không** generate payload:
+
+```bash
+python3 scripts/metasploit_suite_mapper.py
+python3 scripts/metasploit_suite_mapper.py --mermaid
+```
+
+Ánh xạ: `exploit|auxiliary|post|payload|encoder|evasion` → MaMoLab roles.  
+Deny: msfvenom generate · exploit run · msfrpcd expose.  
+Báo cáo: `reports/telegram-classify/metasploit_suite_mapper.txt`.
+
 ## Quy trình an toàn
 
 1. Không mở/chạy mẫu trên máy làm việc chính.
