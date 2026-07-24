@@ -574,7 +574,8 @@ def build_report(ingest_limit: int = 5000, extra_sql: list[str] | None = None) -
         "how_to_query": [
             f"sqlite3 {DB_PATH} \"SELECT backend, buucuc, COUNT(*) FROM orders GROUP BY 1,2;\"",
             "python3 scripts/buucuc_backend_db_query.py --sql \"SELECT * FROM orders WHERE buucuc='SPX' LIMIT 10\"",
-            "Panel Telegram: 🗄 Backend BC·DB",
+            "python3 scripts/buucuc_db_order_detail_mapper.py --tracking SPX --limit 10",
+            "Panel Telegram: 🗄 Backend BC·DB · 📋 Đơn CT·DB BC",
         ],
         "next_actions": [
             "Điền GHN_API_TOKEN / VIETTELPOST_TOKEN / PANCAKE_* owned để probe remote ngoài local DB",
