@@ -192,7 +192,10 @@ def extract_candidates(payload: Any, *, source_hint: str = "") -> dict[str, Any]
 
 
 def load_capture(path: Path | str | None = None, *, raw: str | None = None) -> dict[str, Any]:
-    """Nạp capture Frida+a11y (file JSON/text hoặc raw)."""
+    """Nạp capture Frida+a11y (file JSON/text hoặc raw).
+
+    Auto (không path/raw): ghn_session.raw → pending (nếu có token) → AES bundle.
+    """
     out: dict[str, Any] = {
         "ok": False,
         "kind": None,
@@ -211,48 +214,73 @@ def load_capture(path: Path | str | None = None, *, raw: str | None = None) -> d
         out["ok"] = True
         return out
 
-    if not path:
-        # auto: pending → latest frida aes / plaintext
+    candidates: list[Path] = []
+    if path:
+        candidates.append(Path(path))
+    else:
+        session_raw = SECRETS / "ghn_session.raw"
+        if session_raw.is_file():
+            candidates.append(session_raw)
         if CAPTURE_PENDING.is_file():
-            path = CAPTURE_PENDING
-        else:
+            candidates.append(CAPTURE_PENDING)
+        try:
             from crypto_decode_assist import find_frida_aes_bundles
 
-            bundles = find_frida_aes_bundles()
-            path = bundles[0] if bundles else None
-    if not path:
+            candidates.extend(find_frida_aes_bundles()[:2])
+        except Exception:  # noqa: BLE001
+            pass
+
+    if not candidates:
         out["error"] = "Thiếu capture file / --raw / secrets/frida_a11y_ghn.pending.json"
         return out
 
-    p = Path(path)
-    out["path"] = str(p)
-    if not p.is_file():
-        out["error"] = f"Không thấy file: {p}"
-        return out
-    text = p.read_text(encoding="utf-8", errors="ignore")
-    name = p.name.lower()
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        out["payload"] = text
-        out["kind"] = "text_file"
+    last_err = "Không thấy file capture"
+    for p in candidates:
+        out["path"] = str(p)
+        if not p.is_file():
+            last_err = f"Không thấy file: {p}"
+            continue
+        text = p.read_text(encoding="utf-8", errors="ignore")
+        name = p.name.lower()
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            if PRINT_A5_RE.search(text) or UUID_RE.search(text):
+                out["payload"] = text
+                out["kind"] = "text_file"
+                out["ok"] = True
+                return out
+            last_err = f"File không phải JSON/token: {p.name}"
+            continue
+
+        if "offline-aes" in name or (
+            isinstance(data, dict)
+            and isinstance(data.get("aes"), dict)
+            and data["aes"].get("ciphertext_b64")
+        ):
+            kind = "frida_a11y_offline_aes"
+        elif isinstance(data, dict) and (
+            data.get("source") in {"frida+a11y", "frida_a11y", "a11y+frida"}
+            or data.get("a11y")
+            or data.get("printA5")
+        ):
+            kind = "frida_a11y_capture"
+        else:
+            kind = "json_file"
+
+        peek = extract_candidates(data if kind != "frida_a11y_offline_aes" else text, source_hint=kind)
+        # Ưu tiên file có Token/printA5; AES để sau cùng
+        if kind != "frida_a11y_offline_aes" and not peek.get("ok"):
+            last_err = f"{p.name}: không có Token/printA5 GHN"
+            continue
+
+        out["payload"] = data
+        out["kind"] = kind
         out["ok"] = True
         return out
 
-    out["payload"] = data
-    if "offline-aes" in name or (
-        isinstance(data, dict) and isinstance(data.get("aes"), dict) and data["aes"].get("ciphertext_b64")
-    ):
-        out["kind"] = "frida_a11y_offline_aes"
-    elif isinstance(data, dict) and (
-        data.get("source") in {"frida+a11y", "frida_a11y", "a11y+frida"}
-        or data.get("a11y")
-        or data.get("printA5")
-    ):
-        out["kind"] = "frida_a11y_capture"
-    else:
-        out["kind"] = "json_file"
-    out["ok"] = True
+    out["ok"] = False
+    out["error"] = last_err
     return out
 
 
@@ -296,7 +324,13 @@ def decrypt_aes_if_needed(loaded: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def stage_pending(payload: Any) -> Path:
+def stage_pending(payload: Any, *, kind: str | None = None) -> Path | None:
+    """Chỉ stage khi có Token/printA5 — không ghi đè bằng AES Pancake."""
+    if kind == "frida_a11y_offline_aes":
+        return None
+    peek = extract_candidates(payload, source_hint=kind or "stage")
+    if not peek.get("ok"):
+        return None
     SECRETS.mkdir(parents=True, exist_ok=True)
     if isinstance(payload, (dict, list)):
         CAPTURE_PENDING.write_text(
@@ -356,7 +390,8 @@ def apply_capture(
 
     # stage for ensure/retry
     try:
-        report["staged"] = str(stage_pending(loaded.get("payload")))
+        staged = stage_pending(loaded.get("payload"), kind=loaded.get("kind"))
+        report["staged"] = str(staged) if staged else None
     except Exception as e:  # noqa: BLE001
         report["staged_error"] = str(e)[:120]
 
