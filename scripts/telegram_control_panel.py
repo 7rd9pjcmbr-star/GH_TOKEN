@@ -213,6 +213,7 @@ def panel_keyboard() -> dict:
                 {"text": "🔎 Ống·đơn·TMDT", "callback_data": "q:tmdt_pipe"},
             ],
             [
+                {"text": "🔌 Đấu nối·TMDT", "callback_data": "q:tmdt_connect"},
                 {"text": "🚀 Lab·nâng cấp", "callback_data": "q:lab_upgrade"},
             ],
             [
@@ -1178,6 +1179,42 @@ def fmt_tmdt_vn(_a: dict | None = None) -> str:
         return f"TMDT VN mapper lỗi: {e}\nChạy: python3 scripts/tmdt_vn_icon_order_mapper.py"
 
 
+def fmt_tmdt_pipe(_a: dict | None = None) -> str:
+    """Rà soát ống dẫn đơn từ sàn TMDT."""
+    try:
+        from tmdt_order_pipe_audit_mapper import build_report, format_text, write_outputs
+
+        report = build_report()
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "tmdt_order_pipe_audit.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Rà ống TMDT lỗi: {e}\n"
+            "Chạy: python3 scripts/tmdt_order_pipe_audit_mapper.py --notify"
+        )
+
+
+def fmt_tmdt_connect(_a: dict | None = None) -> str:
+    """Đấu nối ngay ống đơn sàn TMDT (owned)."""
+    try:
+        from tmdt_pipe_connect import build_report, format_text, write_outputs
+
+        report = build_report(days=7, limit=10000)
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "tmdt_pipe_connect.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Đấu nối TMDT lỗi: {e}\n"
+            "Chạy: python3 scripts/tmdt_pipe_connect.py --notify"
+        )
+
+
 def fmt_ngx_order(_a: dict | None = None) -> str:
     try:
         from nginx_order_embed import format_text, run_when_needed, write_outputs
@@ -1393,6 +1430,7 @@ HANDLERS = {
     "q:lab_status": fmt_lab_status,
     "q:tmdt_vn": fmt_tmdt_vn,
     "q:tmdt_pipe": fmt_tmdt_pipe,
+    "q:tmdt_connect": fmt_tmdt_connect,
     "q:ngx_order": fmt_ngx_order,
     "q:owned_env": fmt_owned_env,
     "q:token_rotate": fmt_token_rotate,
