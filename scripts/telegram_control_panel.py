@@ -175,6 +175,7 @@ def panel_keyboard() -> dict:
             ],
             [
                 {"text": "📦 Pipe·15k CT", "callback_data": "q:pipe_15k"},
+                {"text": "🚚 J&T·HĐ·all shop", "callback_data": "q:jnt_all"},
             ],
             [
                 {"text": "📡 Quét BC remote", "callback_data": "q:bc_scan"},
@@ -809,6 +810,28 @@ def fmt_pipe_15k(_a: dict | None = None) -> str:
         )
 
 
+def fmt_jnt_all(_a: dict | None = None) -> str:
+    """Mapper HĐ J&T trên tất cả shop Pancake (owned)."""
+    try:
+        from jnt_partner_contract_all_shops_mapper import (
+            build_report,
+            format_text,
+            write_outputs,
+        )
+
+        report = build_report(upsert_db=True)
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "jnt_partner_contract_all_shops.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"J&T HĐ all-shop lỗi: {e}\n"
+            "Chạy: python3 scripts/jnt_partner_contract_all_shops_mapper.py --notify"
+        )
+
+
 def fmt_rev_q(_a: dict | None = None) -> str:
     try:
         from order_pipe_reverse_query import build_report, format_text, write_outputs
@@ -1259,6 +1282,7 @@ HANDLERS = {
     "q:contract_bc": fmt_contract_bc,
     "q:bc_order_ct": fmt_bc_order_ct,
     "q:pipe_15k": fmt_pipe_15k,
+    "q:jnt_all": fmt_jnt_all,
     "q:rev_q": fmt_rev_q,
     "q:dg_tbl": fmt_dg_tbl,
     "q:aship": fmt_aship,
