@@ -166,6 +166,7 @@ def panel_keyboard() -> dict:
             ],
             [
                 {"text": "🗺 TPOS·kho·BC", "callback_data": "q:tpos_kho"},
+                {"text": "🚢 Aship·TPOS ship", "callback_data": "q:aship_tpos"},
             ],
             [
                 {"text": "🔎 Rà soát DB BC", "callback_data": "q:bc_audit"},
@@ -600,6 +601,24 @@ def fmt_tpos_kho(_a: dict | None = None) -> str:
         return (
             f"TPOS·kho·BC lỗi: {e}\n"
             "Chạy: python3 scripts/tpos_kho_buucuc_mapper.py --notify"
+        )
+
+
+def fmt_aship_tpos(_a: dict | None = None) -> str:
+    """Mapper Aship ↔ TPOS ship (tokenShip / ConfigId)."""
+    try:
+        from aship_tpos_ship_mapper import build_report, format_text, write_outputs
+
+        report = build_report()
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "aship_tpos_ship_mapper.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Aship·TPOS ship lỗi: {e}\n"
+            "Chạy: python3 scripts/aship_tpos_ship_mapper.py --notify"
         )
 
 
@@ -1420,6 +1439,7 @@ HANDLERS = {
     "q:decode_map": fmt_decode_map,
     "q:kho_shop": fmt_kho_shop,
     "q:tpos_kho": fmt_tpos_kho,
+    "q:aship_tpos": fmt_aship_tpos,
     "q:bc_db": fmt_bc_db,
     "q:bc_audit": fmt_bc_audit,
     "q:bc_scan": fmt_bc_scan,
