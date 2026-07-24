@@ -1,0 +1,32 @@
+# MaMoLab — OS isolation for suspicious samples
+# Usage:
+#   mkdir -p quarantine reports
+#   # copy sample into ./quarantine (never execute on host)
+#   docker compose -f docker/lab/docker-compose.yml run --rm lab analyze /quarantine/sample.bin
+
+services:
+  lab:
+    build: .
+    image: mamo-lab:local
+    container_name: mamo-lab
+    # Cô lập mạng hoàn toàn
+    network_mode: "none"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    user: "10001:10001"
+    working_dir: /lab
+    volumes:
+      - ../../quarantine:/quarantine:ro
+      - ../../reports:/reports:rw
+    environment:
+      - LAB_MODE=defensive
+    # Không privileged, không PID host, không IPC host
+    pid: "container"
+    ipc: "private"
+    stdin_open: true
+    tty: true

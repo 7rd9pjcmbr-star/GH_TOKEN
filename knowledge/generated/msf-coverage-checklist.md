@@ -1,0 +1,88 @@
+# MSF coverage checklist (mọi nhánh depth1)
+
+- [x] `exploits/windows` ×1231 — CVE / kỹ thuật công khai → triage patch + detect
+- [x] `exploits/linux` ×566 — CVE / kỹ thuật công khai → triage patch + detect
+- [x] `exploits/multi` ×538 — CVE / kỹ thuật công khai → triage patch + detect
+- [x] `exploits/unix` ×227 — CVE / kỹ thuật công khai → triage patch + detect
+- [x] `exploits/osx` ×43 — CVE / kỹ thuật công khai → triage patch + detect
+- [x] `exploits/freebsd` ×16 — CVE / kỹ thuật công khai → triage patch + detect
+- [x] `exploits/solaris` ×15 — CVE / kỹ thuật công khai → triage patch + detect
+- [x] `exploits/android` ×10 — CVE / kỹ thuật công khai → triage patch + detect
+- [x] `exploits/apple_ios` ×6 — CVE / kỹ thuật công khai → triage patch + detect
+- [x] `exploits/aix` ×5 — CVE / kỹ thuật công khai → triage patch + detect
+- [x] `exploits/netware` ×2 — CVE / kỹ thuật công khai → triage patch + detect
+- [x] `exploits/qnx` ×2 — CVE / kỹ thuật công khai → triage patch + detect
+- [x] `exploits/bsd` ×1 — CVE / kỹ thuật công khai → triage patch + detect
+- [x] `exploits/bsdi` ×1 — CVE / kỹ thuật công khai → triage patch + detect
+- [x] `exploits/example.rb` ×1 — CVE / kỹ thuật công khai → triage patch + detect
+- [x] `exploits/example_linux_persistence.rb` ×1 — CVE / kỹ thuật công khai → triage patch + detect
+- [x] `exploits/example_linux_priv_esc.rb` ×1 — CVE / kỹ thuật công khai → triage patch + detect
+- [x] `exploits/example_webapp.rb` ×1 — CVE / kỹ thuật công khai → triage patch + detect
+- [x] `exploits/firefox` ×1 — CVE / kỹ thuật công khai → triage patch + detect
+- [x] `exploits/hpux` ×1 — CVE / kỹ thuật công khai → triage patch + detect
+- [x] `exploits/irix` ×1 — CVE / kỹ thuật công khai → triage patch + detect
+- [x] `exploits/mainframe` ×1 — CVE / kỹ thuật công khai → triage patch + detect
+- [x] `exploits/openbsd` ×1 — CVE / kỹ thuật công khai → triage patch + detect
+- [x] `auxiliary/scanner` ×646 — Checklist dò bề mặt → harden
+- [x] `auxiliary/admin` ×237 — Misconfig / default cred patterns → audit cấu hình
+- [x] `auxiliary/gather` ×178 — Thu thập info → giảm info disclosure
+- [x] `auxiliary/dos` ×112 — CẤM thí nghiệm ngoài lab tách — chỉ biết tồn tại
+- [x] `auxiliary/server` ×53 — Listener/capture patterns → C2/ cred capture detect
+- [x] `auxiliary/fuzzers` ×21 — Fuzz surface — chỉ học khái niệm trong owned lab
+- [x] `auxiliary/sqli` ×19 — SQLi helper patterns → WAF/query harden
+- [x] `auxiliary/spoof` ×11 — Spoof DNS/ARP… → network detect
+- [x] `auxiliary/analyze` ×9 — Phân tích phụ trợ → tham chiếu
+- [x] `auxiliary/fileformat` ×9 — File độc → static lab
+- [x] `auxiliary/client` ×6 — Client-side aux
+- [x] `auxiliary/voip` ×6 — VoIP surface
+- [x] `auxiliary/cloud` ×5 — Cloud API/misconfig
+- [x] `auxiliary/vsploit` ×5 — Mô phỏng traffic — lab only
+- [x] `auxiliary/bnat` ×2 — Tham chiếu catalog
+- [x] `auxiliary/crawler` ×1 — Tham chiếu catalog
+- [x] `auxiliary/example.rb` ×1 — Tham chiếu catalog
+- [x] `auxiliary/parser` ×1 — Tham chiếu catalog
+- [x] `auxiliary/pdf` ×1 — Tham chiếu catalog
+- [x] `auxiliary/sniffer` ×1 — Tham chiếu catalog
+- [x] `post/windows` ×242 — TTP sau xâm nhập → IOC persistence/lateral/cred
+- [x] `post/multi` ×79 — TTP sau xâm nhập → IOC persistence/lateral/cred
+- [x] `post/linux` ×51 — TTP sau xâm nhập → IOC persistence/lateral/cred
+- [x] `post/osx` ×23 — TTP sau xâm nhập → IOC persistence/lateral/cred
+- [x] `post/hardware` ×12 — TTP sau xâm nhập → IOC persistence/lateral/cred
+- [x] `post/android` ×7 — TTP sau xâm nhập → IOC persistence/lateral/cred
+- [x] `post/networking` ×6 — TTP sau xâm nhập → IOC persistence/lateral/cred
+- [x] `post/solaris` ×6 — TTP sau xâm nhập → IOC persistence/lateral/cred
+- [x] `post/firefox` ×5 — TTP sau xâm nhập → IOC persistence/lateral/cred
+- [x] `post/apple_ios` ×2 — TTP sau xâm nhập → IOC persistence/lateral/cred
+- [x] `post/aix` ×1 — TTP sau xâm nhập → IOC persistence/lateral/cred
+- [x] `post/bsd` ×1 — TTP sau xâm nhập → IOC persistence/lateral/cred
+- [x] `payloads/singles` ×315 — Họ artifact (singles/stagers/stages) → signature
+- [x] `payloads/stagers` ×103 — Họ artifact (singles/stagers/stages) → signature
+- [x] `payloads/adapters` ×64 — Họ artifact (singles/stagers/stages) → signature
+- [x] `payloads/stages` ×47 — Họ artifact (singles/stagers/stages) → signature
+- [x] `encoders/x86` ×24 — Biến đổi payload theo arch → entropy/heuristic
+- [x] `encoders/cmd` ×8 — Biến đổi payload theo arch → entropy/heuristic
+- [x] `encoders/riscv32le` ×4 — Biến đổi payload theo arch → entropy/heuristic
+- [x] `encoders/riscv64le` ×4 — Biến đổi payload theo arch → entropy/heuristic
+- [x] `encoders/x64` ×4 — Biến đổi payload theo arch → entropy/heuristic
+- [x] `encoders/php` ×3 — Biến đổi payload theo arch → entropy/heuristic
+- [x] `encoders/generic` ×2 — Biến đổi payload theo arch → entropy/heuristic
+- [x] `encoders/mipsbe` ×2 — Biến đổi payload theo arch → entropy/heuristic
+- [x] `encoders/mipsle` ×2 — Biến đổi payload theo arch → entropy/heuristic
+- [x] `encoders/ppc` ×2 — Biến đổi payload theo arch → entropy/heuristic
+- [x] `encoders/ruby` ×1 — Biến đổi payload theo arch → entropy/heuristic
+- [x] `encoders/sparc` ×1 — Biến đổi payload theo arch → entropy/heuristic
+- [x] `nops/x86` ×2 — NOP sled patterns theo arch
+- [x] `nops/aarch64` ×1 — NOP sled patterns theo arch
+- [x] `nops/armle` ×1 — NOP sled patterns theo arch
+- [x] `nops/cmd` ×1 — NOP sled patterns theo arch
+- [x] `nops/loongarch64` ×1 — NOP sled patterns theo arch
+- [x] `nops/mipsbe` ×1 — NOP sled patterns theo arch
+- [x] `nops/php` ×1 — NOP sled patterns theo arch
+- [x] `nops/ppc` ×1 — NOP sled patterns theo arch
+- [x] `nops/riscv32le` ×1 — NOP sled patterns theo arch
+- [x] `nops/riscv64le` ×1 — NOP sled patterns theo arch
+- [x] `nops/sparc` ×1 — NOP sled patterns theo arch
+- [x] `nops/tty` ×1 — NOP sled patterns theo arch
+- [x] `nops/x64` ×1 — NOP sled patterns theo arch
+- [x] `evasion/windows` ×9 — Kỹ thuật né AV/AppLocker (tên module)
+- [x] `evasion/linux` ×3 — Kỹ thuật né AV/AppLocker (tên module)

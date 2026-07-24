@@ -1,0 +1,11 @@
+{
+  "name": "mamo-security-lab",
+  "install": "chmod +x docker/lab/entrypoint.sh docker/lab/analyze-static.py || true",
+  "start": "python3 -m http.server 8080",
+  "terminals": [
+    {
+      "name": "lab-static",
+      "command": "python3 -m http.server 8080"
+    }
+  ]
+}

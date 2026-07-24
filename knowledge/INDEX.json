@@ -1,0 +1,174 @@
+{
+  "ok": true,
+  "module": "knowledge_library",
+  "built_at": "2026-07-24T05:23:28Z",
+  "title": "Thư viện kiến thức học tập & thí nghiệm (phòng thủ)",
+  "policy": {
+    "defensive_only": true,
+    "no_exploit": true,
+    "no_payload_gen": true,
+    "lab_only": true,
+    "msf_complete_atlas": true
+  },
+  "roots": {
+    "knowledge": "/workspace/knowledge",
+    "curriculum": "/workspace/knowledge/CURRICULUM.md",
+    "experiments": "/workspace/knowledge/experiments",
+    "generated": "/workspace/knowledge/generated",
+    "msf_atlas": "/workspace/knowledge/generated/msf-full-atlas.md"
+  },
+  "chapters": [
+    {
+      "id": "00",
+      "file": "00-policy-ethics.md",
+      "title": "Chính sách, đạo đức & phạm vi lab"
+    },
+    {
+      "id": "01",
+      "file": "01-lab-environment.md",
+      "title": "Môi trường thí nghiệm (MaMoLab + Docker)"
+    },
+    {
+      "id": "02",
+      "file": "02-defender-threat-model.md",
+      "title": "Mô hình đe dọa phía phòng thủ"
+    },
+    {
+      "id": "03",
+      "file": "03-msf-catalog-defenders.md",
+      "title": "Metasploit như thư viện tham chiếu (defenders)"
+    },
+    {
+      "id": "04",
+      "file": "04-module-classes.md",
+      "title": "Phân loại module → hành động học/lab"
+    },
+    {
+      "id": "05",
+      "file": "05-cve-triage.md",
+      "title": "Phương pháp triage CVE"
+    },
+    {
+      "id": "06",
+      "file": "06-harden-network.md",
+      "title": "Kiểm thử harden mạng & dịch vụ"
+    },
+    {
+      "id": "07",
+      "file": "07-endpoint-platforms.md",
+      "title": "Endpoint Windows / Linux / mobile"
+    },
+    {
+      "id": "08",
+      "file": "08-web-checks.md",
+      "title": "Kiểm thử bề mặt web"
+    },
+    {
+      "id": "09",
+      "file": "09-ioc-ttp.md",
+      "title": "IOC, TTP & post-exploitation patterns"
+    },
+    {
+      "id": "10",
+      "file": "10-static-malware-lab.md",
+      "title": "Lab phân tích mã tĩnh"
+    },
+    {
+      "id": "11",
+      "file": "11-mamolab-api.md",
+      "title": "API MaMoLab & tự kiểm thử"
+    },
+    {
+      "id": "12",
+      "file": "12-study-path.md",
+      "title": "Lộ trình học 7–14 buổi"
+    },
+    {
+      "id": "13",
+      "file": "13-msf-full-atlas.md",
+      "title": "Atlas Metasploit đầy đủ — có những gì (không bỏ sót)"
+    }
+  ],
+  "experiments": [
+    {
+      "id": "EXP-01",
+      "file": "EXP-01-lab-audit.md",
+      "title": "Self-audit MaMoLab"
+    },
+    {
+      "id": "EXP-02",
+      "file": "EXP-02-static-analyze.md",
+      "title": "Phân tích tĩnh mẫu trong quarantine"
+    },
+    {
+      "id": "EXP-03",
+      "file": "EXP-03-cve-backlog.md",
+      "title": "Lập backlog CVE từ harvest"
+    },
+    {
+      "id": "EXP-04",
+      "file": "EXP-04-harden-http.md",
+      "title": "Checklist harden HTTP (owned)"
+    },
+    {
+      "id": "EXP-05",
+      "file": "EXP-05-ioc-patterns.md",
+      "title": "Ánh xạ post-TTP → IOC"
+    },
+    {
+      "id": "EXP-06",
+      "file": "EXP-06-rank-priority.md",
+      "title": "Ưu tiên vá theo Rank MSF"
+    },
+    {
+      "id": "EXP-07",
+      "file": "EXP-07-policy-deny.md",
+      "title": "Xác minh deny-list lab"
+    },
+    {
+      "id": "EXP-08",
+      "file": "EXP-08-atlas-coverage.md",
+      "title": "Đối chiếu đủ 86 nhánh atlas MSF"
+    }
+  ],
+  "harvest": {
+    "modules_total": 5043,
+    "unique_cves": 1004,
+    "checked_at": "2026-07-24T05:20:17Z"
+  },
+  "atlas": {
+    "modules": 5043,
+    "branches_depth1": 86,
+    "unique_cves": 1004,
+    "verdict": "✅ Atlas MSF đầy đủ · modules=5043 · classes=7 · branches_depth1=86 · CVE_unique_in_index=1004",
+    "files": [
+      "generated/msf-full-atlas.md",
+      "generated/msf-coverage-checklist.md",
+      "generated/msf-module-index.csv",
+      "generated/atlas-exploits.md",
+      "generated/atlas-auxiliary.md",
+      "generated/atlas-post.md",
+      "generated/atlas-payloads.md",
+      "generated/atlas-encoders.md",
+      "generated/atlas-nops.md",
+      "generated/atlas-evasion.md"
+    ]
+  },
+  "generated_files": {
+    "summary": "/workspace/knowledge/generated/msf-summary.json",
+    "summary_md": "/workspace/knowledge/generated/msf-summary.md",
+    "cve": "/workspace/knowledge/generated/cve-top.md",
+    "cards": "/workspace/knowledge/generated/study-cards.json",
+    "full_atlas": "/workspace/knowledge/generated/msf-full-atlas.md",
+    "coverage": "/workspace/knowledge/generated/msf-coverage-checklist.md",
+    "module_index_csv": "/workspace/knowledge/generated/msf-module-index.csv"
+  },
+  "cli": [
+    "python3 scripts/knowledge_library_build.py",
+    "python3 scripts/knowledge_library_build.py --with-atlas",
+    "python3 scripts/knowledge_library_build.py --with-harvest",
+    "python3 scripts/metasploit_full_atlas.py",
+    "python3 scripts/metasploit_testing_knowledge.py"
+  ],
+  "verdict": "✅ Thư viện kiến thức · chương=14 · EXP=8 · MSF modules=5043 · nhánh=86 · CVE=1004"
+}

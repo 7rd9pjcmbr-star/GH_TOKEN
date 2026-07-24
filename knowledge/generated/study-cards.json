@@ -1,0 +1,439 @@
+[
+  {
+    "class": "exploits",
+    "modules": 2672,
+    "study_role": "malware-static / CVE triage",
+    "samples": [
+      {
+        "path": "exploits/linux/http/geutebruck_cmdinject_cve_2021_335xx",
+        "name": "Geutebruck Multiple Remote Command Execution",
+        "rank": "excellent",
+        "cves": [
+          "CVE-2021-33544",
+          "CVE-2021-33548",
+          "CVE-2021-33550",
+          "CVE-2021-33551",
+          "CVE-2021-33552",
+          "CVE-2021-33553",
+          "CVE-2021-33554"
+        ],
+        "platform": "unix, linux",
+        "disclosure_date": "2021-07-08",
+        "description": ""
+      },
+      {
+        "path": "exploits/linux/http/ivanti_connect_secure_rce_cve_2024_21893",
+        "name": "Ivanti Connect Secure Unauthenticated Remote Code Execution",
+        "rank": "excellent",
+        "cves": [
+          "CVE-2023-36661",
+          "CVE-2023-46805",
+          "CVE-2024-21887",
+          "CVE-2024-21888",
+          "CVE-2024-21893"
+        ],
+        "platform": "linux",
+        "disclosure_date": "2024-01-31",
+        "description": ""
+      },
+      {
+        "path": "exploits/linux/http/ibm_drm_rce",
+        "name": "IBM Data Risk Manager Unauthenticated Remote Code Execution",
+        "rank": "excellent",
+        "cves": [
+          "CVE-2020-4427",
+          "CVE-2020-4428",
+          "CVE-2020-4429",
+          "CVE-2020-4430"
+        ],
+        "platform": "linux",
+        "disclosure_date": "2020-04-21",
+        "description": ""
+      },
+      {
+        "path": "exploits/linux/http/terramaster_unauth_rce_cve_2021_45837",
+        "name": "TerraMaster TOS 4.2.15 or lower - RCE chain from unauthenticated to root via session crafting.",
+        "rank": "excellent",
+        "cves": [
+          "CVE-2021-45837",
+          "CVE-2021-45839",
+          "CVE-2021-45841",
+          "CVE-2021-458439"
+        ],
+        "platform": "unix",
+        "disclosure_date": "2021-12-24",
+        "description": ""
+      },
+      {
+        "path": "exploits/linux/ssh/ibm_drm_a3user",
+        "name": "IBM Data Risk Manager a3user Default Password",
+        "rank": "excellent",
+        "cves": [
+          "CVE-2020-4427",
+          "CVE-2020-4428",
+          "CVE-2020-4429",
+          "CVE-2020-4430"
+        ],
+        "platform": "unix",
+        "disclosure_date": "2020-04-21",
+        "description": ""
+      },
+      {
+        "path": "exploits/windows/http/commvault_rce_cve_2025_57790_cve_2025_57791",
+        "name": "Commvault Command-Line Argument Injection to Traversal Remote Code Execution",
+        "rank": "excellent",
+        "cves": [
+          "CVE-2025-4428",
+          "CVE-2025-57788",
+          "CVE-2025-57790",
+          "CVE-2025-57791"
+        ],
+        "platform": "windows",
+        "disclosure_date": "2025-08-19",
+        "description": ""
+      },
+      {
+        "path": "exploits/windows/http/sharepoint_toolpane_rce",
+        "name": "Microsoft SharePoint Server ToolPane Unauthenticated Remote Code Execution (aka ToolShell)",
+        "rank": "excellent",
+        "cves": [
+          "CVE-2025-49704",
+          "CVE-2025-49706",
+          "CVE-2025-53770",
+          "CVE-2025-53771"
+        ],
+        "platform": "win",
+        "disclosure_date": "2025-07-08",
+        "description": ""
+      },
+      {
+        "path": "exploits/windows/local/cve_2022_21882_win32k",
+        "name": "Win32k ConsoleControl Offset Confusion",
+        "rank": "average",
+        "cves": [
+          "CVE-2016-7255",
+          "CVE-2021-1732",
+          "CVE-2022-21882"
+        ],
+        "platform": "win",
+        "disclosure_date": "2021-02-09",
+        "description": ""
+      }
+    ]
+  },
+  {
+    "class": "auxiliary",
+    "modules": 1324,
+    "study_role": "security-audit / harden checklist",
+    "samples": [
+      {
+        "path": "auxiliary/scanner/ssl/ssl_version",
+        "name": "SSL/TLS Version Detection",
+        "rank": null,
+        "cves": [
+          "CVE-2011-3389",
+          "CVE-2013-2566",
+          "CVE-2014-3566",
+          "CVE-2015-4000",
+          "CVE-2016-0800",
+          "CVE-2022-3358"
+        ],
+        "platform": "scanner",
+        "disclosure_date": "2014-10-14",
+        "description": ""
+      },
+      {
+        "path": "auxiliary/admin/http/ibm_drm_download",
+        "name": "IBM Data Risk Manager Arbitrary File Download",
+        "rank": null,
+        "cves": [
+          "CVE-2020-4427",
+          "CVE-2020-4428",
+          "CVE-2020-4429",
+          "CVE-2020-4430"
+        ],
+        "platform": "admin",
+        "disclosure_date": "2020-04-21",
+        "description": "Download arbitrary file"
+      },
+      {
+        "path": "auxiliary/scanner/upnp/ssdp_msearch",
+        "name": "UPnP SSDP M-SEARCH Information Discovery",
+        "rank": null,
+        "cves": [
+          "CVE-2012-5958",
+          "CVE-2012-5959",
+          "CVE-2013-0229",
+          "CVE-2013-0230"
+        ],
+        "platform": "scanner",
+        "disclosure_date": null,
+        "description": "Discover information from UPnP-enabled systems"
+      },
+      {
+        "path": "auxiliary/admin/http/cisco_ios_xe_os_exec_cve_2023_20273",
+        "name": "Cisco IOX XE unauthenticated OS command execution",
+        "rank": null,
+        "cves": [
+          "CVE-2023-20198",
+          "CVE-2023-20273"
+        ],
+        "platform": "admin",
+        "disclosure_date": "2023-10-16",
+        "description": ""
+      },
+      {
+        "path": "auxiliary/admin/http/netgear_r6700_pass_reset",
+        "name": "Netgear R6700v3 Unauthenticated LAN Admin Password Reset",
+        "rank": null,
+        "cves": [
+          "CVE-2020-10923",
+          "CVE-2020-10924"
+        ],
+        "platform": "admin",
+        "disclosure_date": "2020-06-15",
+        "description": ""
+      },
+      {
+        "path": "auxiliary/admin/http/sysaid_file_download",
+        "name": "SysAid Help Desk Arbitrary File Download",
+        "rank": null,
+        "cves": [
+          "CVE-2015-2996",
+          "CVE-2015-2997"
+        ],
+        "platform": "admin",
+        "disclosure_date": "2015-06-03",
+        "description": ""
+      },
+      {
+        "path": "auxiliary/admin/misc/brother_default_admin_auth_bypass_cve_2024_51978",
+        "name": "Multiple Brother devices authentication bypass via default administrator password generation",
+        "rank": null,
+        "cves": [
+          "CVE-2024-51977",
+          "CVE-2024-51978"
+        ],
+        "platform": "admin",
+        "disclosure_date": "2025-06-25",
+        "description": "By leaking a target devices serial number, a remote attacker can generate the target devices default administrator password. The target device may leak its serial number via unauthenticated HTTP, HTTPS, IPP, SNMP, or PJL requests."
+      },
+      {
+        "path": "auxiliary/admin/sap/sap_igs_xmlchart_xxe",
+        "name": "SAP Internet Graphics Server (IGS) XMLCHART XXE",
+        "rank": null,
+        "cves": [
+          "CVE-2018-2392",
+          "CVE-2018-2393"
+        ],
+        "platform": "admin",
+        "disclosure_date": "2018-03-14",
+        "description": "Remote file read"
+      }
+    ]
+  },
+  {
+    "class": "post",
+    "modules": 435,
+    "study_role": "ioc-triage / TTP",
+    "samples": [
+      {
+        "path": "post/windows/gather/credentials/whatsupgold_credential_dump",
+        "name": "WhatsUp Gold Credentials Dump",
+        "rank": "manual",
+        "cves": [
+          "CVE-2022-29845",
+          "CVE-2022-29846",
+          "CVE-2022-29847",
+          "CVE-2022-29848"
+        ],
+        "platform": "win",
+        "disclosure_date": "2022-11-22",
+        "description": "Export WhatsUp Gold database and perform decryption"
+      },
+      {
+        "path": "post/linux/gather/f5_loot_mcp",
+        "name": "F5 Big-IP Gather Information from MCP Datastore",
+        "rank": null,
+        "cves": [
+          "CVE-2022-41622",
+          "CVE-2022-41800"
+        ],
+        "platform": "linux, unix",
+        "disclosure_date": "2022-11-16",
+        "description": "This module gathers various interesting pieces of data from F5's \"mcp\" datastore, which is accessed via /var/run/mcp using a proprietary protocol. Adapted from: https://github.com/rbowes-r7/refreshing-mcp-tool/blob/main/mcp-getloot.rb"
+      },
+      {
+        "path": "post/windows/manage/dell_memory_protect",
+        "name": "Dell DBUtilDrv2.sys Memory Protection Modifier",
+        "rank": "manual",
+        "cves": [
+          "CVE-2021-21551"
+        ],
+        "platform": "win",
+        "disclosure_date": null,
+        "description": ""
+      },
+      {
+        "path": "post/android/local/koffee",
+        "name": "KOFFEE - Kia OFFensivE Exploit",
+        "rank": null,
+        "cves": [
+          "CVE-2020-8539"
+        ],
+        "platform": "Android",
+        "disclosure_date": "2020-12-02",
+        "description": "It mutes/umutes the radio"
+      },
+      {
+        "path": "post/linux/gather/cve_2026_46333_chage",
+        "name": "Linux Kernel __ptrace_may_access() Exit Race chage File Disclosure",
+        "rank": null,
+        "cves": [
+          "CVE-2026-46333"
+        ],
+        "platform": "linux",
+        "disclosure_date": "2026-05-14",
+        "description": ""
+      },
+      {
+        "path": "post/linux/gather/vcenter_secrets_dump",
+        "name": "VMware vCenter Secrets Dump",
+        "rank": null,
+        "cves": [
+          "CVE-2022-22948"
+        ],
+        "platform": "linux, unix",
+        "disclosure_date": "2022-04-15",
+        "description": "Dump vCenter Secrets"
+      },
+      {
+        "path": "post/osx/escalate/tccbypass",
+        "name": "Bypass the macOS TCC Framework",
+        "rank": null,
+        "cves": [
+          "CVE-2020-9934"
+        ],
+        "platform": "osx",
+        "disclosure_date": null,
+        "description": "This module exploits a vulnerability in the TCC daemon on macOS Catalina (<= 10.15.5) in order to grant TCC entitlements. The TCC daemon can be manipulated (by setting the HOME environment variable) to use a new user controlled location as "
+      },
+      {
+        "path": "post/windows/escalate/unmarshal_cmd_exec",
+        "name": "Windows unmarshal post exploitation",
+        "rank": null,
+        "cves": [
+          "CVE-2018-0824"
+        ],
+        "platform": "win",
+        "disclosure_date": "2018-08-05",
+        "description": "This module exploits a local privilege escalation bug which exists in Microsoft COM for Windows when it fails to properly handle serialized objects."
+      }
+    ]
+  },
+  {
+    "class": "payloads",
+    "modules": 529,
+    "study_role": "malware-static / signature only",
+    "samples": [
+      {
+        "path": "payloads/singles/cmd/unix/bind_socat_tcp",
+        "name": "Unix Command Shell, Bind TCP (via socat)",
+        "rank": null,
+        "cves": [
+          "CVE-2026-0826"
+        ],
+        "platform": "unix",
+        "disclosure_date": null,
+        "description": "Creates an interactive shell via socat"
+      }
+    ]
+  },
+  {
+    "class": "encoders",
+    "modules": 57,
+    "study_role": "malware-static / entropy",
+    "samples": [
+      {
+        "path": "encoders/x86/avoid_underscore_tolower",
+        "name": "Avoid underscore/tolower",
+        "rank": "manual",
+        "cves": [
+          "CVE-2012-2329"
+        ],
+        "platform": "x86",
+        "disclosure_date": null,
+        "description": ""
+      },
+      {
+        "path": "encoders/cmd/powershell_base64",
+        "name": "Powershell Base64 Command Encoder",
+        "rank": "excellent",
+        "cves": [],
+        "platform": "win",
+        "disclosure_date": null,
+        "description": "This encodes the command as a base64 encoded command for powershell."
+      },
+      {
+        "path": "encoders/x86/shikata_ga_nai",
+        "name": "Polymorphic XOR Additive Feedback Encoder",
+        "rank": "excellent",
+        "cves": [],
+        "platform": "x86",
+        "disclosure_date": null,
+        "description": "This encoder implements a polymorphic XOR additive feedback encoder. The decoder stub is generated based on dynamic instruction substitution and dynamic block ordering. Registers are also selected dynamically."
+      },
+      {
+        "path": "encoders/cmd/base64",
+        "name": "Base64 Command Encoder",
+        "rank": "good",
+        "cves": [],
+        "platform": "cmd",
+        "disclosure_date": null,
+        "description": "This encoder uses base64 encoding to avoid bad characters."
+      },
+      {
+        "path": "encoders/cmd/echo",
+        "name": "Echo Command Encoder",
+        "rank": "good",
+        "cves": [],
+        "platform": "cmd",
+        "disclosure_date": null,
+        "description": "This encoder uses echo and backlash escapes to avoid commonly restricted characters."
+      },
+      {
+        "path": "encoders/php/base64",
+        "name": "PHP Base64 Encoder",
+        "rank": "great",
+        "cves": [],
+        "platform": "php",
+        "disclosure_date": null,
+        "description": "This encoder returns a base64 string encapsulated in eval(base64_decode()), increasing the size by a bit more than one third."
+      },
+      {
+        "path": "encoders/php/hex",
+        "name": "PHP Hex Encoder",
+        "rank": "great",
+        "cves": [],
+        "platform": "php",
+        "disclosure_date": null,
+        "description": "This encoder returns a hex string encapsulated in eval(hex2bin()), increasing the size by a bit more than a factor two."
+      },
+      {
+        "path": "encoders/php/minify",
+        "name": "PHP Minify Encoder",
+        "rank": "great",
+        "cves": [],
+        "platform": "php",
+        "disclosure_date": null,
+        "description": "This encoder minifies a PHP payload by removing leasing spaces, trailing new lines, comments, ..."
+      }
+    ]
+  },
+  {
+    "class": "evasion",
+    "modules": 12,
+    "study_role": "malware-static / detect bypass tech",
+    "samples": []
+  }
+]

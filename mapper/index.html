@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Super Icon Mapper — sơ đồ network toàn diện thư viện và kiến thức mật mã." />
+  <title>Super Icon Mapper — Mã Mở</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="mapper.css" />
+</head>
+<body class="mapper-page">
+  <a class="skip-link" href="#mapper-app">Bỏ qua đến sơ đồ</a>
+
+  <header class="site-header">
+    <a class="brand" href="../index.html" aria-label="Mã Mở">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">Mã Mở</span>
+    </a>
+    <nav class="site-nav" aria-label="Điều hướng">
+      <a class="nav-btn nav-link" href="../atlas/index.html">Atlas</a>
+      <span class="nav-btn is-active" aria-current="page">Network Mapper</span>
+      <a class="nav-btn nav-link" href="../logic-view/index.html">Logic</a>
+      <a class="nav-btn nav-link" href="../lab/index.html">Lab</a>
+      <a class="nav-btn nav-link" href="../index.html">Giải mã hỗ trợ</a>
+    </nav>
+  </header>
+
+  <main id="mapper-app" class="mapper-app">
+    <section class="mapper-toolbar" aria-label="Công cụ mapper">
+      <div class="mapper-brand-block">
+        <p class="mapper-kicker">Super Icon Mapper</p>
+        <h1>Mọi đường dẫn icon tới thư viện mật mã</h1>
+        <p class="hero-lead">
+          Quân đội icon trên dòng chảy dữ liệu — mapper gọi tên icon khi truy vấn / phân tích để phản hồi.
+        </p>
+      </div>
+
+      <label class="mapper-search" for="mapper-search">
+        <span class="visually-hidden">Tìm kiếm network</span>
+        <input
+          id="mapper-search"
+          type="search"
+          placeholder="Tìm thư viện / khái niệm: libsodium, AES, TLS…"
+          autocomplete="off"
+        />
+      </label>
+
+      <div class="toolbar-row">
+        <div class="kind-filters" id="kind-filters" role="group" aria-label="Lọc loại node"></div>
+        <div class="toolbar-actions">
+          <label class="path-toggle">
+            <input type="checkbox" id="toggle-lib-paths" checked />
+            <span>Icon đường → thư viện</span>
+          </label>
+          <button type="button" class="btn btn-secondary" id="btn-focus-hub">Hub thư viện</button>
+          <button type="button" class="btn btn-secondary" id="btn-fit">Vừa khung</button>
+          <button type="button" class="btn btn-ghost mapper-ghost" id="btn-relayout">Xếp lại</button>
+          <button type="button" class="btn btn-ghost mapper-ghost" id="btn-clear">Xóa tìm</button>
+        </div>
+      </div>
+
+      <div class="mapper-stats" id="mapper-stats" aria-live="polite"></div>
+    </section>
+
+    <section class="mapper-stage">
+      <div class="mapper-canvas-wrap" id="canvas-wrap">
+        <svg id="network-svg" role="img" aria-label="Sơ đồ mọi đường dẫn tới thư viện mật mã"></svg>
+        <div class="mapper-hint" id="mapper-hint">Icon giữa cạnh = đường tới thư viện · chạm hub / node để liệt kê mọi path</div>
+      </div>
+
+      <aside class="mapper-side" aria-label="Chi tiết node">
+        <div class="legend" id="legend"></div>
+        <div class="side-detail" id="side-detail">
+          <h2>Chọn một node</h2>
+          <p>Icon trên mọi đường dẫn tới thư viện mật mã học. Bắt đầu từ hub trung tâm.</p>
+        </div>
+        <div class="neighbor-list" id="neighbor-list"></div>
+        <div class="path-list" id="path-list"></div>
+        <div class="icon-atlas-panel" id="icon-atlas-panel" aria-label="Atlas tài liệu icon">
+          <h3>Atlas icon → thư viện</h3>
+          <p class="icon-atlas-status" id="icon-atlas-status">Đang nạp…</p>
+          <div id="icon-atlas-list"></div>
+        </div>
+      </aside>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <p><span class="brand-name">Mã Mở</span> Super Icon Mapper — network graph thư viện &amp; kiến thức · không bỏ sót icon.</p>
+  </footer>
+
+  <script src="../data/crypto-atlas.js"></script>
+  <script src="../data/network-map.js"></script>
+  <script src="../data/icon-atlas.js"></script>
+  <script src="mapper.js"></script>
+</body>
+</html>

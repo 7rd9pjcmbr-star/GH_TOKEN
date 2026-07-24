@@ -1,0 +1,29 @@
+{
+  "ok": true,
+  "source": "frida+a11y",
+  "platform": "GHN",
+  "captured_at": "2026-07-24T00:00:00Z",
+  "policy": {
+    "owned_device_only": true,
+    "no_dump_login": true,
+    "note": "Export từ máy/app GHN sở hữu — không dump Acc_all/stealer"
+  },
+  "printA5": "https://online-gateway.ghn.vn/a5/public-api/printA5?token=<UUID>",
+  "token": "<GHN_API_TOKEN_UUID>",
+  "headers": {
+    "Token": "<GHN_API_TOKEN_UUID>"
+  },
+  "a11y": {
+    "package": "vn.ghn.app.giaohangnhanh",
+    "clipboard": "",
+    "nodes_text": [
+      "In vận đơn A5",
+      "token=<UUID>"
+    ]
+  },
+  "frida": {
+    "transport": "owned-export",
+    "note": "Không dùng để bypass SSL / dump app người khác — chỉ export session owned"
+  },
+  "shop_id": ""
+}

@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'none'; img-src 'self' data:; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'" />
+  <meta name="referrer" content="no-referrer" />
+  <title>MaMoLab — Sandbox phân tích tách biệt</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=IBM+Plex+Mono:wght@400;500&family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="lab.css" />
+</head>
+<body class="lab-page">
+  <header class="site-header">
+    <a class="brand" href="../index.html">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">Mã Mở</span>
+    </a>
+    <nav class="site-nav">
+      <a class="nav-btn nav-link" href="../atlas/index.html">Atlas</a>
+      <a class="nav-btn nav-link" href="../mapper/index.html">Mapper</a>
+      <a class="nav-btn nav-link" href="../logic-view/index.html">Logic</a>
+      <span class="nav-btn is-active">Lab</span>
+      <a class="nav-btn nav-link" href="../index.html">Hỗ trợ</a>
+    </nav>
+  </header>
+
+  <main class="lab-main">
+    <section class="lab-hero">
+      <p class="brand-hero">MaMoLab <span class="lab-ver">v2</span></p>
+      <h1>Môi trường tách biệt</h1>
+      <p class="hero-lead">
+        Phân tích tĩnh mã đáng ngờ &amp; kiểm thử bảo mật — Worker cô lập, không thực thi mẫu, không gọi mạng.
+        Engine v2 · batch <code>lab_control</code> · validate policy.
+      </p>
+      <ul class="lab-guarantees" aria-label="Cam kết cô lập">
+        <li>Không <code>eval</code> / không chạy mẫu</li>
+        <li>Worker + CSP <code>connect-src 'none'</code></li>
+        <li>Docker tùy chọn: <code>network: none</code></li>
+      </ul>
+    </section>
+
+    <section class="lab-grid">
+      <article class="lab-panel">
+        <h2>Quarantine input</h2>
+        <p class="hint">Dán văn bản / mã nguồn nghi ngờ. Lab chỉ quét chuỗi — không decode-and-run.</p>
+        <textarea id="lab-input" rows="12" spellcheck="false" placeholder="Dán mẫu (JS/PHP/PS1/log…). Không dán mật khẩu thật."></textarea>
+        <div class="lab-actions">
+          <button type="button" class="btn btn-primary" id="btn-lab-analyze">Phân tích sâu</button>
+          <button type="button" class="btn btn-secondary" id="btn-lab-audit">Kiểm thử bảo mật</button>
+          <button type="button" class="btn btn-ghost lab-wipe" id="btn-lab-wipe">Xóa mẫu + Worker</button>
+        </div>
+        <p class="lab-status" id="lab-status">Sẵn sàng · chế độ defensive-isolated</p>
+      </article>
+
+      <article class="lab-panel">
+        <h2>Báo cáo</h2>
+        <div class="lab-risk" id="lab-risk" hidden>
+          <span class="lab-risk-band" id="lab-risk-band">—</span>
+          <span id="lab-risk-meta"></span>
+        </div>
+        <pre class="lab-out" id="lab-output">{}</pre>
+      </article>
+
+      <article class="lab-panel wide">
+        <h2>Ranh giới môi trường</h2>
+        <div class="lab-boundaries" id="lab-boundaries"></div>
+        <p class="hint">
+          OS-level: xem <a href="../docs/SECURITY-LAB.md">docs/SECURITY-LAB.md</a>
+          · <a href="../docker/lab/README.md">docker/lab</a>
+        </p>
+      </article>
+    </section>
+  </main>
+
+  <!-- Lab modules — surface tách; chỉ nạp analyze (format) optional, không a11y -->
+  <script src="../js/logic/analyze.js"></script>
+  <script src="../js/lab/policy.js"></script>
+  <script src="../js/lab/static.js"></script>
+  <script src="../js/lab/indicators.js"></script>
+  <script src="../js/lab/harden.js"></script>
+  <script src="../js/lab/report.js"></script>
+  <script src="../js/lab/sandbox.js"></script>
+  <script src="../js/lab/bootstrap.js"></script>
+  <script src="lab.js"></script>
+</body>
+</html>
