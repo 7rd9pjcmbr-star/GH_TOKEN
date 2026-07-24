@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /lab
 COPY --chown=labuser:labuser analyze-static.py /lab/analyze-static.py
+COPY --chown=labuser:labuser lab_static_engine.py /lab/lab_static_engine.py
 COPY --chown=labuser:labuser entrypoint.sh /lab/entrypoint.sh
 RUN chmod 755 /lab/entrypoint.sh /lab/analyze-static.py
 

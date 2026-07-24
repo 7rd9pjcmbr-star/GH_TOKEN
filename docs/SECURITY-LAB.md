@@ -3,6 +3,18 @@
 Phân tích sâu mã đáng ngờ & kiểm thử bảo mật **phòng thủ**.  
 Lab **không** thực thi mẫu, **không** tạo exploit/payload tấn.
 
+## Lab Control v2 (nâng cấp)
+
+```bash
+python3 scripts/lab_control.py upgrade   # áp v2 + validate
+python3 scripts/lab_control.py status
+python3 scripts/lab_control.py analyze   # batch quarantine/lab
+python3 scripts/lab_control.py validate  # đối chứng policy (không exploit)
+python3 scripts/telegram_to_lab_analyze.py
+```
+
+Báo cáo: `reports/lab/` · Panel: **🚀 Lab·nâng cấp** · **🧬 Lab·status**.
+
 ## Ba lớp cô lập
 
 ```

@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import math
 import re
 import shutil
 import sys
@@ -27,61 +26,17 @@ from telegram_inbox_scan_analyze import (  # noqa: E402
     build_report as inbox_build,
     write_outputs as inbox_write,
 )
+from lab_static_engine import analyze_path  # noqa: E402
 
 INBOX = ROOT / "quarantine" / "telegram"
 LAB = ROOT / "quarantine" / "lab"
 REPORTS = ROOT / "reports" / "telegram-classify" / "lab-static"
-
-RULES = [
-    ("dyn-eval", "high", "execution", re.compile(rb"\beval\s*\(|\bnew\s+Function\s*\(")),
-    (
-        "powershell-download",
-        "critical",
-        "dropper",
-        re.compile(rb"IEX|DownloadString|Invoke-WebRequest|FromBase64String", re.I),
-    ),
-    (
-        "bash-curl-pipe",
-        "critical",
-        "dropper",
-        re.compile(rb"curl[^\n|]{0,80}\|\s*(ba)?sh|wget[^\n|;]{0,80}\|\s*(ba)?sh", re.I),
-    ),
-    (
-        "webshell-php",
-        "critical",
-        "webshell",
-        re.compile(rb"eval\s*\(\s*\$_(POST|GET|REQUEST)|passthru\s*\(", re.I),
-    ),
-    (
-        "macro-autoopen",
-        "high",
-        "office",
-        re.compile(rb"AutoOpen|Document_Open|Workbook_Open|Shell\s*\("),
-    ),
-    (
-        "cred-dump-hint",
-        "high",
-        "credential",
-        re.compile(rb"(?i)password\s*[:=]|pass\s*[:=]|stealer|acc_all|login\s*[:=]"),
-    ),
-    (
-        "cookie-session",
-        "medium",
-        "session",
-        re.compile(rb"(?i)\b(cookie|session|token|authorization)\b.{0,40}[:=]"),
-    ),
-    (
-        "private-key",
-        "critical",
-        "secret",
-        re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
-    ),
-]
+REPORTS_LAB = ROOT / "reports" / "lab" / "static"
 
 SUSPICIOUS_NAME = re.compile(
     r"(?i)(stealer|dump|acc_all|password|cookie|token|leak|assassin|valid_account|"
     r"ghn_token|results_cookies|internal_search|vnpost|proxy|socks|captcha|"
-    r"cookiacc|\.exe$|\.dll$|\.ps1$|\.bat$|\.js$|\.vbs$)"
+    r"cookiacc|onlylogs|\.exe$|\.dll$|\.ps1$|\.bat$|\.js$|\.vbs$)"
 )
 
 
@@ -89,72 +44,9 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def shannon(data: bytes) -> float:
-    if not data:
-        return 0.0
-    c = Counter(data)
-    n = len(data)
-    return -sum((v / n) * math.log2(v / n) for v in c.values())
-
-
 def analyze_file(path: Path) -> dict[str, Any]:
-    raw = path.read_bytes()[:2_000_000]
-    findings = []
-    for rid, sev, family, cre in RULES:
-        hits = cre.findall(raw)
-        if hits:
-            findings.append({"id": rid, "severity": sev, "family": family, "count": len(hits)})
-    weight = {"critical": 40, "high": 22, "medium": 12, "low": 5}
-    score = min(100, sum(weight.get(f["severity"], 0) for f in findings))
-    ent = shannon(raw[:8000])
-    if ent > 5.2 and len(raw) > 80:
-        score = min(100, score + 8)
-    # dump/stealer name bump
-    if any(h in path.name.lower() for h in DUMP_HINTS) or SUSPICIOUS_NAME.search(path.name):
-        score = min(100, score + 15)
-        findings.append(
-            {
-                "id": "name-suspicious",
-                "severity": "high",
-                "family": "triage",
-                "count": 1,
-            }
-        )
-    return {
-        "ok": True,
-        "generatedAt": datetime.now(timezone.utc).isoformat(),
-        "isolation": {
-            "surface": "host-lab-static",
-            "executedSample": False,
-            "networkUsed": False,
-            "loginAttempted": False,
-            "path": str(path.relative_to(ROOT)),
-        },
-        "file": {
-            "name": path.name,
-            "size": path.stat().st_size,
-            "sha256": hashlib.sha256(raw).hexdigest(),
-            "md5": hashlib.md5(raw, usedforsecurity=False).hexdigest(),
-            "entropyHead": round(ent, 3),
-        },
-        "summary": {
-            "riskScore": score,
-            "riskBand": "critical"
-            if score >= 70
-            else "high"
-            if score >= 40
-            else "medium"
-            if score >= 20
-            else "low",
-            "findingCount": len(findings),
-        },
-        "findings": findings,
-        "policy": {
-            "noExecute": True,
-            "noDumpLogin": True,
-            "labOnly": True,
-        },
-    }
+    """Lab static engine v2."""
+    return analyze_path(path, root=ROOT, surface="tg-lab-v2")
 
 
 def is_suspicious(path: Path) -> bool:
@@ -272,6 +164,8 @@ def build_report(*, wait: int = 3, open_chat: bool = True, notify: bool = True) 
         if out_json.exists():
             out_json = REPORTS / f"{dest.stem}-{hashlib.md5(str(dest).encode(), usedforsecurity=False).hexdigest()[:8]}.lab.json"
         out_json.write_text(json.dumps(ana, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        REPORTS_LAB.mkdir(parents=True, exist_ok=True)
+        (REPORTS_LAB / f"{dest.name}.v2.json").write_text(json.dumps(ana, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     bands = Counter((a.get("summary") or {}).get("riskBand", "unknown") for a in analyses if a.get("ok"))
     high = [

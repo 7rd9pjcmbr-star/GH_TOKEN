@@ -188,6 +188,10 @@ def panel_keyboard() -> dict:
                 {"text": "🔍 Quét·phân tích", "callback_data": "q:inbox_scan"},
             ],
             [
+                {"text": "🚀 Lab·nâng cấp", "callback_data": "q:lab_upgrade"},
+                {"text": "🧬 Lab·status", "callback_data": "q:lab_status"},
+            ],
+            [
                 {"text": "🧪 TG→Lab·phân tích", "callback_data": "q:tg_lab"},
                 {"text": "📖 Thư viện·KT", "callback_data": "q:knowledge"},
             ],
@@ -935,6 +939,27 @@ def fmt_tg_lab(_a: dict | None = None) -> str:
         )
 
 
+def fmt_lab_upgrade(_a: dict | None = None) -> str:
+    try:
+        from lab_control import cmd_upgrade, format_upgrade
+
+        return format_upgrade(cmd_upgrade())[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "lab" / "upgrade_report.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return f"Lab upgrade lỗi: {e}\nChạy: python3 scripts/lab_control.py upgrade"
+
+
+def fmt_lab_status(_a: dict | None = None) -> str:
+    try:
+        from lab_control import cmd_status, format_status
+
+        return format_status(cmd_status())[:3800]
+    except Exception as e:  # noqa: BLE001
+        return f"Lab status lỗi: {e}\nChạy: python3 scripts/lab_control.py status"
+
+
 def fmt_ngx_order(_a: dict | None = None) -> str:
     try:
         from nginx_order_embed import format_text, run_when_needed, write_outputs
@@ -1137,6 +1162,8 @@ HANDLERS = {
     "q:knowledge": fmt_knowledge_lib,
     "q:msf_atlas": fmt_msf_atlas,
     "q:tg_lab": fmt_tg_lab,
+    "q:lab_upgrade": fmt_lab_upgrade,
+    "q:lab_status": fmt_lab_status,
     "q:ngx_order": fmt_ngx_order,
     "q:owned_env": fmt_owned_env,
     "q:token_rotate": fmt_token_rotate,

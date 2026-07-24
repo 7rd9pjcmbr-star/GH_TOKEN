@@ -1,42 +1,28 @@
-# Docker Lab — môi trường tách biệt
+# Docker Lab — MaMoLab v2
 
 Phân tích tĩnh mẫu đáng ngờ **ngoài host**. Không thực thi mẫu.
 
-## Chạy
+## Host lab (không cần Docker)
+
+```bash
+python3 scripts/lab_control.py upgrade
+python3 scripts/lab_control.py status
+python3 scripts/lab_control.py analyze
+python3 scripts/lab_control.py validate
+```
+
+## Docker (khi có docker)
 
 ```bash
 mkdir -p quarantine reports
-# đặt file nghi ngờ vào quarantine/  (không mở / không chạy trên máy chính)
 docker compose -f docker/lab/docker-compose.yml build
-docker compose -f docker/lab/docker-compose.yml run --rm lab analyze /quarantine/<file>
+docker compose -f docker/lab/docker-compose.yml run --rm lab analyze /quarantine/lab/<file>
 ```
 
-Báo cáo JSON ghi vào `reports/`.
+Báo cáo: `reports/lab/`.
 
-## Bảo đảm cô lập
+## Cô lập
 
-| Kiểm soát | Giá trị |
-|-----------|---------|
-| Network | `network_mode: none` |
-| Filesystem | `read_only: true` + tmpfs `/tmp` |
-| Caps | `cap_drop: ALL` |
-| Privileges | `no-new-privileges` |
-| User | uid `10001` |
-| Samples | mount **ro** `/quarantine` |
+`network_mode: none` · `read_only` · `cap_drop: ALL` · uid 10001 · engine v2.
 
-## Lệnh
-
-- `analyze <path>` — static heuristics + hash + entropy
-- `list` / `wipe` / `shell` / `help`
-
-Không cài Metasploit, không generate payload, không reverse-shell helper.
-
-Mapper taxonomy (host, phòng thủ):
-
-```bash
-python3 scripts/metasploit_suite_mapper.py
-python3 scripts/metasploit_library_harvest.py   # full library knowledge (readonly)
-python3 scripts/metasploit_testing_knowledge.py # playbook kiểm thử P1–P6
-python3 scripts/metasploit_suite_mapper.py test
-python3 scripts/knowledge_library_build.py      # thư viện học tập/thí nghiệm
-```
+Không Metasploit / payload / reverse-shell helper.
