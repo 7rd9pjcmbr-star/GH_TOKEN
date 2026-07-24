@@ -174,6 +174,9 @@ def panel_keyboard() -> dict:
                 {"text": "📋 Đơn CT·DB BC", "callback_data": "q:bc_order_ct"},
             ],
             [
+                {"text": "📦 Pipe·15k CT", "callback_data": "q:pipe_15k"},
+            ],
+            [
                 {"text": "📡 Quét BC remote", "callback_data": "q:bc_scan"},
             ],
             [
@@ -780,6 +783,24 @@ def fmt_bc_order_ct(_a: dict | None = None) -> str:
         )
 
 
+def fmt_pipe_15k(_a: dict | None = None) -> str:
+    """Pipe ~15k đơn chi tiết — panorama + export CSV/JSONL."""
+    try:
+        from pipe_15k_order_detail_mapper import build_report, format_text, write_outputs
+
+        report = build_report(export=True, sample_n=6)
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "pipe_15k_order_detail_mapper.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"Pipe 15k CT lỗi: {e}\n"
+            "Chạy: python3 scripts/pipe_15k_order_detail_mapper.py --notify"
+        )
+
+
 def fmt_rev_q(_a: dict | None = None) -> str:
     try:
         from order_pipe_reverse_query import build_report, format_text, write_outputs
@@ -1229,6 +1250,7 @@ HANDLERS = {
     "q:contract_pipe": fmt_contract_pipe,
     "q:contract_bc": fmt_contract_bc,
     "q:bc_order_ct": fmt_bc_order_ct,
+    "q:pipe_15k": fmt_pipe_15k,
     "q:rev_q": fmt_rev_q,
     "q:dg_tbl": fmt_dg_tbl,
     "q:aship": fmt_aship,
