@@ -192,6 +192,32 @@ CONTRACT_PIPES: list[dict[str, Any]] = [
         ],
         "output": "SPX shop id",
     },
+    {
+        "id": "pipe.buucuc_backend",
+        "title": "HĐ → backend bưu cục (SQLite)",
+        "carrier": "BUUCUC_BACKEND",
+        "stages": [
+            {
+                "id": "bc.map",
+                "title": "partner.accounts → backend GHN|VTP|J&T|GHTK|Best|SPX",
+                "cli": "contract_buucuc_backend_mapper.py",
+                "note": "PARTNER_TO_BACKEND: 5→GHN · 3→VTP · 15→J&T · 1→GHTK · 16→Best",
+            },
+            {
+                "id": "bc.upsert",
+                "title": "Upsert bảng contracts vào buucuc_backend.db",
+                "secrets": ["shipping_partner_accounts_owned.json"],
+                "note": "Mirror kho_buucuc_pipe.db · join orders theo shop_id",
+            },
+            {
+                "id": "bc.query",
+                "title": "Truy vấn HĐ×backend×đơn",
+                "cli": 'sqlite3 reports/telegram-classify/buucuc_backend.db '
+                '"SELECT backend, account_name, shop_id, orders_n FROM contracts;"',
+            },
+        ],
+        "output": "contracts rows trong backend bưu cục DB",
+    },
 ]
 
 
@@ -472,6 +498,16 @@ def status_for_pipes(env: dict[str, str], live: dict[str, Any]) -> list[dict[str
             "detail": f"SPX_SHOP_ID={spx.get('SPX_SHOP_ID')} TOKEN={spx.get('SPX_TOKEN')}",
             "env": spx,
         },
+        {
+            "pipe": "pipe.buucuc_backend",
+            "ready": bool(accounts) or bool(spx.get("SPX_SHOP_ID")),
+            "blocked": not accounts and not spx.get("SPX_SHOP_ID"),
+            "detail": (
+                f"accounts→map={len(accounts)} · "
+                "upsert contracts → buucuc_backend.db"
+            ),
+            "accounts_n": len(accounts),
+        },
     ]
     return statuses
 
@@ -512,6 +548,8 @@ def mermaid(statuses: list[dict[str, Any]]) -> str:
             "  BEST --> ORD",
             "  SPX --> ORD",
             "  HD --> ORD",
+            f"  ORD --> BC[{mark('pipe.buucuc_backend')} Backend bưu cục DB]",
+            "  BC --> SQLITE[(buucuc_backend.db contracts)]",
             "```",
         ]
     )
@@ -538,6 +576,29 @@ def build_report(*, probe: bool = True) -> dict[str, Any]:
                 encoding="utf-8",
             )
     statuses = status_for_pipes(env, live)
+    # Map HĐ vào backend bưu cục (SQLite contracts)
+    buucuc_map: dict[str, Any] = {}
+    try:
+        from contract_buucuc_backend_mapper import (
+            build_report as build_buucuc_map,
+            write_outputs as write_buucuc_map,
+        )
+
+        buucuc_map = build_buucuc_map(refresh_accounts=False)
+        write_buucuc_map(buucuc_map)
+        for s in statuses:
+            if s.get("pipe") == "pipe.buucuc_backend":
+                s["ready"] = bool(buucuc_map.get("contracts_mapped"))
+                s["blocked"] = not buucuc_map.get("contracts_mapped")
+                s["detail"] = (
+                    f"mapped={buucuc_map.get('contracts_mapped')} · "
+                    f"backends={buucuc_map.get('backends_n')} · "
+                    f"orders_linked≈{buucuc_map.get('orders_linked_sum')}"
+                )
+                s["db"] = (buucuc_map.get("db") or {}).get("buucuc")
+    except Exception as e:  # noqa: BLE001
+        buucuc_map = {"ok": False, "error": str(e)[:200]}
+
     ready_n = sum(1 for s in statuses if s.get("ready") and not s.get("blocked"))
     partial_n = sum(1 for s in statuses if s.get("ready") and s.get("blocked"))
     report: dict[str, Any] = {
@@ -553,17 +614,27 @@ def build_report(*, probe: bool = True) -> dict[str, Any]:
             "jnt_empty": live.get("jnt_empty"),
             "gaps": live.get("gaps"),
         },
+        "buucuc_backend": {
+            "contracts_mapped": buucuc_map.get("contracts_mapped"),
+            "backends_n": buucuc_map.get("backends_n"),
+            "orders_linked_sum": buucuc_map.get("orders_linked_sum"),
+            "verdict": buucuc_map.get("verdict"),
+            "db": (buucuc_map.get("db") or {}).get("buucuc"),
+            "error": buucuc_map.get("error"),
+        },
         "status": statuses,
         "mermaid": mermaid(statuses),
         "verdict": (
             f"✅ Đường ống HĐ: {ready_n} sẵn · {partial_n} dở · "
             f"accounts sống={len(live.get('accounts') or [])} · "
+            f"HĐ→BC={buucuc_map.get('contracts_mapped') or 0} · "
             f"J&T còn thiếu trên shop đang mở / 1530618"
         ),
         "next": [
+            "HĐ→backend BC: python3 scripts/contract_buucuc_backend_mapper.py --notify",
             "J&T: token đúng shop có gắn HĐ (vd. 1530618) → /partners id=15 → accounts[]",
             "HDDT: callback #id_token=eyJ… → liệt kê số HĐ",
-            "VTP/GHN/Best: đã có accounts trên một số shop — dùng làm mẫu ống ĐVVC",
+            "VTP/GHN/Best: đã có accounts — đã upsert vào buucuc_backend.db.contracts",
         ],
     }
     return report
@@ -580,9 +651,19 @@ def format_text(report: dict[str, Any]) -> str:
         "2) Pancake ĐVVC: token/api_key → GET /shops/{id}/partners → accounts[]",
         "   J&T=15 · VTP=3 · GHN=5 · GHTK=1 · Best=16",
         "3) SPX: SPX_SHOP_ID / TOKEN env",
+        "4) HĐ → backend bưu cục: upsert contracts → buucuc_backend.db",
         "",
         "=== Trạng thái ống ===",
     ]
+    bc = report.get("buucuc_backend") or {}
+    if bc:
+        lines.append(
+            f"  · HĐ→BC: mapped={bc.get('contracts_mapped')} · "
+            f"backends={bc.get('backends_n')} · orders≈{bc.get('orders_linked_sum')}"
+        )
+        if (bc.get("db") or {}).get("path"):
+            lines.append(f"  · DB: {bc['db']['path']}")
+        lines.append("")
     for s in report.get("status") or []:
         flag = "✅" if s.get("ready") and not s.get("blocked") else ("⚠" if s.get("ready") else "❌")
         lines.append(f"  {flag} {s.get('pipe')}: {s.get('detail')}")

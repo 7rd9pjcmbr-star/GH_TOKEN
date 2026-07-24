@@ -73,6 +73,27 @@ BUUCUC_BACKENDS = [
         "query_hint": "shops/{id}/orders + warehouse_info",
     },
     {
+        "id": "J&T",
+        "role": "bưu cục J&T Express (HĐ ĐVVC)",
+        "oms": "jnt",
+        "secret": None,
+        "query_hint": "contracts WHERE backend='J&T' · Pancake partner_id=15",
+    },
+    {
+        "id": "GHTK",
+        "role": "bưu cục Giao hàng tiết kiệm (HĐ ĐVVC)",
+        "oms": "ghtk",
+        "secret": None,
+        "query_hint": "contracts WHERE backend='GHTK' · Pancake partner_id=1",
+    },
+    {
+        "id": "Best",
+        "role": "bưu cục Best Inc (HĐ ĐVVC)",
+        "oms": "best",
+        "secret": None,
+        "query_hint": "contracts WHERE backend='Best' · Pancake partner_id=16",
+    },
+    {
         "id": "direct_api",
         "role": "snapshot/inbox → OMS DB",
         "oms": "direct_api",
@@ -318,6 +339,15 @@ def materialize_db(records: list[dict], path: Path) -> dict:
         "tables": ["orders", "backends", "meta"],
     }
     conn.close()
+    # Re-seed HĐ → backend sau wipe materialize
+    try:
+        from contract_buucuc_backend_mapper import build_report as seed_contracts
+
+        seeded = seed_contracts(refresh_accounts=False)
+        info["contracts_seeded"] = seeded.get("contracts_mapped")
+        info["tables"] = ["orders", "backends", "meta", "contracts"]
+    except Exception as e:  # noqa: BLE001
+        info["contracts_seed_error"] = str(e)[:160]
     return info
 
 
@@ -399,6 +429,27 @@ DEFAULT_QUERIES: list[tuple[str, str]] = [
     (
         "backends_catalog",
         "SELECT id, role, oms, secret, query_hint FROM backends ORDER BY id",
+    ),
+    (
+        "contracts_by_backend",
+        """
+        SELECT backend, buucuc, carrier, COUNT(*) AS contracts_n,
+               COUNT(DISTINCT shop_id) AS shops_n,
+               SUM(orders_n) AS orders_linked
+        FROM contracts
+        GROUP BY backend, buucuc, carrier
+        ORDER BY contracts_n DESC
+        """,
+    ),
+    (
+        "contracts_detail",
+        """
+        SELECT backend, shop_id, shop_name, partner_name,
+               account_name, account_id, orders_n, with_tracking
+        FROM contracts
+        ORDER BY orders_n DESC, backend
+        LIMIT 40
+        """,
     ),
 ]
 
