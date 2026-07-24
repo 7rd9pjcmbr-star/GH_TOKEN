@@ -326,16 +326,32 @@ def build_extended_catalog(
         entries[key] = row
         return row
 
+    def unique_nodes(node_list: list[dict]) -> list[dict]:
+        seen: set[tuple] = set()
+        out: list[dict] = []
+        for n in node_list:
+            sig = (n.get("buucuc"), n.get("backend"))
+            if sig in seen:
+                continue
+            seen.add(sig)
+            out.append(n)
+        return out
+
+    def orders_of(node_list: list[dict]) -> int:
+        return sum(int(n.get("orders") or 0) for n in unique_nodes(node_list))
+
     # 1) Aship public
     for p in catalog.get("providers") or []:
         prov = str(p.get("provider") or "")
         be_id = PROVIDER_TO_BACKEND.get(prov) or PROVIDER_TO_BACKEND.get(prov.upper()) or prov
         be = be_by_id.get(be_id)
         confs = contracts_by_be.get(be_id) or []
-        node_list = nodes_by_root.get(prov) or nodes_by_root.get(be_id) or []
+        node_list = unique_nodes(
+            nodes_by_root.get(prov) or nodes_by_root.get(be_id) or []
+        )
         if prov == "ViettelPost" and not node_list:
-            node_list = nodes_by_root.get("VTP") or []
-        orders_n = sum(int(n.get("orders") or 0) for n in node_list)
+            node_list = unique_nodes(nodes_by_root.get("VTP") or [])
+        orders_n = orders_of(node_list)
         secret = (be or {}).get("secret")
         secret_present = (be or {}).get("secret_present")
         if secret is None and be_id == "ViettelPost":
@@ -424,8 +440,8 @@ def build_extended_catalog(
         else:
             key = f"pipe:{be_id or buu}"
         be = be_by_id.get(be_id)
-        node_list = nodes_by_root.get(buu) or nodes_by_root.get(be_id) or []
-        orders_n = sum(int(n.get("orders") or 0) for n in node_list)
+        node_list = unique_nodes(nodes_by_root.get(buu) or nodes_by_root.get(be_id) or [])
+        orders_n = orders_of(node_list)
         secret = c.get("secret") or (be or {}).get("secret")
         secret_present = (
             bool((env.get(str(secret)) or "").strip())
