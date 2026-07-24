@@ -790,6 +790,14 @@ def fmt_pipe_15k(_a: dict | None = None) -> str:
 
         report = build_report(export=True, sample_n=6)
         write_outputs(report)
+        # gửi sheet XLSX vào hộp thoại
+        try:
+            from pipe_15k_order_detail_mapper import notify_telegram
+
+            xlsx = (report.get("exports") or {}).get("xlsx")
+            notify_telegram(format_text(report), document=Path(xlsx) if xlsx else None)
+        except Exception:
+            pass
         return format_text(report)[:3800]
     except Exception as e:  # noqa: BLE001
         path = ROOT / "reports" / "telegram-classify" / "pipe_15k_order_detail_mapper.txt"

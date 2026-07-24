@@ -3,10 +3,13 @@
 
 Đọc toàn bộ orders (~15k) trong pipe DB →:
   · panorama completeness (track/addr/COD/NS/HĐ/flow)
-  · CSV + JSONL chi tiết (SĐT mask)
-  · mẫu thẻ đơn + thống kê backend×buucuc×kho×status
+  · sheet XLSX/CSV/JSONL nguyên bản DB (không mask thêm)
+  · gửi document Telegram (--notify)
 
-Owned-only · read-only · mask phones · reports gitignored.
+DB bưu cục/pipe không có cơ chế che — hiển thị as-stored.
+Dòng đã có * từ nguồn (Pancake…) → ghi source_masked=YES, không giải mã được.
+
+Owned-only · read-only · reports gitignored.
 """
 
 from __future__ import annotations
@@ -76,6 +79,8 @@ EXPORT_COLS = [
     "contract_account",
     "contract_partner",
     "detail_score",
+    "source_masked",
+    "note",
 ]
 
 
@@ -102,16 +107,13 @@ def load_env() -> dict[str, str]:
     return env
 
 
-def mask_phone(ph: str | None) -> str | None:
-    if not ph:
-        return ph
-    s = str(ph).strip()
-    if "*" in s:
-        return s
-    digits = re.sub(r"\D", "", s)
-    if len(digits) < 7:
-        return s
-    return digits[:3] + "***" + digits[-3:]
+def source_already_masked(row: dict[str, Any]) -> bool:
+    """True nếu nguồn đã che (*)—không phải mask của mapper."""
+    blob = "".join(
+        str(row.get(k) or "")
+        for k in ("receiver_name", "receiver_phone", "full_address", "address_detail")
+    )
+    return "*" in blob
 
 
 def filled(v: Any) -> bool:
@@ -197,8 +199,7 @@ def iter_pipe_orders(
     rows: list[dict[str, Any]] = []
     for r in conn.execute(sql, params):
         d = {k: r[k] for k in r.keys()}
-        if "receiver_phone" in d:
-            d["receiver_phone"] = mask_phone(d.get("receiver_phone"))
+        # nguyên bản DB — không mask thêm
         sid = str(d.get("shop_id") or "")
         cons = contracts.get(sid) or []
         d["contracts"] = cons
@@ -211,6 +212,12 @@ def iter_pipe_orders(
             d["contract_account"] = None
             d["contract_partner"] = None
         d["detail_score"] = detail_score(d)
+        d["source_masked"] = "YES" if source_already_masked(d) else "NO"
+        d["note"] = (
+            "Nguồn đã che (*) — không giải mã được"
+            if d["source_masked"] == "YES"
+            else "Nguyên bản từ DB bưu cục/pipe"
+        )
         # ensure export cols exist
         for c in EXPORT_COLS:
             d.setdefault(c, None)
@@ -242,6 +249,8 @@ def panorama(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "with_staff": sum(1 for r in rows if filled(r.get("staff_creator"))),
         "with_flow": sum(1 for r in rows if filled(r.get("flow_path"))),
         "with_contract": sum(1 for r in rows if r.get("contracts")),
+        "source_masked_n": sum(1 for r in rows if r.get("source_masked") == "YES"),
+        "source_raw_n": sum(1 for r in rows if r.get("source_masked") != "YES"),
         "score_8": sum(1 for r in rows if (r.get("detail_score") or 0) >= 8),
         "score_ge6": sum(1 for r in rows if (r.get("detail_score") or 0) >= 6),
         "score_lt4": sum(1 for r in rows if (r.get("detail_score") or 0) < 4),
@@ -319,24 +328,93 @@ def sample_cards(rows: list[dict[str, Any]], n: int = 8) -> list[dict[str, Any]]
 
 def write_exports(rows: list[dict[str, Any]]) -> dict[str, str]:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    csv_path = OUT_DIR / "pipe_15k_orders_detail.csv"
+    csv_path = OUT_DIR / "danh_sach_don_hang_chi_tiet.csv"
     jsonl_path = OUT_DIR / "pipe_15k_orders_detail.jsonl"
+    xlsx_path = OUT_DIR / "danh_sach_don_hang_chi_tiet.xlsx"
 
-    with csv_path.open("w", encoding="utf-8", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=EXPORT_COLS, extrasaction="ignore")
-        w.writeheader()
-        for r in rows:
+    headers_vn = {
+        "stt": "STT",
+        "van_tay": "Vân tay",
+        "so_noi_bo": "Số nội bộ",
+        "order_key": "Mã đơn",
+        "oms_id": "OMS ID",
+        "backend": "Backend",
+        "buucuc": "Bưu cục",
+        "kho": "Kho",
+        "warehouse_id": "Warehouse ID",
+        "warehouse_display": "Kho hiển thị",
+        "shop_id": "Shop ID",
+        "shop_name": "Shop",
+        "carrier": "ĐVVC",
+        "tracking_code": "Mã vận đơn",
+        "status": "Trạng thái",
+        "province": "Tỉnh/TP",
+        "district": "Quận/Huyện",
+        "ward": "Phường/Xã",
+        "address_detail": "Địa chỉ CT",
+        "full_address": "Địa chỉ đầy đủ",
+        "postal_code": "Mã bưu chính",
+        "receiver_name": "Người nhận",
+        "receiver_phone": "SĐT nhận",
+        "phone_class": "Loại SĐT",
+        "staff_creator": "NV tạo",
+        "cod_amount": "COD",
+        "source": "Nguồn",
+        "channel": "Kênh",
+        "file": "File",
+        "flow_path": "Luồng",
+        "picked_at": "Lấy hàng",
+        "delivered_at": "Giao hàng",
+        "piped_at": "Piped at",
+        "created_at": "Tạo",
+        "synced_at": "Sync",
+        "event_at": "Event",
+        "pipe_source": "Pipe source",
+        "realtime_new": "Realtime new",
+        "icon_chant": "Icon",
+        "contract_backend": "HĐ backend",
+        "contract_account": "HĐ account",
+        "contract_partner": "HĐ đối tác",
+        "detail_score": "Score CT",
+        "source_masked": "Che sẵn từ nguồn",
+        "note": "Ghi chú",
+    }
+    sheet_cols = ["stt"] + [c for c in EXPORT_COLS if c != "stt"]
+
+    with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=sheet_cols, extrasaction="ignore")
+        w.writerow({c: headers_vn.get(c, c) for c in sheet_cols})
+        for i, r in enumerate(rows, 1):
             row = {c: r.get(c) for c in EXPORT_COLS}
-            # flatten list contracts already done via contract_* fields
+            row["stt"] = i
             w.writerow(row)
 
     with jsonl_path.open("w", encoding="utf-8") as f:
         for r in rows:
             slim = {c: r.get(c) for c in EXPORT_COLS}
-            # drop heavy icon text in jsonl optional — keep
             f.write(json.dumps(slim, ensure_ascii=False) + "\n")
 
-    return {"csv": str(csv_path), "jsonl": str(jsonl_path)}
+    try:
+        from openpyxl import Workbook
+
+        wb = Workbook(write_only=True)
+        ws = wb.create_sheet("Đơn hàng chi tiết")
+        ws.append([headers_vn.get(c, c) for c in sheet_cols])
+        for i, r in enumerate(rows, 1):
+            ws.append([i if c == "stt" else r.get(c) for c in sheet_cols])
+        wb.save(str(xlsx_path))
+    except Exception as e:  # noqa: BLE001
+        return {
+            "csv": str(csv_path),
+            "jsonl": str(jsonl_path),
+            "xlsx_error": str(e)[:160],
+        }
+
+    return {
+        "csv": str(csv_path),
+        "jsonl": str(jsonl_path),
+        "xlsx": str(xlsx_path),
+    }
 
 
 def build_report(
@@ -368,10 +446,13 @@ def build_report(
         "ok": bool(meta.get("ok")) and n > 0,
         "module": "pipe_15k_order_detail_mapper",
         "checked_at": utc_now(),
-        "policy": "read-only pipe DB · mask SĐT · full export gitignored under reports/",
+        "policy": (
+            "read-only pipe DB · hiển thị nguyên bản (không mask thêm) · "
+            "source_masked=YES = đã che từ nguồn, không giải mã được"
+        ),
         "atlas": (
-            "kho_buucuc_pipe.db (~15k) → panorama completeness → "
-            "CSV/JSONL chi tiết + mẫu thẻ"
+            "kho_buucuc_pipe.db (~15k) → panorama → sheet danh sách đơn CT "
+            "(XLSX/CSV) + mẫu thẻ"
         ),
         "db": meta,
         "filters": {
@@ -425,6 +506,7 @@ def format_text(report: dict[str, Any]) -> str:
         f"  NS: {flags.get('with_staff')} ({pct.get('with_staff')}%)",
         f"  flow: {flags.get('with_flow')} ({pct.get('with_flow')}%)",
         f"  HĐ gắn shop: {flags.get('with_contract')} ({pct.get('with_contract')}%)",
+        f"  nguyên bản DB: {flags.get('source_raw_n')} · che sẵn từ nguồn (*): {flags.get('source_masked_n')}",
         f"  score=8: {flags.get('score_8')} · ≥6: {flags.get('score_ge6')} · <4: {flags.get('score_lt4')}",
         "",
         "=== Backend ===",
@@ -467,9 +549,12 @@ def format_text(report: dict[str, Any]) -> str:
     lines.append("")
     ex = report.get("exports") or {}
     if ex:
-        lines.append("=== Export ===")
+        lines.append("=== Export sheet ===")
+        if ex.get("xlsx"):
+            lines.append(f"  XLSX:  {ex.get('xlsx')}")
         lines.append(f"  CSV:   {ex.get('csv')}")
         lines.append(f"  JSONL: {ex.get('jsonl')}")
+        lines.append("  (Nguyên bản DB — không mask thêm. Cột source_masked=YES = đã * từ nguồn)")
     lines.append("")
     for n in report.get("next") or []:
         lines.append(f"Next: {n}")
@@ -506,12 +591,13 @@ def write_outputs(report: dict[str, Any]) -> dict[str, str]:
     return out
 
 
-def notify_telegram(text: str) -> int | None:
+def notify_telegram(text: str, *, document: Path | None = None) -> dict[str, Any]:
     env = load_env()
     token = env.get("TELEGRAM_BOT_TOKEN") or ""
     chat = env.get("TELEGRAM_CHAT_ID") or ""
+    out: dict[str, Any] = {}
     if not token or not chat:
-        return None
+        return {"ok": False, "error": "missing TELEGRAM_BOT_TOKEN/CHAT_ID"}
     body = json.dumps({"chat_id": chat, "text": text[:3500]}).encode()
     req = urllib.request.Request(
         f"https://api.telegram.org/bot{token}/sendMessage",
@@ -520,7 +606,32 @@ def notify_telegram(text: str) -> int | None:
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=20) as resp:
-        return resp.status
+        out["message"] = resp.status
+    if document and document.is_file():
+        boundary = "----Pipe15kSheet"
+        caption = text[:900]
+        head = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="chat_id"\r\n\r\n{chat}\r\n'
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="caption"\r\n\r\n{caption}\r\n'
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="document"; filename="{document.name}"\r\n'
+            f"Content-Type: application/octet-stream\r\n\r\n"
+        ).encode()
+        tail = f"\r\n--{boundary}--\r\n".encode()
+        data = head + document.read_bytes() + tail
+        req2 = urllib.request.Request(
+            f"https://api.telegram.org/bot{token}/sendDocument",
+            data=data,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req2, timeout=180) as resp:
+            out["document"] = resp.status
+            out["document_path"] = str(document)
+    out["ok"] = True
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -534,7 +645,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-export", action="store_true")
     ap.add_argument("--sample", type=int, default=8)
     ap.add_argument("--json", action="store_true")
-    ap.add_argument("--notify", action="store_true")
+    ap.add_argument("--notify", action="store_true", help="gửi text + sheet XLSX vào Telegram")
     args = ap.parse_args(argv)
 
     wt: bool | None = None
@@ -556,12 +667,17 @@ def main(argv: list[str] | None = None) -> int:
     text = format_text(report)
     if args.notify:
         try:
-            report["telegram"] = notify_telegram(text)
+            xlsx = (report.get("exports") or {}).get("xlsx")
+            doc = Path(xlsx) if xlsx else None
+            # short caption for document; full text as message
+            report["telegram"] = notify_telegram(text, document=doc)
             write_outputs(report)
         except Exception as e:  # noqa: BLE001
-            report["telegram_error"] = str(e)[:160]
+            report["telegram_error"] = str(e)[:200]
     print(json.dumps(report, ensure_ascii=False, indent=2) if args.json else text)
     print(f"\nWrote: {paths.get('txt')}")
+    if paths.get("xlsx"):
+        print(f"XLSX:  {paths['xlsx']}")
     if paths.get("csv"):
         print(f"CSV:   {paths['csv']}")
         print(f"JSONL: {paths['jsonl']}")

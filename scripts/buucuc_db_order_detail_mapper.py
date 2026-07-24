@@ -7,7 +7,7 @@
 
 Xuất thẻ đơn chi tiết: kho · bưu cục · backend · HĐ · mã VĐ · nhận · địa chỉ · COD · NS · flow.
 
-Owned-only · read-only SQL · mask SĐT dài.
+Owned-only · read-only SQL · hiển thị nguyên bản DB (không mask thêm).
 """
 
 from __future__ import annotations
@@ -103,18 +103,6 @@ def load_env() -> dict[str, str]:
     return env
 
 
-def mask_phone(ph: str | None) -> str | None:
-    if not ph:
-        return ph
-    s = str(ph).strip()
-    digits = re.sub(r"\D", "", s)
-    if len(digits) < 7:
-        return s
-    if "*" in s:
-        return s
-    return digits[:3] + "***" + digits[-3:]
-
-
 def table_cols(conn: sqlite3.Connection, table: str = "orders") -> set[str]:
     try:
         return {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -142,10 +130,7 @@ def select_sql(cols_avail: set[str], *, where: str, order: str, limit: int) -> s
 
 def row_to_detail(row: sqlite3.Row | dict, *, db: str) -> dict[str, Any]:
     d = dict(row) if not isinstance(row, dict) else dict(row)
-    # mask phones
-    for k in ("receiver_phone", "customer_phone"):
-        if d.get(k):
-            d[k] = mask_phone(str(d[k]))
+    # nguyên bản DB — không mask thêm
     d["_db"] = db
     # completeness score
     rich = (
@@ -480,7 +465,7 @@ def build_report(
         "ok": bool(fetched.get("ok")),
         "module": "buucuc_db_order_detail_mapper",
         "checked_at": utc_now(),
-        "policy": "read-only SQLite · mask SĐT · no dump-login",
+        "policy": "read-only SQLite · nguyên bản DB (không mask thêm) · no dump-login",
         "atlas": (
             "buucuc_backend.db / kho_buucuc_pipe.db → filter → thẻ đơn chi tiết "
             "(kho·BC·HĐ·VĐ·nhận·địa chỉ·COD·NS)"
