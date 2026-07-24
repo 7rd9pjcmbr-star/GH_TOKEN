@@ -210,6 +210,9 @@ def panel_keyboard() -> dict:
             ],
             [
                 {"text": "🗺 TMDT·VN icon", "callback_data": "q:tmdt_vn"},
+                {"text": "🔎 Ống·đơn·TMDT", "callback_data": "q:tmdt_pipe"},
+            ],
+            [
                 {"text": "🚀 Lab·nâng cấp", "callback_data": "q:lab_upgrade"},
             ],
             [
@@ -1389,6 +1392,7 @@ HANDLERS = {
     "q:lab_upgrade": fmt_lab_upgrade,
     "q:lab_status": fmt_lab_status,
     "q:tmdt_vn": fmt_tmdt_vn,
+    "q:tmdt_pipe": fmt_tmdt_pipe,
     "q:ngx_order": fmt_ngx_order,
     "q:owned_env": fmt_owned_env,
     "q:token_rotate": fmt_token_rotate,
