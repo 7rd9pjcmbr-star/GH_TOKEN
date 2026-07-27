@@ -1,0 +1,26 @@
+node_modules/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+.secrets
+credentials*
+*.p12
+.DS_Store
+
+# Lab quarantine — không commit mẫu nghi ngờ
+quarantine/*
+!quarantine/.gitkeep
+reports/*
+!reports/.gitkeep
+*.report.json
+
+__pycache__/
+*.pyc
+docker/nginx-order/logs/
+docker/nginx-order/tmp/
+
+docker/nginx-order/orders_local_cache.json
+docker/nginx-order/orders_buucuc_scan_cache.json
