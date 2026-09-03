@@ -1,6 +1,6 @@
 {
   "name": "mamo-security-lab",
-  "install": "chmod +x docker/lab/entrypoint.sh docker/lab/analyze-static.py || true",
+  "install": "chmod +x docker/lab/entrypoint.sh docker/lab/analyze-static.py || true; python3 -m pip install --user -r requirements.txt",
   "ports": [
     {
       "name": "static-site",

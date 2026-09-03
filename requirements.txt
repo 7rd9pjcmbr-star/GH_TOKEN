@@ -1,0 +1,10 @@
+# Python dependencies for the Mã Mở order tooling (scripts/).
+# Install: python3 -m pip install -r requirements.txt
+#
+# Only third-party imports used by scripts/ are pinned here; everything else
+# the code uses is in the Python standard library.
+
+requests==2.33.1        # HTTP client (Pancake POS / GHN / 3PL calls)
+cryptography==41.0.7     # AEAD / AES helpers (crypto decode-assist, owned Frida keys)
+openpyxl==3.1.5          # Excel ingest/export (scan_buucuc_orders, nginx embed fill)
+aiohttp==3.14.3          # async HTTP (concurrent multi-platform order fetching)
