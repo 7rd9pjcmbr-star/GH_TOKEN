@@ -133,6 +133,8 @@ Module capability (không còn “hopN”): `seed → deep → enrich → tracki
 ```bash
 # pipeline an toàn (offline)
 python3 -m order_pipe --run
+# Phase B initial: seed + PathId census
+python3 -m order_pipe --start
 # hoặc
 python3 scripts/order_pipe_module.py --stages seed,close
 

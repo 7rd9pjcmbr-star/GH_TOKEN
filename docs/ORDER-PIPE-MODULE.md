@@ -56,7 +56,7 @@ Thứ tự mặc định:
 ## 5. Public API
 
 ```python
-from order_pipe import ReverseFlow, PipeStore, PathId, StageId
+from order_pipe import ReverseFlow, PipeStore, PathId, StageId, classify_order
 
 store = PipeStore.open()          # hoặc .ensure()
 rf = ReverseFlow(store)
@@ -65,9 +65,10 @@ rf.lookup.by_van_tay("…")
 rf.lookup.by_tracking("SPXVN…")
 rf.flow.panorama(order_row)
 rf.flow.completeness(ASUMEE_WID)
+classify_order(order_row)         # PathId.WAIT / MISSING / ACCEPT / CLEAR
 
 report = rf.pipeline.run(
-    stages=["seed", "deep", "accept", "close"],
+    stages=["seed"],              # --start
     live=False,
     apply=False,
 )
@@ -93,8 +94,14 @@ python3 -m order_pipe --stages enrich,waiting --live --apply --limit 40
 python3 -m order_pipe --tracking SPXVN067951046107
 python3 -m order_pipe --kho ASUMEE
 
+# Phase B initial: chỉ seed + PathId census
+python3 -m order_pipe --start
+
 # Tương thích hop cũ
 python3 -m order_pipe --legacy-continue-flow --hop13-apply
+
+# Tests (in-memory SQLite, no secrets)
+PYTHONPATH=scripts python3 -m order_pipe.tests
 ```
 
 ## 7. Policy bất biến
@@ -109,17 +116,20 @@ python3 -m order_pipe --legacy-continue-flow --hop13-apply
 
 ```
 scripts/order_pipe/
-  __init__.py      # ReverseFlow, exports
+  __init__.py      # ReverseFlow, classify_order, exports
   __main__.py      # python -m order_pipe
   constants.py     # ASUMEE_WID, StageId, PathId
-  paths.py         # path helpers / labels
+  paths.py         # PathId labels + classify_order + path_census
   store.py         # PipeStore
   lookup.py        # ReverseLookup facade
   flow.py          # FlowService facade
   pipeline.py      # ReversePipeline
-  stages.py        # stage runners
+  stages/          # Phase B: one module per capability
+    seed.py        # extracted hop1 composition + census
+    deep.py … close.py
   report.py        # build/write/format
   cli.py           # argparse
+  tests/           # unittest (in-memory SQLite)
   adapters/
     tracking.py
     crypto.py
@@ -130,6 +140,7 @@ docs/ORDER-PIPE-MODULE.md      # this file
 
 ## 9. Tiến hóa
 
-- Phase A (hiện tại): facade + stage registry + CLI.  
-- Phase B: tách dần logic khỏi monolith `order_pipe_reverse_query.py` vào `stages/*.py`.  
+- Phase A: facade + stage registry + CLI.  
+- Phase B (initial): `stages/` package; **seed** extracted from `reverse_chain_asumee`; PathId `classify_order` / `path_census`; CLI `--start`.  
+- Phase B (next): tách deep / accept / close khỏi hop2–5 / 10–13.  
 - Phase C: hook Telegram panel / keepalive emit `pipe_events` theo PathId.

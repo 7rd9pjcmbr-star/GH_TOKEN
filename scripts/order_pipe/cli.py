@@ -33,6 +33,11 @@ def main(argv: list[str] | None = None) -> int:
         help=f"Chạy pipeline mặc định an toàn: {','.join(SAFE_STAGES)}",
     )
     ap.add_argument(
+        "--start",
+        action="store_true",
+        help="Phase B initial: chỉ chạy stage seed (kho/tỉnh/van_tay + PathId census)",
+    )
+    ap.add_argument(
         "--stages",
         help=f"Danh sách stage CSV. Known: {','.join(STAGE_RUNNERS)}",
     )
@@ -262,14 +267,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.q:
         lookups.extend(rf.lookup.auto(args.q))
 
-    run_pipe = bool(args.run or args.stages)
+    run_pipe = bool(args.run or args.stages or args.start)
     # Default: if only lookups, skip pipeline; if nothing, --run safe stages
     if not lookups and not run_pipe:
         run_pipe = True
 
     pipe_result = None
     if run_pipe:
-        stages = args.stages
+        if args.stages:
+            stages = args.stages
+        elif args.start and not args.run:
+            stages = ["seed"]
+        else:
+            stages = args.stages
         pipe_result = rf.pipeline.run(
             stages=stages,
             live=bool(args.live),

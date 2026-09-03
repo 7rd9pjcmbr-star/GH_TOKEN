@@ -14,6 +14,7 @@ from .constants import (
 )
 from .flow import FlowService
 from .lookup import ReverseLookup
+from .paths import classify_order, is_mask_redaction, path_census
 from .pipeline import PipelineResult, ReversePipeline
 from .store import PipeStore
 
@@ -43,6 +44,9 @@ __all__ = [
     "HOP_TO_STAGE",
     "SAFE_STAGES",
     "PathId",
+    "classify_order",
+    "is_mask_redaction",
+    "path_census",
     "PipeStore",
     "PipelineResult",
     "ReverseFlow",
