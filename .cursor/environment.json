@@ -1,11 +1,17 @@
 {
   "name": "mamo-security-lab",
   "install": "chmod +x docker/lab/entrypoint.sh docker/lab/analyze-static.py || true",
-  "start": "python3 -m http.server 8080",
+  "ports": [
+    {
+      "name": "static-site",
+      "port": 8080
+    }
+  ],
   "terminals": [
     {
       "name": "lab-static",
-      "command": "python3 -m http.server 8080"
+      "command": "python3 -m http.server 8080",
+      "description": "Static web app (Mã Mở UI: /, /atlas/, /mapper/, /logic-view/, /lab/) served from repo root on http://localhost:8080"
     }
   ]
 }
