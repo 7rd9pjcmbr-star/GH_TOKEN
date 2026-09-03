@@ -36,6 +36,7 @@ Docs: `docs/ICON-ATLAS.md` · `docs/LOGIC-ARCHITECTURE.md` · `docs/NGINX-UPSTRE
 Truy vấn ngược kho→bưu cục→địa chỉ (ASUMEE):
 
 ```bash
+PYTHONPATH=scripts python3 -m order_pipe --start
 PYTHONPATH=scripts python3 -m order_pipe --run
 PYTHONPATH=scripts python3 -m order_pipe --kho ASUMEE
 ```

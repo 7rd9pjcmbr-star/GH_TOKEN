@@ -6,7 +6,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .constants import ASUMEE_WID, SAFE_STAGES
-from .stages import STAGE_RUNNERS, StageContext, parse_stages
+from .stages import STAGE_RUNNERS, parse_stages
+from .stages.context import StageContext
 from .store import PipeStore
 
 
