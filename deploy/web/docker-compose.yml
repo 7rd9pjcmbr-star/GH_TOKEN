@@ -1,0 +1,25 @@
+# Mã Mở — production web tier.
+# Run:  docker compose -f deploy/web/docker-compose.yml up -d --build
+# Then: http://localhost:8080/  (health: http://localhost:8080/healthz)
+services:
+  web:
+    build:
+      context: ../..
+      dockerfile: deploy/web/Dockerfile
+    image: mamo-web:latest
+    container_name: mamo-web
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s

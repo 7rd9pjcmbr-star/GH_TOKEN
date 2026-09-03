@@ -766,7 +766,7 @@
     });
   }
 
-  windowKindFilters();
+  renderKindFilters();
   renderLegend();
   renderIconAtlasPanel();
   measure();
