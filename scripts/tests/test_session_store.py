@@ -127,6 +127,25 @@ class SessionStoreTests(unittest.TestCase):
         store = self.ss.load_store()
         self.assertIsNotNone(store["platforms"]["GHN"]["meta"]["last_ok_at"])
 
+    def test_async_keepalive_offline(self):
+        import asyncio
+
+        self.ss.set_session("GHN", tokens={"GHN_API_TOKEN": "ghn-async-0001"})
+        rep = asyncio.run(self.ss.keepalive_async(refresh=False, probe_urls=None))  # no network/login
+        self.assertTrue(rep["ok"])
+        self.assertEqual(rep["module"], "session_store.keepalive_async")
+        store = self.ss.load_store()
+        self.assertIsNotNone(store["platforms"]["GHN"]["meta"]["last_ok_at"])
+
+    def test_async_daemon_finite_iterations(self):
+        import asyncio
+
+        self.ss.set_session("GHN", tokens={"GHN_API_TOKEN": "ghn-async-0002"})
+        self.ss._STOP["flag"] = False
+        res = asyncio.run(self.ss.run_daemon_async(interval=0, iterations=3, probe_urls=None, refresh=False))
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["iterations"], 3)
+
     def test_daemon_finite_iterations(self):
         self.ss.set_session("GHN", tokens={"GHN_API_TOKEN": "ghn-abc-0002"})
         # monkeypatch keepalive to avoid network and speed up

@@ -26,6 +26,7 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import signal
@@ -365,6 +366,98 @@ def run_daemon(*, interval: int = 300, iterations: int | None = None, probe: boo
     return {"ok": True, "iterations": n, "last": last}
 
 
+# --------------------------------------------------------------------------- async loop
+
+
+async def _probe_endpoints_async(urls: list[str], *, timeout: float = 8.0) -> list[dict[str, Any]]:
+    """Concurrent reachability probe via aiohttp (async I/O inside the keepalive loop)."""
+    import aiohttp
+
+    async with aiohttp.ClientSession() as session:
+
+        async def _one(u: str) -> dict[str, Any]:
+            try:
+                async with session.get(u, timeout=aiohttp.ClientTimeout(total=timeout)) as r:
+                    return {"url": u, "status": r.status, "ok": r.status < 500}
+            except Exception as e:  # noqa: BLE001
+                return {"url": u, "status": None, "ok": False, "error": str(e)[:120]}
+
+        return await asyncio.gather(*(_one(u) for u in urls))
+
+
+async def keepalive_async(
+    store: dict[str, Any] | None = None,
+    *,
+    refresh: bool = True,
+    probe_urls: list[str] | None = None,
+) -> dict[str, Any]:
+    """Async keepalive: refresh owned tokens (in a thread) + concurrent reachability probe.
+
+    No auto-login. Sync refresh (access_token_rotate) is offloaded via asyncio.to_thread
+    so the event loop stays responsive; the network probe is native async (aiohttp).
+    """
+    store = store if store is not None else load_store()
+    apply_to_env(store)
+
+    refresh_report: dict[str, Any] = {"skipped": True}
+    if refresh:
+        try:
+            from access_token_rotate import ensure_tokens
+
+            refresh_report = await asyncio.to_thread(ensure_tokens)
+        except Exception as e:  # noqa: BLE001
+            refresh_report = {"ok": False, "error": str(e)}
+
+    probe_report: list[dict[str, Any]] = []
+    if probe_urls:
+        probe_report = await _probe_endpoints_async(probe_urls)
+
+    stamp = utc_now()
+    for _plat, entry in store.get("platforms", {}).items():
+        entry.setdefault("meta", {})["last_ok_at"] = stamp
+    await asyncio.to_thread(save_store, store)
+
+    rep = status_report(store)
+    rep["module"] = "session_store.keepalive_async"
+    rep["refresh_ok"] = bool(refresh_report.get("ok", True)) and "error" not in refresh_report
+    rep["probe"] = probe_report
+    rep["probe_ok"] = all(p.get("ok") for p in probe_report) if probe_report else True
+    return rep
+
+
+async def run_daemon_async(
+    *,
+    interval: int = 300,
+    iterations: int | None = None,
+    probe_urls: list[str] | None = None,
+    refresh: bool = True,
+) -> dict[str, Any]:
+    """Duy trì liên tục bằng asyncio event loop — keepalive mỗi `interval` giây."""
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, lambda: _STOP.__setitem__("flag", True))
+        except (NotImplementedError, RuntimeError):
+            pass  # signal handlers unavailable (e.g. non-main thread)
+    n = 0
+    last: dict[str, Any] = {}
+    while not _STOP["flag"]:
+        last = await keepalive_async(refresh=refresh, probe_urls=probe_urls)
+        n += 1
+        print(
+            f"[{utc_now()}] async session keepalive #{n} overall={last.get('overall')} "
+            f"refresh_ok={last.get('refresh_ok')} probe_ok={last.get('probe_ok')}",
+            flush=True,
+        )
+        if iterations is not None and n >= iterations:
+            break
+        slept = 0
+        while slept < int(interval) and not _STOP["flag"]:
+            await asyncio.sleep(1)
+            slept += 1
+    return {"ok": True, "iterations": n, "last": last}
+
+
 # --------------------------------------------------------------------------- CLI
 
 
@@ -394,6 +487,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--interval", type=int, default=300, help="Chu kỳ keepalive (giây) cho daemon")
     ap.add_argument("--iterations", type=int, help="Số vòng daemon (test)")
     ap.add_argument("--probe", action="store_true", help="Probe giữ ấm phiên khi ensure/daemon")
+    ap.add_argument("--probe-url", action="append", help="URL cho probe async (lặp lại được; dùng với daemon --probe)")
     ap.add_argument("--stdout", action="store_true", help="export: in raw Cookie header ra stdout (opt-in)")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
@@ -438,7 +532,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if rep.get("ok") else 1
 
     if args.command == "daemon":
-        return 0 if run_daemon(interval=args.interval, iterations=args.iterations, probe=args.probe).get("ok") else 1
+        # async-by-default: continuous keepalive on an asyncio event loop
+        res = asyncio.run(
+            run_daemon_async(
+                interval=args.interval,
+                iterations=args.iterations,
+                probe_urls=(args.probe_url or None) if args.probe else None,
+            )
+        )
+        return 0 if res.get("ok") else 1
 
     if args.command == "export":
         if not args.platform:
