@@ -32,6 +32,10 @@ class AccountPoolTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         os.environ["ACCOUNT_POOL_PATH"] = str(Path(self._tmp.name) / "account_pool.json")
+        # keep tests hermetic: neutralise ambient account sources that would leak in
+        self._saved_env = {
+            k: os.environ.pop(k, None) for k in ("ACCOUNT_POOL_ACCOUNTS_FILE", "OWNED_ACCOUNTS_JSON")
+        }
         import account_pool as ap
 
         self.ap = ap
@@ -39,6 +43,9 @@ class AccountPoolTests(unittest.TestCase):
 
     def tearDown(self):
         os.environ.pop("ACCOUNT_POOL_PATH", None)
+        for k, v in self._saved_env.items():
+            if v is not None:
+                os.environ[k] = v
         self._tmp.cleanup()
 
     def test_load_accounts(self):
