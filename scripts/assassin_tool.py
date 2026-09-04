@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
+import zipfile
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +29,7 @@ DUMPS = INBOX / "_skipped_dumps"
 REPORTS = ROOT / "reports" / "telegram-classify"
 OUT_JSON = REPORTS / "assassin_tool.json"
 OUT_TXT = REPORTS / "assassin_tool.txt"
+EXTRACT_DIR = INBOX / "AssassinTool_extracted"
 
 ASSASSIN_HINTS = ("assassin", "final_report", "report")
 REPORT_KINDS = {"report", "dump_other", "dump_stealer", "dump_token", "dump_account", "text_blob"}
@@ -45,15 +48,70 @@ def is_assassin_candidate(name: str) -> bool:
     return any(h in n for h in REPORT_HINTS)
 
 
+def find_assassin_zip() -> Path | None:
+    """Locate AssassinTool.zip anywhere under repo (workspace upload)."""
+    for p in sorted(ROOT.rglob("AssassinTool.zip"), key=lambda x: -x.stat().st_mtime):
+        if p.is_file():
+            return p
+    for p in (INBOX / "AssassinTool.zip", ROOT / "AssassinTool.zip"):
+        if p.is_file():
+            return p
+    return None
+
+
+def extract_assassin_zip(src: Path | None = None, *, dest: Path | None = None) -> dict:
+    """Giải nén AssassinTool.zip → quarantine/telegram/AssassinTool_extracted/."""
+    src = src or find_assassin_zip()
+    if not src or not src.is_file():
+        return {
+            "ok": False,
+            "error": "Không thấy AssassinTool.zip trong workspace",
+            "searched": [str(ROOT), str(INBOX)],
+        }
+    dest = dest or EXTRACT_DIR
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True, exist_ok=True)
+    extracted: list[str] = []
+    try:
+        with zipfile.ZipFile(src) as zf:
+            for info in zf.infolist():
+                # zip-slip safe
+                target = (dest / info.filename).resolve()
+                if not str(target).startswith(str(dest.resolve())):
+                    continue
+                zf.extract(info, dest)
+                if not info.is_dir():
+                    extracted.append(info.filename)
+    except zipfile.BadZipFile as e:
+        return {"ok": False, "error": f"Bad zip: {e}", "source": str(src)}
+    # also keep a copy/link in inbox for downstream tools
+    inbox_copy = INBOX / src.name
+    if src.resolve() != inbox_copy.resolve():
+        shutil.copy2(src, inbox_copy)
+    return {
+        "ok": True,
+        "source": str(src),
+        "dest": str(dest),
+        "files": len(extracted),
+        "sample": extracted[:20],
+    }
+
+
 def list_assassin_files(*, all_files: bool = False) -> list[Path]:
     out: list[Path] = []
-    for folder in (INBOX, DUMPS):
+    folders = [INBOX, DUMPS]
+    if EXTRACT_DIR.is_dir():
+        folders.append(EXTRACT_DIR)
+    for folder in folders:
         if not folder.is_dir():
             continue
-        for p in folder.iterdir():
+        for p in folder.rglob("*"):
             if not p.is_file() or p.name.startswith("."):
                 continue
-            if all_files or is_assassin_candidate(p.name):
+            if p.suffix.lower() == ".zip" and p.name.lower() == "assassintool.zip":
+                continue
+            if all_files or is_assassin_candidate(p.name) or folder == EXTRACT_DIR:
                 out.append(p)
     out.sort(key=lambda x: -x.stat().st_mtime)
     return out
@@ -213,11 +271,21 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="AssassinTool — analyze report/assassin quarantine files")
     ap.add_argument("paths", nargs="*", help="Optional explicit file paths to analyze")
     ap.add_argument("--all", action="store_true", help="Include all inbox/dump files, not just assassin hints")
+    ap.add_argument("--extract", action="store_true", help="Giải nén AssassinTool.zip rồi phân tích")
     ap.add_argument("--json", action="store_true", help="Print full JSON report")
     args = ap.parse_args()
 
+    extract_result = None
+    if args.extract:
+        extract_result = extract_assassin_zip()
+        if not extract_result.get("ok"):
+            print(json.dumps(extract_result, ensure_ascii=False, indent=2) if args.json else extract_result.get("error"))
+            return 1
+
     explicit = [Path(p) for p in args.paths] if args.paths else None
     report = build_report(paths=explicit, all_files=args.all)
+    if extract_result:
+        report["extract"] = extract_result
     write_outputs(report)
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
