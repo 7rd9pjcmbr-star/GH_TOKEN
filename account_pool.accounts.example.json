@@ -1,0 +1,87 @@
+{
+  "_note": [
+    "Mẫu account pool — chỉ tài khoản SỞ HỮU (owned). Không paste dump/stealer.",
+    "Cách dùng: cp secrets/account_pool.accounts.example.json secrets/account_pool.accounts.json",
+    "  rồi điền token owned. account_pool tự nạp file này (hoặc set ACCOUNT_POOL_ACCOUNTS_FILE).",
+    "Trường: platform, user, token, shop_id, label + trường phụ theo nền tảng (password/base_url/...).",
+    "Mọi trường ngoài platform/user/token/shop_id/label sẽ vào 'extras'. Bỏ account không dùng.",
+    "File thật (account_pool.accounts.json) đã gitignored; KHÔNG commit token thật."
+  ],
+  "accounts": [
+    {
+      "platform": "Pancake",
+      "label": "samspa-main",
+      "user": "<pancake_login_user>",
+      "token": "<PANCAKE_POS_API_KEY hoặc Bearer PANCAKE_POS_ACCESS_TOKEN>",
+      "shop_id": "1530618"
+    },
+    {
+      "platform": "GHN",
+      "label": "kho-hcm",
+      "user": "<ghn_user_or_phone>",
+      "token": "<GHN_API_TOKEN>",
+      "shop_id": "<GHN_SHOP_ID>"
+    },
+    {
+      "platform": "ViettelPost",
+      "label": "vtp-owned",
+      "user": "<VIETTELPOST_USER>",
+      "token": "<VIETTELPOST_TOKEN (bỏ trống nếu dùng user+password login owned)>",
+      "shop_id": "<VIETTELPOST_SHOP_ID>",
+      "password": "<VIETTELPOST_PASSWORD (chỉ owned; để refresh token)>"
+    },
+    {
+      "platform": "TPOS",
+      "label": "tpos-shop",
+      "user": "<TPOS_USER>",
+      "token": "<TPOS_ACCESS_TOKEN>",
+      "shop_id": "<TPOS_SHOP_ID>",
+      "base_url": "<TPOS_BASE_URL>"
+    },
+    {
+      "platform": "Sapo",
+      "label": "sapo-store",
+      "user": "<SAPO_USER>",
+      "token": "<SAPO_ACCESS_TOKEN>",
+      "shop_id": "<SAPO_STORE>",
+      "base_url": "<SAPO_BASE_URL>"
+    },
+    {
+      "platform": "Nhanh",
+      "label": "nhanh-biz",
+      "user": "<NHANH_USER>",
+      "token": "<NHANH_API_KEY>",
+      "shop_id": "<NHANH_BUSINESS_ID>",
+      "app_id": "<NHANH_APP_ID>"
+    },
+    {
+      "platform": "Shopee",
+      "label": "shopee-shop",
+      "user": "<SHOPEE_USER>",
+      "token": "<SHOPEE_ACCESS_TOKEN>",
+      "shop_id": "<SHOPEE_SHOP_ID>",
+      "partner_id": "<SHOPEE_PARTNER_ID>"
+    },
+    {
+      "platform": "SPX",
+      "label": "spx-shop",
+      "user": "<SPX_USER>",
+      "token": "<SPX_TOKEN>",
+      "shop_id": "<SPX_SHOP_ID>",
+      "partner_id": "<SPX_PARTNER_ID>"
+    },
+    {
+      "platform": "VNPost",
+      "label": "vnpost-owned",
+      "user": "<VNPOST_USER>",
+      "token": "<VNPOST_TOKEN>",
+      "shop_id": "<VNPOST_CUSTOMER_CODE>"
+    },
+    {
+      "platform": "Aship",
+      "label": "aship-owned",
+      "user": "<ASHIP_USER>",
+      "token": "<ASHIP_API_KEY>"
+    }
+  ]
+}
