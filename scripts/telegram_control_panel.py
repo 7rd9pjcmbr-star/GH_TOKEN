@@ -71,6 +71,19 @@ def target_csv() -> Path:
 
 
 def analyze(path: Path) -> dict:
+    if not path.is_file():
+        return {
+            "file": path.name,
+            "records": 0,
+            "stats": {},
+            "by_source": {},
+            "by_shop": {},
+            "by_platform": {},
+            "actions": {},
+            "masked_top": [],
+            "hot_paths": [],
+            "note": "Chưa có file orders_detailed_*.csv — gửi export đơn vào chat bot.",
+        }
     rows = load_rows(path)
     stats = Counter()
     by_source = defaultdict(Counter)
