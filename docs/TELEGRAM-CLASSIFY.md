@@ -13,7 +13,17 @@ python3 scripts/telegram_inbox_scan_analyze.py --no-pull
 - Phân loại: `order_export` · `dump_stealer` · `dump_token` · …
 - Dump/stealer → `_skipped_dumps/`, chỉ cấu trúc (header redacted), **không login**
 - Báo cáo: `reports/telegram-classify/telegram_inbox_scan_analyze.{txt,json}` · DB `telegram_inbox_scan.db`
-- Panel: **🔍 Quét·phân tích**
+- Panel: **🔍 Quét·phân tích** · **🗡 Assassin·report** (AssassinTool)
+
+## AssassinTool
+
+Phân tích riêng file report/assassin/final_report:
+
+```bash
+python3 scripts/assassin_tool.py
+```
+
+Docs: `docs/ASSASSIN-TOOL.md` · báo cáo: `reports/telegram-classify/assassin_tool.{json,txt}`
 
 ## Không làm
 

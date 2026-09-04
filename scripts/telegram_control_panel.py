@@ -188,6 +188,7 @@ def panel_keyboard() -> dict:
             ],
             [
                 {"text": "🔎 Audit·token inbox", "callback_data": "q:secrets_audit"},
+                {"text": "🗡 Assassin·report", "callback_data": "q:assassin_tool"},
             ],
             [{"text": "🔁 Làm mới phân tích", "callback_data": "q:refresh"}],
         ]
@@ -779,6 +780,23 @@ def fmt_secrets_audit(_a: dict | None = None) -> str:
         )
 
 
+def fmt_assassin_tool(_a: dict | None = None) -> str:
+    try:
+        from assassin_tool import build_report, format_text, write_outputs
+
+        report = build_report()
+        write_outputs(report)
+        return format_text(report)[:3800]
+    except Exception as e:  # noqa: BLE001
+        path = ROOT / "reports" / "telegram-classify" / "assassin_tool.txt"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")[:3800]
+        return (
+            f"AssassinTool lỗi: {e}\n"
+            "Chạy: python3 scripts/assassin_tool.py"
+        )
+
+
 def fmt_token_rotate(_a: dict | None = None) -> str:
     try:
         from access_token_rotate import apply_realtime, format_text, write_outputs
@@ -921,6 +939,7 @@ HANDLERS = {
     "q:token_rotate": fmt_token_rotate,
     "q:embed_fill": fmt_embed_fill,
     "q:secrets_audit": fmt_secrets_audit,
+    "q:assassin_tool": fmt_assassin_tool,
 }
 
 
@@ -1000,6 +1019,7 @@ def main() -> int:
         "q:token_rotate",
         "q:embed_fill",
         "q:secrets_audit",
+        "q:assassin_tool",
     ]:
         send(
             token,
@@ -1038,6 +1058,7 @@ def main() -> int:
                 "q:token_rotate",
                 "q:embed_fill",
                 "q:secrets_audit",
+                "q:assassin_tool",
             }
             else None,
         )
