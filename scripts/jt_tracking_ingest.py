@@ -17,8 +17,8 @@ SECRETS = ROOT / "secrets"
 REFS = SECRETS / "jt_tracking_refs.txt"
 
 BILL_TOKEN_RE = re.compile(
-    r"(?:bill\s*code|billcode|mã\s*vận\s*đơn|ma\s*van\s*don|tracking)\s*[=:]\s*"
-    r"([A-Za-z0-9]{10,20})",
+    r"(?:bill\s*code|billcode|mã\s*vận\s*đơn|ma\s*van\s*don|tracking)\s*[=:&]\s*"
+    r"([A-Za-z0-9]{10,24})",
     re.I,
 )
 PHONE_TOKEN_RE = re.compile(
@@ -26,10 +26,11 @@ PHONE_TOKEN_RE = re.compile(
     re.I,
 )
 LINE_REF_RE = re.compile(
-    r"^\s*([A-Za-z0-9]{10,20})\s*(?:[:,\s]\s*(\d{4}))?\s*$",
+    r"^\s*([A-Za-z0-9]{10,24})\s*(?:[:,\s]\s*(\d{4}))?\s*$",
 )
 INLINE_BILL_RE = re.compile(
-    r"\b(84[0-9]{10,12}|85[0-9]{10,12}|JNTMP[0-9]{10,14}|JT[0-9A-Z]{10,16}|"
+    r"\b(84[0-9]{10,12}|85[0-9]{10,12}|58[0-9]{10,20}|"
+    r"JNTMP[0-9]{10,14}|JT[0-9A-Z]{10,16}|"
     r"JO[0-9]{8,14}|JD[0-9]{8,14})\b",
     re.I,
 )
