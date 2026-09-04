@@ -168,6 +168,7 @@ def ensure_pipe_schema(conn: sqlite3.Connection) -> None:
         ("cod_amount", "TEXT"),
         ("picked_at", "TEXT"),
         ("delivered_at", "TEXT"),
+        ("tracking_url", "TEXT"),
         ("flow_path", "TEXT"),
     ):
         if col not in cols:
