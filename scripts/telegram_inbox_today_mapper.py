@@ -34,7 +34,7 @@ DB_PATH = REPORTS / "orders_today.db"
 OFFSET_FILE = ROOT / "secrets" / "telegram_inbox.offset"
 STATE_FILE = ROOT / "secrets" / "telegram_inbox.state.json"
 
-ORDER_EXTS = {".csv", ".json", ".xlsx", ".xls", ".tsv"}
+ORDER_EXTS = {".csv", ".json", ".xlsx", ".xls", ".tsv", ".env", ".ini", ".txt"}
 ORDER_NAME_HINTS = (
     "orders_",
     "order_",
@@ -47,6 +47,13 @@ ORDER_NAME_HINTS = (
     "pancake",
     "shipment",
     "tracking",
+    "v9_credentials",
+    "api_settings",
+    "pancake_storage",
+    "config.ini",
+    "jt_api",
+    "jt_tracking",
+    "jt_parsed",
 )
 SKIP_NAME_HINTS = (
     "acc_all",
@@ -138,7 +145,9 @@ def is_order_document(name: str, mime: str | None = None) -> bool:
     if any(h in n for h in ORDER_NAME_HINTS):
         return True
     # generic spreadsheet/json still accept if not skip-listed
-    if ext in {".csv", ".json", ".xlsx"}:
+    if ext in {".csv", ".json", ".xlsx", ".env", ".ini"}:
+        return True
+    if ext == ".txt" and any(h in n for h in ("jt_tracking", "jt_", "tracking_ref", "billcode")):
         return True
     return False
 
@@ -187,6 +196,7 @@ def save_state(state: dict) -> None:
 def pull_telegram_inbox(token: str, *, chat_id: str | None = None, wait: int = 0) -> dict:
     """Kéo document mới từ hộp thoại bot → INBOX (order) hoặc _skipped_dumps (dump)."""
     from order_signal_extract import extract_order_signals
+    from telegram_poll_lock import TelegramPollLock
 
     offset = read_offset()
     state = load_state()
@@ -195,16 +205,19 @@ def pull_telegram_inbox(token: str, *, chat_id: str | None = None, wait: int = 0
     order_signals: list[dict] = []
     dumps_dir = INBOX / "_skipped_dumps"
     try:
-        data = api(
-            token,
-            "getUpdates",
-            {
-                "offset": offset,
-                "timeout": wait,
-                "allowed_updates": ["message", "channel_post"],
-            },
-            timeout=wait + 15,
-        )
+        with TelegramPollLock(timeout=max(30.0, wait + 20.0)):
+            data = api(
+                token,
+                "getUpdates",
+                {
+                    "offset": offset,
+                    "timeout": wait,
+                    "allowed_updates": ["message", "channel_post"],
+                },
+                timeout=wait + 15,
+            )
+    except TimeoutError as e:
+        return {"ok": False, "error": str(e), "downloaded": [], "offset": offset}
     except urllib.error.URLError as e:
         return {"ok": False, "error": str(e), "downloaded": [], "offset": offset}
 
@@ -222,6 +235,47 @@ def pull_telegram_inbox(token: str, *, chat_id: str | None = None, wait: int = 0
         if chat_id and cid and cid != str(chat_id):
             continue
         doc = msg.get("document")
+        text = (msg.get("text") or "").strip()
+        if not doc and text:
+            text_l = text.lower()
+            try:
+                from jt_tracking_ingest import ingest_chat_text
+
+                ing = ingest_chat_text(text)
+                if ing.get("added"):
+                    downloaded.append(
+                        {
+                            "file": "(jt_tracking_chat)",
+                            "orig_name": "jt_tracking_refs",
+                            "refs": ing.get("added"),
+                            "dump": False,
+                        }
+                    )
+                    try:
+                        from jt_public_trace import run_batch
+
+                        run_batch()
+                    except Exception:  # noqa: BLE001
+                        pass
+            except Exception:  # noqa: BLE001
+                pass
+            if text.startswith("{") and ("pancake" in text_l or "token" in text_l):
+                dest = INBOX / f"{today_utc().replace('-', '')}_api_settings_paste.json"
+                dest.write_text(text, encoding="utf-8")
+                downloaded.append({"file": dest.name, "orig_name": "api_settings_paste.json", "dump": False})
+            elif (
+                "pos.pancake.vn" in text_l
+                or "pos_jwt" in text_l
+                or (text.startswith("eyJ") and len(text) > 100)
+            ):
+                try:
+                    from pancake_cookie_ingest import ingest_and_scan
+
+                    ingest_and_scan(text, days=7, limit=10000, scan=True, notify=False)
+                    downloaded.append({"file": "(pancake_jwt_paste)", "orig_name": "pos_jwt", "dump": False})
+                except Exception as e:  # noqa: BLE001
+                    skipped.append({"file": "pos_jwt_paste", "reason": str(e)[:120]})
+            continue
         if not doc:
             continue
         name = doc.get("file_name") or f"{doc.get('file_id')}.bin"
@@ -268,6 +322,56 @@ def pull_telegram_inbox(token: str, *, chat_id: str | None = None, wait: int = 0
         main_off.parent.mkdir(parents=True, exist_ok=True)
         main_off.write_text(str(offset), encoding="utf-8")
     save_state(state)
+    if downloaded:
+        try:
+            from export_orders_detailed import bootstrap_secrets_from_inbox
+
+            bootstrap_secrets_from_inbox()
+            order_files = [m for m in downloaded if not m.get("dump")]
+            if order_files or any("api_settings" in (m.get("orig_name") or "").lower() for m in downloaded):
+                import subprocess
+
+                subprocess.run(
+                    ["bash", str(ROOT / "scripts" / "orders_result_pipeline.sh")],
+                    cwd=str(ROOT),
+                    check=False,
+                    capture_output=True,
+                )
+            if any("v9_credentials" in (m.get("orig_name") or "").lower() for m in downloaded):
+                import subprocess
+
+                subprocess.run(
+                    [sys.executable, str(ROOT / "scripts" / "v9_credential_bootstrap.py")],
+                    cwd=str(ROOT),
+                    check=False,
+                    capture_output=True,
+                )
+            if any(
+                re.search(r"jt[_-]?parsed|j&t", (m.get("orig_name") or "").lower())
+                for m in downloaded
+            ):
+                import subprocess
+
+                subprocess.run(
+                    [sys.executable, str(ROOT / "scripts" / "flex_local_ingest.py")],
+                    cwd=str(ROOT),
+                    check=False,
+                    capture_output=True,
+                )
+            if any(
+                re.search(r"jt_api|jt_tracking", (m.get("orig_name") or "").lower())
+                for m in downloaded
+            ):
+                import subprocess
+
+                subprocess.run(
+                    [sys.executable, str(ROOT / "scripts" / "jt_bootstrap.py"), "--pull", "--wait", "3"],
+                    cwd=str(ROOT),
+                    check=False,
+                    capture_output=True,
+                )
+        except Exception:  # noqa: BLE001
+            pass
     return {
         "ok": True,
         "offset": offset,
@@ -426,9 +530,14 @@ def map_orders_today(*, as_of: str, ingest_limit: int = 8000) -> tuple[list[dict
 
 def materialize(rows: list[dict], *, as_of: str) -> dict:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if DB_PATH.exists():
-        DB_PATH.unlink()
-    conn = sqlite3.connect(str(DB_PATH))
+    try:
+        if DB_PATH.exists():
+            DB_PATH.unlink()
+    except OSError:
+        pass
+    from sqlite_perf import connect
+
+    conn = connect(DB_PATH)
     conn.executescript(
         """
         CREATE TABLE orders_today (
@@ -697,8 +806,9 @@ def write_outputs(report: dict) -> dict[str, Path]:
     # CSV export
     csv_path = REPORTS / "orders_today.csv"
     if DB_PATH.is_file():
-        conn = sqlite3.connect(str(DB_PATH))
-        conn.row_factory = sqlite3.Row
+        from sqlite_perf import connect
+
+        conn = connect(DB_PATH, row_factory=sqlite3.Row)
         rows = conn.execute("SELECT * FROM orders_today").fetchall()
         if rows:
             cols = list(rows[0].keys())
