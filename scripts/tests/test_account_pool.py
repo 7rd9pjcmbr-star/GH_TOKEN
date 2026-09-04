@@ -90,6 +90,29 @@ class AccountPoolTests(unittest.TestCase):
         self.assertIsNotNone(got)
         self.assertTrue(got["key"].startswith("GHN:"))
 
+    def test_load_from_accounts_file(self):
+        # write a fake accounts file and point the loader at it
+        f = Path(self._tmp.name) / "accts.json"
+        f.write_text(
+            json.dumps({"accounts": [{"platform": "TPOS", "token": "tok-TPOS-XYZ", "shop_id": "t1", "label": "shop"}]}),
+            encoding="utf-8",
+        )
+        os.environ["ACCOUNT_POOL_ACCOUNTS_FILE"] = str(f)
+        try:
+            accs = self.ap.load_accounts({})  # no env accounts -> only file
+            keys = {self.ap.account_key(a) for a in accs}
+            self.assertIn("TPOS:shop", keys)
+        finally:
+            os.environ.pop("ACCOUNT_POOL_ACCOUNTS_FILE", None)
+
+    def test_example_file_is_valid(self):
+        # the committed template must be valid and cover the platforms
+        root = Path(__file__).resolve().parents[2]
+        data = json.loads((root / "account_pool.accounts.example.json").read_text(encoding="utf-8"))
+        plats = {a["platform"] for a in data["accounts"]}
+        for expected in ("Pancake", "GHN", "ViettelPost", "TPOS", "SPX", "VNPost"):
+            self.assertIn(expected, plats)
+
     def test_reset(self):
         self.ap.acquire("GHN", env=FAKE_ENV)
         self.ap.reset(None)

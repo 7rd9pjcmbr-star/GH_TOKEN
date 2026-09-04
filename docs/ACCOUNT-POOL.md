@@ -9,10 +9,17 @@ nằm ở `owned_credentials` (env/secrets) và `session_store`; pool chỉ gi�
 
 ## Nguồn tài khoản
 
-Nạp qua `owned_credentials.owned_accounts()`:
+Nạp qua `owned_credentials.owned_accounts()` **+** file account pool (gộp, khử trùng theo `account_key`):
 - `OWNED_ACCOUNTS_JSON=[{"platform","user","token","shop_id","label"}, ...]`
 - `OWNED_MAP_<PLATFORM>=user|token|shop_id`
 - Khoá env theo nền tảng trong `secrets/*.env` (xem `owned_credentials.PLATFORM_SPECS`).
+- **File account pool**: `secrets/account_pool.accounts.json` (gitignored) hoặc `ACCOUNT_POOL_ACCOUNTS_FILE`.
+  Mẫu sẵn cho từng nền tảng: **`account_pool.accounts.example.json`** (repo root).
+  ```bash
+  cp account_pool.accounts.example.json secrets/account_pool.accounts.json   # rồi điền token owned
+  ```
+  Định dạng: `{"accounts": [{"platform","user","token","shop_id","label", ...extras}]}`
+  (mọi trường ngoài platform/user/token/shop_id/label → `extras`, vd `password`/`base_url`/`partner_id`).
 
 ## Lưu trữ
 

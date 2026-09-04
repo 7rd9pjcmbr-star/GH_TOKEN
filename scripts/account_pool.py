@@ -65,10 +65,41 @@ def account_key(acc: Any) -> str:
     return f"{acc.platform}:{tail}"
 
 
-def load_accounts(env: dict[str, str] | None = None) -> list[Any]:
+def accounts_file() -> Path:
+    """Optional owned-accounts source file (see account_pool.accounts.example.json)."""
+    override = os.environ.get("ACCOUNT_POOL_ACCOUNTS_FILE")
+    return Path(override) if override else SECRETS / "account_pool.accounts.json"
+
+
+def _accounts_from_file() -> list[Any]:
+    f = accounts_file()
+    if not f.is_file():
+        return []
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return []
+    if isinstance(data, dict):
+        data = data.get("accounts", [])
+    if not isinstance(data, list):
+        return []
     from owned_credentials import owned_accounts
 
-    return owned_accounts(env)
+    # reuse the same parser owned_credentials uses for OWNED_ACCOUNTS_JSON
+    return owned_accounts({"OWNED_ACCOUNTS_JSON": json.dumps(data)})
+
+
+def load_accounts(env: dict[str, str] | None = None) -> list[Any]:
+    """Owned accounts from owned_credentials (env/secrets) + optional accounts file, deduped."""
+    from owned_credentials import owned_accounts
+
+    accts = list(owned_accounts(env))
+    seen = {account_key(a) for a in accts}
+    for a in _accounts_from_file():
+        if account_key(a) not in seen:
+            accts.append(a)
+            seen.add(account_key(a))
+    return accts
 
 
 # --------------------------------------------------------------------------- state io
