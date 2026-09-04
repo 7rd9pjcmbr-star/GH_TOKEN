@@ -25,10 +25,12 @@ class PipeSchemaRegressionTests(unittest.TestCase):
         ensure_pipe_schema(conn)
         return conn
 
-    def test_tracking_url_column_present(self):
+    def test_tracking_columns_present(self):
         conn = self._fresh_conn()
         cols = {r[1] for r in conn.execute("PRAGMA table_info(orders)")}
+        # both were missing and crashed asumee_stats / accept+close stages
         self.assertIn("tracking_url", cols)
+        self.assertIn("tracking_provider", cols)
 
     def test_asumee_stats_does_not_crash_on_empty_db(self):
         from order_pipe.store import PipeStore
