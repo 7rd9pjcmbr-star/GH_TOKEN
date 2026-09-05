@@ -31,6 +31,8 @@ INBOX = ROOT / "quarantine" / "telegram"
 IN_TRANSIT_PATTERNS = (
     r"dang\s*giao",
     r"đang\s*giao",
+    r"vận\s*chuyển",
+    r"van\s*chuyen",
     r"shipping",
     r"delivering",
     r"in[_\s-]?transit",
