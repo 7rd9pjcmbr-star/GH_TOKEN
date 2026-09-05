@@ -78,6 +78,34 @@ _LENDON_PASS_LABEL_RE = re.compile(
 )
 
 
+PAIR_STATE_PATH = SECRETS / "jt_lendon_pair.state.json"
+
+
+def _load_pair_state() -> dict[str, str]:
+    if not PAIR_STATE_PATH.is_file():
+        return {}
+    try:
+        return json.loads(PAIR_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return {}
+
+
+def _save_pair_state(user: str) -> None:
+    SECRETS.mkdir(parents=True, exist_ok=True)
+    PAIR_STATE_PATH.write_text(
+        json.dumps({"user": user, "saved_at": utc_now()}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    _chmod600(PAIR_STATE_PATH)
+
+
+def _clear_pair_state() -> None:
+    try:
+        PAIR_STATE_PATH.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def parse_lendon_credentials_text(text: str) -> dict[str, str] | None:
     """Parse JT_LENDON_USER/PASSWORD từ nhiều format Telegram (env, user:pass, 2 dòng)."""
     text = (text or "").strip()
@@ -195,6 +223,36 @@ def clear_stale_lendon_session() -> bool:
         return True
     except OSError:
         return False
+
+
+def import_credentials_message(text: str, *, source: str = "telegram") -> dict[str, Any]:
+    """Parse credential từ 1 tin — hỗ trợ gửi mã KH và mật khẩu ở 2 tin riêng."""
+    creds = parse_lendon_credentials_text(text)
+    if creds:
+        _clear_pair_state()
+        return import_credentials_paste(text, source=source)
+
+    line = (text or "").strip().splitlines()[0].strip() if (text or "").strip() else ""
+    if not line or line.startswith("http") or line.startswith(("{", "[")):
+        return {"ok": False, "error": "no_credentials_parsed", "source": source}
+
+    if JT_CUSTOMER_CODE_RE.fullmatch(line):
+        _save_pair_state(line.upper())
+        return {
+            "ok": False,
+            "error": "awaiting_password",
+            "user": line.upper(),
+            "hint": "Đã nhận mã KH — gửi tin tiếp theo chỉ mật khẩu",
+            "source": source,
+        }
+
+    state = _load_pair_state()
+    pending_user = (state.get("user") or "").strip()
+    if pending_user and ":" not in line and len(line) >= 3:
+        _clear_pair_state()
+        return import_credentials_paste(f"{pending_user}\n{line}", source=source)
+
+    return {"ok": False, "error": "no_credentials_parsed", "source": source}
 
 
 def import_credentials_paste(text: str, *, source: str = "paste") -> dict[str, Any]:

@@ -197,6 +197,29 @@ def save_state(state: dict) -> None:
     STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _archive_inbound_message(msg: dict, update_id: int) -> None:
+    """Lưu metadata tin nhắn để không mất nội dung khi parser chưa khớp."""
+    try:
+        arch = INBOX / "_inbound_archive"
+        arch.mkdir(parents=True, exist_ok=True)
+        mid = msg.get("message_id") or update_id
+        payload = {
+            "update_id": update_id,
+            "message_id": mid,
+            "at": utc_now(),
+            "text": msg.get("text"),
+            "caption": msg.get("caption"),
+            "document": (msg.get("document") or {}).get("file_name"),
+            "photo": len(msg.get("photo") or []),
+        }
+        day = today_utc().replace("-", "")
+        (arch / f"{day}_msg_{mid}.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
 def pull_telegram_inbox(token: str, *, chat_id: str | None = None, wait: int = 0) -> dict:
     """Kéo document mới từ hộp thoại bot → INBOX (order) hoặc _skipped_dumps (dump)."""
     from order_signal_extract import extract_order_signals
@@ -238,15 +261,16 @@ def pull_telegram_inbox(token: str, *, chat_id: str | None = None, wait: int = 0
         cid = str((msg.get("chat") or {}).get("id") or "")
         if chat_id and cid and cid != str(chat_id):
             continue
+        _archive_inbound_message(msg, int(upd.get("update_id") or 0))
         doc = msg.get("document")
         text = (msg.get("text") or msg.get("caption") or "").strip()
         if not doc and text:
             text_l = text.lower()
             # Lendon user:pass / JT_LENDON_* — ưu tiên trước cookie paste
             try:
-                from jt_lendon_fetch import import_credentials_paste, run_fetch
+                from jt_lendon_fetch import import_credentials_message, run_fetch
 
-                cred_rep = import_credentials_paste(text, source="telegram_text")
+                cred_rep = import_credentials_message(text, source="telegram_text")
                 if cred_rep.get("ok"):
                     run_fetch(apply=True)
                     downloaded.append(
@@ -255,6 +279,16 @@ def pull_telegram_inbox(token: str, *, chat_id: str | None = None, wait: int = 0
                             "orig_name": "jt_lendon.env",
                             "user": cred_rep.get("user"),
                             "password_len": cred_rep.get("password_len"),
+                            "dump": False,
+                        }
+                    )
+                    continue
+                if cred_rep.get("error") == "awaiting_password":
+                    downloaded.append(
+                        {
+                            "file": "(jt_lendon_await_pass)",
+                            "orig_name": "jt_lendon_pair",
+                            "user": cred_rep.get("user"),
                             "dump": False,
                         }
                     )
@@ -316,9 +350,9 @@ def pull_telegram_inbox(token: str, *, chat_id: str | None = None, wait: int = 0
                         import_lendon_files_from_inbox()
                         downloaded.append({"file": dest.name, "orig_name": "jt_lendon.env", "dump": False})
                     else:
-                        from jt_lendon_fetch import import_cookie_paste, import_credentials_paste, run_fetch
+                        from jt_lendon_fetch import import_cookie_paste, import_credentials_message, run_fetch
 
-                        cred_rep = import_credentials_paste(text, source="telegram_lendon_branch")
+                        cred_rep = import_credentials_message(text, source="telegram_lendon_branch")
                         if cred_rep.get("ok"):
                             run_fetch(apply=True)
                             downloaded.append(
