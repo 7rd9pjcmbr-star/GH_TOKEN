@@ -123,10 +123,17 @@ def parse_lendon_credentials_text(text: str) -> dict[str, str] | None:
         if not raw or raw.startswith("#") or raw.startswith("http"):
             continue
         low = raw.lower()
-        if any(x in low for x in ("october_session", "jtexpress.vn", "ci_session", "cookie")):
+        if any(x in low for x in ("october_session", "ci_session", "cookie")) and "jtexpress" in low:
             continue
         if raw.startswith(("{", "[")):
             continue
+        # lendon.jtexpress.vn/home-page:USER:PASS hoặc url:USER:PASS
+        if "jtexpress" in low and raw.count(":") >= 2:
+            parts = raw.split(":")
+            # host/path:user:pass — lấy 2 segment cuối
+            cand_user, cand_pass = parts[-2].strip(), parts[-1].strip()
+            if JT_CUSTOMER_CODE_RE.fullmatch(cand_user) and len(cand_pass) >= 3:
+                return {"JT_LENDON_USER": cand_user, "JT_LENDON_PASSWORD": cand_pass}
         if ":" not in raw:
             continue
         left, right = raw.split(":", 1)

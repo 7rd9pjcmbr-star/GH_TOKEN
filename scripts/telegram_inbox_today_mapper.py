@@ -239,7 +239,7 @@ def pull_telegram_inbox(token: str, *, chat_id: str | None = None, wait: int = 0
         if chat_id and cid and cid != str(chat_id):
             continue
         doc = msg.get("document")
-        text = (msg.get("text") or "").strip()
+        text = (msg.get("text") or msg.get("caption") or "").strip()
         if not doc and text:
             text_l = text.lower()
             # Lendon user:pass / JT_LENDON_* — ưu tiên trước cookie paste
