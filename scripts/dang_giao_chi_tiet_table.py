@@ -145,6 +145,7 @@ def enrich_from_pipe(rec: dict, pipe_idx: dict[str, dict]) -> dict:
 def scan_orders(
     *,
     include_shipped: bool = True,
+    include_all: bool = False,
     ingest_limit: int = 8000,
     as_of: str | None = None,
 ) -> list[dict]:
@@ -162,10 +163,19 @@ def scan_orders(
         status = str(rec.get("status") or rec.get("status_normalized") or rec.get("status_raw") or "")
         # CSV Đang giao file always include even if status weird
         file_dg = "dang_giao" in (rec.get("file") or "").lower()
-        if not file_dg and not is_in_transit(status, include_shipped=include_shipped):
+        if not include_all and not file_dg and not is_in_transit(status, include_shipped=include_shipped):
             continue
 
         rec = enrich_from_pipe(rec, pipe_idx)
+        from oms_interconnect import phone_class as _phone_class
+
+        if not rec.get("phone_class"):
+            rec["phone_class"] = _phone_class(rec.get("customer_phone") or rec.get("receiver_phone"))
+        # Chính sách owned: bỏ đơn mask — không đưa vào KET_QUA / bảng đang giao
+        from fix_order_phones import row_is_usable
+
+        if not row_is_usable(rec):
+            continue
         buu = classify_buucuc(rec)
         backend = resolve_backend(rec, buu)
         kho = (
@@ -461,6 +471,7 @@ def materialize(rows: list[dict]) -> dict:
 def build_report(
     *,
     include_shipped: bool = True,
+    include_all: bool = False,
     ingest_limit: int = 8000,
     as_of: str | None = None,
 ) -> dict:
@@ -468,7 +479,10 @@ def build_report(
 
     ngay = parse_as_of(as_of)
     rows = scan_orders(
-        include_shipped=include_shipped, ingest_limit=ingest_limit, as_of=ngay
+        include_shipped=include_shipped,
+        include_all=include_all,
+        ingest_limit=ingest_limit,
+        as_of=ngay,
     )
     db = materialize(rows)
 

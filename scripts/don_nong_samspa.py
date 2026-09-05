@@ -188,7 +188,11 @@ def notify_telegram(rows: list[dict], paths: dict[str, Path], *, hours: int) -> 
 
 
 def build_report(*, hours: int = 48, notify: bool = False) -> dict:
-    rows = fetch_hot(hours=hours)
+    from fix_order_phones import filter_usable_rows
+
+    raw = fetch_hot(hours=hours)
+    rows, filter_stats = filter_usable_rows(raw)
+    dropped_masked = int(filter_stats.get("dropped_masked") or 0)
     paths = write_outputs(rows, hours=hours) if rows else {}
     rep = {
         "ok": bool(rows),
@@ -197,10 +201,19 @@ def build_report(*, hours: int = 48, notify: bool = False) -> dict:
         "shop_id": SHOP,
         "hours": hours,
         "total": len(rows),
+        "fetched_raw": len(raw),
+        "dropped_masked": dropped_masked,
+        "filter_stats": filter_stats,
         "urgent": sum(1 for r in rows if r.get("status") in URGENT),
         "by_status": dict(Counter(r.get("status") or "" for r in rows)),
         "paths": {k: str(v) for k, v in paths.items()},
-        "verdict": f"Đơn nóng {len(rows)} / {hours}h · cần xử lý {sum(1 for r in rows if r.get('status') in URGENT)}",
+        "policy": "chỉ_giữ_đơn_không_mask",
+        "verdict": (
+            f"Đơn nóng dùng được: {len(rows)} / {hours}h "
+            f"(bỏ {dropped_masked} mask từ API)"
+            if rows
+            else f"0 đơn dùng được / {hours}h — API mask {dropped_masked} đơn · cần export Excel POS"
+        ),
     }
     if notify and paths:
         rep["telegram"] = notify_telegram(rows, paths, hours=hours)

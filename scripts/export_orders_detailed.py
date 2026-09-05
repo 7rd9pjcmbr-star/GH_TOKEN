@@ -388,20 +388,36 @@ def build_report(*, limit: int = 5000, days: int = 7) -> dict:
 
     api_rows: list[dict] = []
     api_detail = ""
+    api_dropped = 0
     try:
         api_rows, attempts, api_detail = fetch_pancake_rows(env, limit=limit, days=days)
         if api_rows:
-            sources.append(f"api_scan:{len(api_rows)}")
+            from fix_order_phones import filter_usable_rows
+
+            api_rows, api_stats = filter_usable_rows(api_rows)
+            api_dropped = int(api_stats.get("dropped_masked") or 0) + sum(
+                v for k, v in api_stats.items() if k.startswith("dropped_") and k != "dropped_masked"
+            )
+            if api_rows:
+                sources.append(f"api_scan:{len(api_rows)}")
+            elif api_stats.get("dropped_masked"):
+                api_detail = f"Pancake API: bỏ {api_stats.get('dropped_masked')} đơn mask (không dùng)"
     except Exception as e:  # noqa: BLE001
         api_detail = str(e)[:200]
 
-    rows = dedupe_rows(rows + cached + api_rows)
+    from fix_order_phones import filter_usable_rows
+
+    merged = dedupe_rows(rows + cached + api_rows)
+    rows, filter_stats = filter_usable_rows(merged)
     paths = write_outputs(rows) if rows else {}
 
     return {
         "ok": bool(rows),
         "exported_at": utc_now(),
         "rows": len(rows),
+        "filter_stats": filter_stats,
+        "api_dropped_masked": api_dropped,
+        "policy": "chỉ_giữ_đơn_không_mask",
         "sources": sources,
         "imported_secrets": imported,
         "api_detail": api_detail,

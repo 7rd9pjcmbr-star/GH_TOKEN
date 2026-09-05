@@ -28,6 +28,45 @@ def is_masked(raw: str) -> bool:
     return any(c in s for c in MASK_CHARS)
 
 
+def row_has_masked_pii(row: dict) -> bool:
+    """True nếu SĐT hoặc tên khách bị che (*, x) — đơn không dùng được."""
+    if is_masked(str(row.get("customer_phone") or row.get("receiver_phone") or row.get("bill_phone_number") or "")):
+        return True
+    if is_masked(str(row.get("customer_name") or row.get("receiver_name") or row.get("bill_full_name") or "")):
+        return True
+    return False
+
+
+def row_is_usable(row: dict, *, require_phone: bool = True) -> bool:
+    """Chỉ đơn owned: SĐT đầy đủ, không mask, không thiếu."""
+    if row_has_masked_pii(row):
+        return False
+    phone = str(row.get("customer_phone") or row.get("receiver_phone") or row.get("bill_phone_number") or "").strip()
+    if require_phone:
+        normalized, status = normalize_vn_phone(phone)
+        return status in ("ok", "ok_loose") and bool(normalized)
+    return bool(phone)
+
+
+def filter_usable_rows(rows: list[dict], *, require_phone: bool = True) -> tuple[list[dict], dict]:
+    """Lọc bỏ đơn mask/thiếu SĐT. Trả (rows_ok, stats)."""
+    stats = Counter()
+    out: list[dict] = []
+    for r in rows:
+        if row_has_masked_pii(r):
+            stats["dropped_masked"] += 1
+            continue
+        phone = str(r.get("customer_phone") or r.get("receiver_phone") or "").strip()
+        if require_phone:
+            _, st = normalize_vn_phone(phone)
+            if st in ("missing", "invalid"):
+                stats[f"dropped_{st}"] += 1
+                continue
+        stats["kept"] += 1
+        out.append(r)
+    return out, dict(stats)
+
+
 def normalize_vn_phone(raw: str) -> tuple[str | None, str]:
     """Return (normalized|None, status)."""
     if raw is None:
