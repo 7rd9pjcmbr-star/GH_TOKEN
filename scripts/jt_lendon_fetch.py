@@ -118,7 +118,7 @@ def parse_lendon_credentials_text(text: str) -> dict[str, str] | None:
     password = ""
 
     for line in text.splitlines():
-        t = line.strip()
+        t = line.strip().rstrip(",")
         if not t or t.startswith("#"):
             continue
         if "JT_LENDON_USER" in t and "=" in t:
@@ -127,9 +127,17 @@ def parse_lendon_credentials_text(text: str) -> dict[str, str] | None:
             password = t.split("=", 1)[1].strip().strip('"').strip("'")
         elif "JT_LENDON_LOGIN" in t and "=" in t and not user:
             user = t.split("=", 1)[1].strip().strip('"').strip("'")
+        elif '"username"' in t.lower() or '"user"' in t.lower():
+            m = re.search(r'"username"\s*:\s*"([^"]+)"', t, re.I) or re.search(r'"user"\s*:\s*"([^"]+)"', t, re.I)
+            if m:
+                user = m.group(1).strip()
+        elif '"password"' in t.lower() or '"pass"' in t.lower():
+            m = re.search(r'"password"\s*:\s*"([^"]+)"', t, re.I) or re.search(r'"pass"\s*:\s*"([^"]+)"', t, re.I)
+            if m:
+                password = m.group(1).strip()
 
     if user and password:
-        return {"JT_LENDON_USER": user, "JT_LENDON_PASSWORD": password}
+        return {"JT_LENDON_USER": user.upper() if JT_CUSTOMER_CODE_RE.fullmatch(user.strip()) else user.strip(), "JT_LENDON_PASSWORD": password}
 
     for line in text.splitlines():
         ln = line.strip()
