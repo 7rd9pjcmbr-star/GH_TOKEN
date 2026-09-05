@@ -234,10 +234,44 @@ def parse_cookie_paste(text: str) -> list[dict[str, str]]:
                 )
             continue
 
+        # URL/query paste: october_session+eyJ...&qs=... hoặc october_session=eyJ...&...
+        if "october_session" in line.lower() and "eyj" in line.lower():
+            m_url = re.search(
+                r"october_session[+=%\s]+(?P<val>eyJ[A-Za-z0-9%_.+/=-]+)",
+                line,
+                re.I,
+            )
+            if m_url:
+                from urllib.parse import unquote
+
+                val = unquote(unquote(m_url.group("val").split("&")[0].strip()))
+                cookies.append(
+                    {
+                        "name": "october_session",
+                        "value": val,
+                        "domain": ".jtexpress.vn",
+                        "path": "/",
+                    }
+                )
+                continue
+
         # raw: october_session=value hoặc october_session <value>
-        if "=" in line and line.count(" ") < 3:
+        if "=" in line and line.count(" ") < 3 and not line.strip().startswith("http"):
             name, value = line.split("=", 1)
-            cookies.append({"name": name.strip(), "value": value.strip(), "domain": ".jtexpress.vn", "path": "/"})
+            name = name.strip()
+            value = value.strip().split("&")[0]
+            if name.lower().startswith("october_session") and name.lower() != "october_session":
+                # october_session+eyJ... malformed name
+                m_fix = re.search(r"eyJ[A-Za-z0-9%_.+/=-]+", name + "=" + value, re.I)
+                if m_fix:
+                    from urllib.parse import unquote
+
+                    val = unquote(unquote(m_fix.group(0).split("&")[0]))
+                    cookies.append(
+                        {"name": "october_session", "value": val, "domain": ".jtexpress.vn", "path": "/"}
+                    )
+                    continue
+            cookies.append({"name": name, "value": value, "domain": ".jtexpress.vn", "path": "/"})
             continue
 
         # 'october_session eyJ...' hoặc 'ci_session eyJ...' (space-separated — hay gặp khi copy từ DevTools)
