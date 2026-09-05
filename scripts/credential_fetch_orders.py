@@ -2,8 +2,8 @@
 """Đọc credential (owned) → lấy đơn từ mọi backend có token → KET_QUA.
 
 Nguồn credential (theo thứ tự):
-  secrets/*.env · api_settings.local.json · v9_credentials.env · session_store
-  Telegram pull · inbox bridge · Chrome/Lendon cookie sync
+  auto_backup_credential (active/backup) · session_store · secrets/*.env
+  v9_credentials.env · Telegram pull · inbox bridge · Chrome/Lendon sync
 
 Không login bằng jt_parsed / stealer dump.
 
@@ -58,7 +58,7 @@ def mask(val: str) -> str:
 
 
 def load_credentials() -> dict[str, str]:
-    """Gom biến môi trường từ secrets + shell + owned overlay."""
+    """Gom biến môi trường từ secrets + backup credential + shell."""
     from export_orders_detailed import bootstrap_secrets_from_inbox, load_env
 
     bootstrap_secrets_from_inbox()
@@ -74,13 +74,25 @@ def load_credentials() -> dict[str, str]:
             k, v = t.split("=", 1)
             env.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
+    # auto_backup: active + backup fallback (token, cookie, session)
+    try:
+        from auto_backup_credential import resolve_credentials_env
+
+        for key, val in resolve_credentials_env().items():
+            if val and not env.get(key):
+                env[key] = val
+    except Exception:  # noqa: BLE001
+        pass
+
     for key in (
         "PANCAKE_POS_ACCESS_TOKEN",
         "PANCAKE_POS_API_KEY",
+        "PANCAKE_COOKIES",
         "PANCAKE_SHOP_ID",
         "GHN_API_TOKEN",
         "JT_LENDON_USER",
         "JT_LENDON_PASSWORD",
+        "JT_LENDON_OCTOBER_SESSION",
         "JT_API_ACCOUNT",
         "JT_PRIVATE_KEY",
         "JT_PASSWORD",
@@ -106,6 +118,7 @@ def load_credentials() -> dict[str, str]:
 
 def audit_credentials(env: dict[str, str]) -> dict[str, Any]:
     """Trạng thái credential theo backend (masked)."""
+    from auto_backup_credential import get_all_credentials_status
     from pancake_pos_client import auth_ready, resolve_credentials
 
     pancake = resolve_credentials(
@@ -113,7 +126,9 @@ def audit_credentials(env: dict[str, str]) -> dict[str, Any]:
         access_token=env.get("PANCAKE_POS_ACCESS_TOKEN", ""),
     )
     lendon_session = (SECRETS / "jt_lendon_session.json").is_file()
+    lendon_october = bool(env.get("JT_LENDON_OCTOBER_SESSION"))
     api_settings = (SECRETS / "api_settings.local.json").is_file()
+    backup_status = get_all_credentials_status()
 
     backends = {
         "telegram": {
@@ -134,10 +149,13 @@ def audit_credentials(env: dict[str, str]) -> dict[str, Any]:
         },
         "jt_lendon": {
             "ready": bool(
-                (env.get("JT_LENDON_USER") and env.get("JT_LENDON_PASSWORD")) or lendon_session
+                (env.get("JT_LENDON_USER") and env.get("JT_LENDON_PASSWORD"))
+                or lendon_session
+                or lendon_october
             ),
             "user": env.get("JT_LENDON_USER", ""),
             "session_file": lendon_session,
+            "october_session": mask(env.get("JT_LENDON_OCTOBER_SESSION", "")),
         },
         "jt_open_api": {
             "ready": bool(
@@ -158,14 +176,26 @@ def audit_credentials(env: dict[str, str]) -> dict[str, Any]:
     return {
         "checked_at": utc_now(),
         "backends": backends,
+        "backup": {
+            "active": backup_status.get("summary", {}).get("with_active", 0),
+            "backup": backup_status.get("summary", {}).get("with_backup", 0),
+            "total": backup_status.get("summary", {}).get("total_platforms", 0),
+        },
         "ready_count": ready_n,
         "total_backends": len(backends),
     }
 
 
 def import_runtime_credentials(*, pull: bool = False, wait: int = 8) -> dict[str, Any]:
-    """Kéo credential/file mới từ Telegram + bridge + Chrome Lendon."""
+    """Kéo credential/file mới từ backup + Telegram + bridge + Chrome Lendon."""
     steps: dict[str, Any] = {}
+
+    try:
+        from auto_backup_credential import bootstrap_credentials
+
+        steps["credential_backup"] = bootstrap_credentials()
+    except Exception as e:  # noqa: BLE001
+        steps["credential_backup"] = {"ok": False, "error": str(e)[:120]}
 
     try:
         from uploads_inbox_bridge import bridge_uploads
