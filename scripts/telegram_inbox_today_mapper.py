@@ -323,7 +323,9 @@ def pull_telegram_inbox(token: str, *, chat_id: str | None = None, wait: int = 0
             elif (
                 "pos.pancake.vn" in text_l
                 or "pos_jwt" in text_l
+                or "accesstoken" in text_l.replace(" ", "").replace("_", "")
                 or (text.startswith("eyJ") and len(text) > 100)
+                or ("eyj" in text_l and "accesstoken" in text_l.replace(" ", ""))
             ):
                 try:
                     from pancake_cookie_ingest import ingest_and_scan
