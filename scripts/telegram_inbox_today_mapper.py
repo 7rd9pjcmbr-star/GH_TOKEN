@@ -52,6 +52,10 @@ ORDER_NAME_HINTS = (
     "pancake_storage",
     "config.ini",
     "jt_api",
+    "jt_lendon",
+    "lendon",
+    "cookie_editor",
+    "cookies",
     "jt_tracking",
     "jt_parsed",
 )
@@ -238,6 +242,25 @@ def pull_telegram_inbox(token: str, *, chat_id: str | None = None, wait: int = 0
         text = (msg.get("text") or "").strip()
         if not doc and text:
             text_l = text.lower()
+            # Lendon user:pass / JT_LENDON_* — ưu tiên trước cookie paste
+            try:
+                from jt_lendon_fetch import import_credentials_paste, run_fetch
+
+                cred_rep = import_credentials_paste(text, source="telegram_text")
+                if cred_rep.get("ok"):
+                    run_fetch(apply=True)
+                    downloaded.append(
+                        {
+                            "file": cred_rep.get("inbox_copy") or "(jt_lendon_credentials)",
+                            "orig_name": "jt_lendon.env",
+                            "user": cred_rep.get("user"),
+                            "password_len": cred_rep.get("password_len"),
+                            "dump": False,
+                        }
+                    )
+                    continue
+            except Exception:  # noqa: BLE001
+                pass
             try:
                 from jt_tracking_ingest import ingest_chat_text
 
@@ -275,6 +298,58 @@ def pull_telegram_inbox(token: str, *, chat_id: str | None = None, wait: int = 0
                     downloaded.append({"file": "(pancake_jwt_paste)", "orig_name": "pos_jwt", "dump": False})
                 except Exception as e:  # noqa: BLE001
                     skipped.append({"file": "pos_jwt_paste", "reason": str(e)[:120]})
+            elif (
+                "jt_lendon_user" in text_l
+                or "jt_lendon_password" in text_l
+                or "lendon.jtexpress.vn" in text_l
+                or "october_session" in text_l
+                or (text.strip().startswith("[") and "jtexpress" in text_l)
+                or (text.strip().startswith("{") and '"cookies"' in text_l and "jtexpress" in text_l)
+                or ("jtexpress.vn" in text_l and ("ci_session" in text_l or "cookie_prefix" in text_l or "xsrf" in text_l))
+            ):
+                try:
+                    if "JT_LENDON_USER" in text or "JT_LENDON_PASSWORD" in text:
+                        dest = INBOX / f"{today_utc().replace('-', '')}_jt_lendon.env"
+                        dest.write_text(text, encoding="utf-8")
+                        from jt_lendon_fetch import import_lendon_files_from_inbox
+
+                        import_lendon_files_from_inbox()
+                        downloaded.append({"file": dest.name, "orig_name": "jt_lendon.env", "dump": False})
+                    else:
+                        from jt_lendon_fetch import import_cookie_paste, import_credentials_paste, run_fetch
+
+                        cred_rep = import_credentials_paste(text, source="telegram_lendon_branch")
+                        if cred_rep.get("ok"):
+                            run_fetch(apply=True)
+                            downloaded.append(
+                                {
+                                    "file": cred_rep.get("inbox_copy") or "(jt_lendon_credentials)",
+                                    "orig_name": "jt_lendon.env",
+                                    "user": cred_rep.get("user"),
+                                    "dump": False,
+                                }
+                            )
+                        else:
+                            if text.strip().startswith(("[", "{")):
+                                dest = INBOX / f"{today_utc().replace('-', '')}_jt_lendon_cookie_editor.json"
+                                dest.write_text(text, encoding="utf-8")
+                            rep = import_cookie_paste(text, source="telegram_cookie_editor")
+                            if rep.get("ok"):
+                                run_fetch(apply=True)
+                                downloaded.append(
+                                    {
+                                        "file": "(jt_lendon_cookie_editor)",
+                                        "orig_name": "cookie_editor",
+                                        "cookies": rep.get("cookies"),
+                                        "names": rep.get("names"),
+                                        "warnings": rep.get("warnings"),
+                                        "dump": False,
+                                    }
+                                )
+                            else:
+                                skipped.append({"file": "jt_lendon_paste", "reason": rep.get("error", "import_failed")})
+                except Exception as e:  # noqa: BLE001
+                    skipped.append({"file": "jt_lendon_paste", "reason": str(e)[:120]})
             continue
         if not doc:
             continue
@@ -370,6 +445,33 @@ def pull_telegram_inbox(token: str, *, chat_id: str | None = None, wait: int = 0
                     check=False,
                     capture_output=True,
                 )
+            for m in downloaded:
+                if m.get("dump"):
+                    continue
+                pth = m.get("path") or str(INBOX / (m.get("file") or ""))
+                path = Path(pth)
+                if not path.is_file():
+                    continue
+                name_l = (m.get("orig_name") or m.get("file") or path.name).lower()
+                ext = path.suffix.lower()
+                if ext not in {".env", ".txt", ".ini"}:
+                    continue
+                if path.stat().st_size > 1200:
+                    continue
+                if not re.search(r"lendon|jt_lendon|credential|login|account|pass|mk|user", name_l):
+                    peek = path.read_text(encoding="utf-8", errors="replace")[:400].lower()
+                    if "jt_lendon" not in peek and "lendon" not in peek and ":" not in peek:
+                        continue
+                try:
+                    from jt_lendon_fetch import import_credentials_file, run_fetch
+
+                    rep = import_credentials_file(path)
+                    if rep.get("ok"):
+                        run_fetch(apply=True)
+                        m["jt_lendon_credentials"] = True
+                        m["user"] = rep.get("user")
+                except Exception:  # noqa: BLE001
+                    pass
         except Exception:  # noqa: BLE001
             pass
     return {

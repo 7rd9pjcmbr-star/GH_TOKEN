@@ -67,6 +67,164 @@ def import_lendon_files_from_inbox() -> list[str]:
     return imported
 
 
+JT_CUSTOMER_CODE_RE = re.compile(r"\b(\d{3}[A-Z]{2}\d{4,8})\b", re.I)
+_LENDON_USER_LABEL_RE = re.compile(
+    r"^(?:user(?:name)?|login|tk|tài\s*khoản|tai\s*khoan|mã\s*kh|ma\s*kh|mã\s*khách\s*hàng|ma\s*khach\s*hang)\s*[:=]\s*(.+)$",
+    re.I,
+)
+_LENDON_PASS_LABEL_RE = re.compile(
+    r"^(?:pass(?:word)?|mk|pwd|mật\s*khẩu|mat\s*khau)\s*[:=]\s*(.+)$",
+    re.I,
+)
+
+
+def parse_lendon_credentials_text(text: str) -> dict[str, str] | None:
+    """Parse JT_LENDON_USER/PASSWORD từ nhiều format Telegram (env, user:pass, 2 dòng)."""
+    text = (text or "").strip()
+    if not text or len(text) > 8000:
+        return None
+    if "hotcleaner" in text.lower():
+        return None
+
+    user = ""
+    password = ""
+
+    for line in text.splitlines():
+        t = line.strip()
+        if not t or t.startswith("#"):
+            continue
+        if "JT_LENDON_USER" in t and "=" in t:
+            user = t.split("=", 1)[1].strip().strip('"').strip("'")
+        elif "JT_LENDON_PASSWORD" in t and "=" in t:
+            password = t.split("=", 1)[1].strip().strip('"').strip("'")
+        elif "JT_LENDON_LOGIN" in t and "=" in t and not user:
+            user = t.split("=", 1)[1].strip().strip('"').strip("'")
+
+    if user and password:
+        return {"JT_LENDON_USER": user, "JT_LENDON_PASSWORD": password}
+
+    for line in text.splitlines():
+        ln = line.strip()
+        if not ln:
+            continue
+        mu = _LENDON_USER_LABEL_RE.match(ln)
+        if mu:
+            user = mu.group(1).strip()
+            continue
+        mp = _LENDON_PASS_LABEL_RE.match(ln)
+        if mp:
+            password = mp.group(1).strip()
+
+    if user and password:
+        return {"JT_LENDON_USER": user, "JT_LENDON_PASSWORD": password}
+
+    for line in text.splitlines():
+        raw = line.strip()
+        if not raw or raw.startswith("#") or raw.startswith("http"):
+            continue
+        low = raw.lower()
+        if any(x in low for x in ("october_session", "jtexpress.vn", "ci_session", "cookie")):
+            continue
+        if raw.startswith(("{", "[")):
+            continue
+        if ":" not in raw:
+            continue
+        left, right = raw.split(":", 1)
+        left, right = left.strip(), right.strip()
+        if not right or len(right) < 3:
+            continue
+        if JT_CUSTOMER_CODE_RE.fullmatch(left) or re.fullmatch(r"[A-Za-z0-9]{4,24}", left):
+            return {"JT_LENDON_USER": left, "JT_LENDON_PASSWORD": right}
+
+    lines = [
+        ln.strip()
+        for ln in text.splitlines()
+        if ln.strip() and not ln.strip().startswith("#") and not ln.strip().startswith("http")
+    ]
+    if len(lines) == 2:
+        a, b = lines[0], lines[1]
+        if JT_CUSTOMER_CODE_RE.fullmatch(a) and len(b) >= 3 and ":" not in b:
+            return {"JT_LENDON_USER": a, "JT_LENDON_PASSWORD": b}
+
+    return None
+
+
+def save_lendon_credentials(user: str, password: str) -> Path:
+    """Ghi user/pass vào secrets/jt_lendon.env (giữ comment và key khác)."""
+    dest = SECRETS / "jt_lendon.env"
+    if not dest.is_file():
+        ensure_lendon_env()
+    lines = dest.read_text(encoding="utf-8", errors="replace").splitlines()
+    out: list[str] = []
+    seen_user = seen_pass = False
+    for ln in lines:
+        if ln.startswith("JT_LENDON_USER="):
+            out.append(f"JT_LENDON_USER={user}")
+            seen_user = True
+        elif ln.startswith("JT_LENDON_PASSWORD="):
+            out.append(f"JT_LENDON_PASSWORD={password}")
+            seen_pass = True
+        else:
+            out.append(ln)
+    if not seen_user:
+        out.append(f"JT_LENDON_USER={user}")
+    if not seen_pass:
+        out.append(f"JT_LENDON_PASSWORD={password}")
+    dest.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+    _chmod600(dest)
+    return dest
+
+
+def clear_stale_lendon_session() -> bool:
+    """Xóa session cookie cũ trước login user/pass."""
+    path = _session_path()
+    if not path.is_file():
+        return False
+    bak = path.with_suffix(".json.bak")
+    try:
+        bak.write_bytes(path.read_bytes())
+        path.unlink()
+        _chmod600(bak)
+        return True
+    except OSError:
+        return False
+
+
+def import_credentials_paste(text: str, *, source: str = "paste") -> dict[str, Any]:
+    creds = parse_lendon_credentials_text(text)
+    if not creds:
+        return {"ok": False, "error": "no_credentials_parsed", "source": source}
+    user = creds["JT_LENDON_USER"]
+    password = creds["JT_LENDON_PASSWORD"]
+    save_lendon_credentials(user, password)
+    cleared = clear_stale_lendon_session()
+    day = datetime.now(timezone.utc).strftime("%Y%m%d")
+    inbox_copy = INBOX / f"{day}_jt_lendon.env"
+    inbox_copy.write_text(
+        f"JT_LENDON_BASE_URL=https://lendon.jtexpress.vn\n"
+        f"JT_LENDON_USER={user}\n"
+        f"JT_LENDON_PASSWORD={password}\n",
+        encoding="utf-8",
+    )
+    return {
+        "ok": True,
+        "source": source,
+        "user": user,
+        "password_len": len(password),
+        "session_cleared": cleared,
+        "inbox_copy": inbox_copy.name,
+    }
+
+
+def import_credentials_file(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {"ok": False, "error": "file_not_found", "file": str(path)}
+    text = path.read_text(encoding="utf-8", errors="replace")
+    rep = import_credentials_paste(text, source=path.name)
+    rep["file"] = path.name
+    return rep
+
+
 def _lendon_domain(domain: str) -> str:
     d = (domain or "").strip() or "lendon.jtexpress.vn"
     if d in ("/", "TRUE", "FALSE"):
@@ -513,11 +671,12 @@ class LendonClient:
         return not self._is_login_page(html)
 
     def login(self) -> dict[str, Any]:
+        user = (self.env.get("JT_LENDON_USER") or self.env.get("JT_LENDON_LOGIN") or "").strip()
+        password = (self.env.get("JT_LENDON_PASSWORD") or "").strip()
+
         if self.session_valid():
             return {"ok": True, "via": "cached_session"}
 
-        user = (self.env.get("JT_LENDON_USER") or self.env.get("JT_LENDON_LOGIN") or "").strip()
-        password = (self.env.get("JT_LENDON_PASSWORD") or "").strip()
         if not user or not password:
             path = _session_path()
             if path.is_file():
@@ -527,6 +686,10 @@ class LendonClient:
                     "hint": "Cookie đã import nhưng không còn hiệu lực — export cookie october_session MỚI từ lendon.jtexpress.vn sau khi login",
                 }
             return {"ok": False, "error": "missing_JT_LENDON_USER_or_PASSWORD"}
+
+        # Cookie cũ có thể chặn login — dùng session sạch khi có user/pass
+        self.session.cookies.clear()
+        clear_stale_lendon_session()
 
         code, html = self._get_page("/home-page")
         if code != 200:
